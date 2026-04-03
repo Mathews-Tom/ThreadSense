@@ -11,6 +11,7 @@ from threadsense.connectors.reddit import RedditThreadResult
 from threadsense.errors import SchemaBoundaryError
 from threadsense.models.analysis import ThreadAnalysis, load_analysis_artifact_file
 from threadsense.models.canonical import Thread, load_canonical_thread
+from threadsense.models.report import ThreadReport, load_report_artifact_file
 
 
 @dataclass(frozen=True)
@@ -18,6 +19,8 @@ class StoragePaths:
     raw_path: Path
     normalized_path: Path
     analysis_path: Path
+    report_json_path: Path
+    report_markdown_path: Path
 
 
 def build_storage_paths(
@@ -32,6 +35,8 @@ def build_storage_paths(
             root / storage.normalized_dirname / source_name / f"{source_thread_id}.json"
         ),
         analysis_path=root / storage.analysis_dirname / source_name / f"{source_thread_id}.json",
+        report_json_path=root / storage.report_dirname / source_name / f"{source_thread_id}.json",
+        report_markdown_path=root / storage.report_dirname / source_name / f"{source_thread_id}.md",
     )
 
 
@@ -44,6 +49,10 @@ def persist_normalized_artifact(path: Path, thread: Thread) -> None:
 
 
 def persist_analysis_artifact(path: Path, artifact: ThreadAnalysis) -> None:
+    write_json(path, artifact.to_dict())
+
+
+def persist_report_artifact(path: Path, artifact: ThreadReport) -> None:
     write_json(path, artifact.to_dict())
 
 
@@ -67,6 +76,10 @@ def load_analysis_artifact(path: Path) -> ThreadAnalysis:
     return load_analysis_artifact_file(path)
 
 
+def load_report_artifact(path: Path) -> ThreadReport:
+    return load_report_artifact_file(path)
+
+
 def calculate_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -74,6 +87,11 @@ def calculate_sha256(path: Path) -> str:
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
 
 
 def read_json(path: Path) -> dict[str, Any]:

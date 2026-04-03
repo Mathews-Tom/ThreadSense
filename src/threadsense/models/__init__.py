@@ -20,6 +20,16 @@ from threadsense.models.canonical import (
     SourceRef,
     Thread,
 )
+from threadsense.models.report import (
+    REPORT_ARTIFACT_KIND,
+    REPORT_ENGINE_VERSION,
+    REPORT_SCHEMA_VERSION,
+    ReportExecutiveSummary,
+    ReportFinding,
+    ReportProvenance,
+    ReportQualityCheck,
+    ThreadReport,
+)
 
 __all__ = [
     "ANALYSIS_ARTIFACT_KIND",
@@ -34,8 +44,16 @@ __all__ = [
     "Comment",
     "DuplicateGroup",
     "ProvenanceMetadata",
+    "REPORT_ARTIFACT_KIND",
+    "REPORT_ENGINE_VERSION",
+    "REPORT_SCHEMA_VERSION",
+    "ReportExecutiveSummary",
+    "ReportFinding",
+    "ReportProvenance",
+    "ReportQualityCheck",
     "RepresentativeQuote",
     "SourceRef",
     "Thread",
+    "ThreadReport",
     "ThreadAnalysis",
 ]
