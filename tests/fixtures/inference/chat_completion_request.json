@@ -1,0 +1,15 @@
+{
+  "model": "local-model",
+  "messages": [
+    {
+      "role": "system",
+      "content": "Return the single token READY."
+    },
+    {
+      "role": "user",
+      "content": "READY"
+    }
+  ],
+  "stream": false,
+  "temperature": 0
+}
