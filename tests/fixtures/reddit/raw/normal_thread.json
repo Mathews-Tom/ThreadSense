@@ -1,0 +1,69 @@
+[
+  {
+    "data": {
+      "children": [
+        {
+          "kind": "t3",
+          "data": {
+            "id": "abc123",
+            "title": "Normal thread",
+            "subreddit": "ThreadSense",
+            "author": "op",
+            "permalink": "/r/ThreadSense/comments/abc123/normal_thread/",
+            "num_comments": 2
+          }
+        }
+      ]
+    }
+  },
+  {
+    "data": {
+      "children": [
+        {
+          "kind": "t1",
+          "data": {
+            "id": "c1",
+            "author": "user1",
+            "body": "Top level comment",
+            "score": 10,
+            "created_utc": 1710000000.0,
+            "parent_id": "t3_abc123",
+            "permalink": "/r/ThreadSense/comments/abc123/normal_thread/c1/",
+            "replies": {
+              "data": {
+                "children": [
+                  {
+                    "kind": "t1",
+                    "data": {
+                      "id": "c1a",
+                      "author": "user2",
+                      "body": "Nested reply",
+                      "score": 5,
+                      "created_utc": 1710000001.0,
+                      "parent_id": "t1_c1",
+                      "permalink": "/r/ThreadSense/comments/abc123/normal_thread/c1a/",
+                      "replies": ""
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "kind": "t1",
+          "data": {
+            "id": "c2",
+            "author": "user3",
+            "body": "Second top level comment",
+            "score": 4,
+            "created_utc": 1710000002.0,
+            "parent_id": "t3_abc123",
+            "permalink": "/r/ThreadSense/comments/abc123/normal_thread/c2/",
+            "replies": ""
+          }
+        }
+      ]
+    }
+  }
+]

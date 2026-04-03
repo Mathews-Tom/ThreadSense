@@ -37,6 +37,9 @@ select = [
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+markers = [
+  "live_reddit: opt-in smoke test for the live Reddit endpoint",
+]
 
 [tool.mypy]
 python_version = "3.11"
