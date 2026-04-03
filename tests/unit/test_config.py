@@ -23,6 +23,7 @@ def test_load_config_uses_defaults_when_no_file_exists(monkeypatch: pytest.Monke
     assert config.storage.root_dir == Path(".threadsense")
     assert config.storage.normalized_dirname == "normalized"
     assert config.storage.analysis_dirname == "analysis"
+    assert config.storage.report_dirname == "reports"
 
 
 def test_load_config_reads_toml_and_env_overrides(
@@ -61,6 +62,7 @@ def test_load_config_reads_toml_and_env_overrides(
                 'raw_dirname = "raw-store"',
                 'normalized_dirname = "canonical-store"',
                 'analysis_dirname = "analysis-store"',
+                'report_dirname = "report-store"',
             ]
         ),
         encoding="utf-8",
@@ -86,6 +88,7 @@ def test_load_config_reads_toml_and_env_overrides(
     assert config.storage.raw_dirname == "raw-store"
     assert config.storage.normalized_dirname == "canonical-store"
     assert config.storage.analysis_dirname == "analysis-store"
+    assert config.storage.report_dirname == "report-store"
 
 
 def test_load_config_rejects_invalid_privacy_mode(tmp_path: Path) -> None:

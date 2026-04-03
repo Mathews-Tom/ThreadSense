@@ -60,6 +60,7 @@ class StorageConfig:
     raw_dirname: str
     normalized_dirname: str
     analysis_dirname: str
+    report_dirname: str
 
 
 @dataclass(frozen=True)
@@ -336,6 +337,11 @@ def load_config(
             resolved_env,
             "THREADSENSE_STORAGE_ANALYSIS_DIR",
             str(storage_section.get("analysis_dirname", "analysis")),
+        ),
+        report_dirname=_read_str(
+            resolved_env,
+            "THREADSENSE_STORAGE_REPORT_DIR",
+            str(storage_section.get("report_dirname", "reports")),
         ),
     )
     return AppConfig(

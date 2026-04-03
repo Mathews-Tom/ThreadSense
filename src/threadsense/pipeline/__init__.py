@@ -8,9 +8,11 @@ from threadsense.pipeline.storage import (
     load_analysis_artifact,
     load_normalized_artifact,
     load_raw_artifact,
+    load_report_artifact,
     persist_analysis_artifact,
     persist_normalized_artifact,
     persist_raw_artifact,
+    persist_report_artifact,
 )
 
 __all__ = [
@@ -20,10 +22,12 @@ __all__ = [
     "build_storage_paths",
     "load_analysis_artifact",
     "load_normalized_artifact",
+    "load_report_artifact",
     "load_raw_artifact",
     "normalize_reddit_artifact",
     "normalize_reddit_artifact_file",
     "persist_analysis_artifact",
     "persist_normalized_artifact",
+    "persist_report_artifact",
     "persist_raw_artifact",
 ]

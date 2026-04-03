@@ -140,6 +140,7 @@ def test_build_storage_paths_keep_raw_and_normalized_separate(tmp_path: Path) ->
             raw_dirname="raw",
             normalized_dirname="normalized",
             analysis_dirname="analysis",
+            report_dirname="reports",
         ),
         source_name="reddit",
         source_thread_id="abc123",
