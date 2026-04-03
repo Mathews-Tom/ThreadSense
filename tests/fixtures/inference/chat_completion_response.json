@@ -1,0 +1,21 @@
+{
+  "id": "chatcmpl-local-123",
+  "object": "chat.completion",
+  "created": 1760000000,
+  "model": "local-model",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "READY"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 15,
+    "completion_tokens": 1,
+    "total_tokens": 16
+  }
+}

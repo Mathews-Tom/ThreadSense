@@ -1,0 +1,12 @@
+[app]
+inference_backend = "local_openai_compatible"
+privacy_mode = "local_only"
+
+[runtime]
+base_url = "http://127.0.0.1:8080"
+chat_path = "/v1/chat/completions"
+model = "local-model"
+timeout_seconds = 30
+
+[sources]
+enabled = "reddit"
