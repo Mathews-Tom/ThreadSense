@@ -1,0 +1,34 @@
+{
+  "json": {
+    "data": {
+      "things": [
+        {
+          "kind": "t1",
+          "data": {
+            "id": "extra1",
+            "author": "user7",
+            "body": "Expanded comment one",
+            "score": 2,
+            "created_utc": 1710000301.0,
+            "parent_id": "t3_jkl012",
+            "permalink": "/r/ThreadSense/comments/jkl012/large_thread/extra1/",
+            "replies": ""
+          }
+        },
+        {
+          "kind": "t1",
+          "data": {
+            "id": "extra2",
+            "author": "user8",
+            "body": "Expanded comment two",
+            "score": 1,
+            "created_utc": 1710000302.0,
+            "parent_id": "t3_jkl012",
+            "permalink": "/r/ThreadSense/comments/jkl012/large_thread/extra2/",
+            "replies": ""
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,51 @@
+[
+  {
+    "data": {
+      "children": [
+        {
+          "kind": "t3",
+          "data": {
+            "id": "def456",
+            "title": "Deleted thread",
+            "subreddit": "ThreadSense",
+            "author": "op",
+            "permalink": "/r/ThreadSense/comments/def456/deleted_thread/",
+            "num_comments": 2
+          }
+        }
+      ]
+    }
+  },
+  {
+    "data": {
+      "children": [
+        {
+          "kind": "t1",
+          "data": {
+            "id": "deleted1",
+            "author": "[deleted]",
+            "body": "[deleted]",
+            "score": 0,
+            "created_utc": 1710000100.0,
+            "parent_id": "t3_def456",
+            "permalink": "/r/ThreadSense/comments/def456/deleted_thread/deleted1/",
+            "replies": ""
+          }
+        },
+        {
+          "kind": "t1",
+          "data": {
+            "id": "kept1",
+            "author": "user4",
+            "body": "Visible comment",
+            "score": 3,
+            "created_utc": 1710000101.0,
+            "parent_id": "t3_def456",
+            "permalink": "/r/ThreadSense/comments/def456/deleted_thread/kept1/",
+            "replies": ""
+          }
+        }
+      ]
+    }
+  }
+]

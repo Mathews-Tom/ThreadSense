@@ -1,0 +1,51 @@
+[
+  {
+    "data": {
+      "children": [
+        {
+          "kind": "t3",
+          "data": {
+            "id": "ghi789",
+            "title": "Removed thread",
+            "subreddit": "ThreadSense",
+            "author": "op",
+            "permalink": "/r/ThreadSense/comments/ghi789/removed_thread/",
+            "num_comments": 2
+          }
+        }
+      ]
+    }
+  },
+  {
+    "data": {
+      "children": [
+        {
+          "kind": "t1",
+          "data": {
+            "id": "removed1",
+            "author": "moderator",
+            "body": "[removed]",
+            "score": 0,
+            "created_utc": 1710000200.0,
+            "parent_id": "t3_ghi789",
+            "permalink": "/r/ThreadSense/comments/ghi789/removed_thread/removed1/",
+            "replies": ""
+          }
+        },
+        {
+          "kind": "t1",
+          "data": {
+            "id": "kept2",
+            "author": "user5",
+            "body": "Still visible",
+            "score": 7,
+            "created_utc": 1710000201.0,
+            "parent_id": "t3_ghi789",
+            "permalink": "/r/ThreadSense/comments/ghi789/removed_thread/kept2/",
+            "replies": ""
+          }
+        }
+      ]
+    }
+  }
+]

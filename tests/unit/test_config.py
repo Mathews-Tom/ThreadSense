@@ -16,6 +16,8 @@ def test_load_config_uses_defaults_when_no_file_exists(monkeypatch: pytest.Monke
     assert config.privacy_mode is PrivacyMode.LOCAL_ONLY
     assert config.runtime.chat_endpoint == "http://127.0.0.1:8080/v1/chat/completions"
     assert config.source_policy.enabled_sources == ("reddit",)
+    assert config.reddit.listing_limit == 500
+    assert config.reddit.timeout_seconds == 15.0
 
 
 def test_load_config_reads_toml_and_env_overrides(
@@ -38,17 +40,31 @@ def test_load_config_reads_toml_and_env_overrides(
                 "",
                 "[sources]",
                 'enabled = "reddit,hackernews"',
+                "",
+                "[reddit]",
+                'user_agent = "fixture-agent"',
+                "timeout_seconds = 20",
+                "max_retries = 1",
+                "backoff_seconds = 0.25",
+                "request_delay_seconds = 0.6",
+                "listing_limit = 100",
             ]
         ),
         encoding="utf-8",
     )
     monkeypatch.setenv("THREADSENSE_RUNTIME_MODEL", "override-model")
+    monkeypatch.setenv("THREADSENSE_REDDIT_TIMEOUT", "25")
+    monkeypatch.setenv("THREADSENSE_REDDIT_REQUEST_DELAY", "0.75")
 
     config = load_config(config_path=config_path)
 
     assert config.runtime.chat_endpoint == "http://localhost:9000/v1/chat/completions"
     assert config.runtime.model == "override-model"
     assert config.source_policy.enabled_sources == ("reddit", "hackernews")
+    assert config.reddit.user_agent == "fixture-agent"
+    assert config.reddit.timeout_seconds == 25.0
+    assert config.reddit.request_delay_seconds == 0.75
+    assert config.reddit.listing_limit == 100
 
 
 def test_load_config_rejects_invalid_privacy_mode(tmp_path: Path) -> None:

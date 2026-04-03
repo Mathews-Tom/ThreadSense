@@ -10,3 +10,11 @@ timeout_seconds = 30
 
 [sources]
 enabled = "reddit"
+
+[reddit]
+user_agent = "threadsense/0.1.0 (https://github.com/Mathews-Tom/ThreadSense)"
+timeout_seconds = 15
+max_retries = 2
+backoff_seconds = 0.5
+request_delay_seconds = 0.6
+listing_limit = 500

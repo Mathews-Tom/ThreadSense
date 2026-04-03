@@ -43,11 +43,22 @@ class SourcePolicyConfig:
 
 
 @dataclass(frozen=True)
+class RedditConfig:
+    user_agent: str
+    timeout_seconds: float
+    max_retries: int
+    backoff_seconds: float
+    request_delay_seconds: float
+    listing_limit: int
+
+
+@dataclass(frozen=True)
 class AppConfig:
     inference_backend: InferenceBackend
     privacy_mode: PrivacyMode
     runtime: RuntimeConfig
     source_policy: SourcePolicyConfig
+    reddit: RedditConfig
 
 
 def _read_toml(path: Path | None) -> dict[str, Any]:
@@ -116,6 +127,22 @@ def _parse_sources(raw_value: str) -> tuple[str, ...]:
     return sources
 
 
+def _parse_int(value: str, env_key: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise ConfigurationError(
+            f"configuration value must be an integer: {env_key}",
+            details={"env_key": env_key, "value": value},
+        ) from error
+    if parsed < 0:
+        raise ConfigurationError(
+            f"configuration value must be zero or greater: {env_key}",
+            details={"env_key": env_key, "value": value},
+        )
+    return parsed
+
+
 def load_config(
     config_path: Path | None = None,
     env: Mapping[str, str] | None = None,
@@ -128,13 +155,12 @@ def load_config(
     app_section = raw_config.get("app", {})
     runtime_section = raw_config.get("runtime", {})
     source_section = raw_config.get("sources", {})
+    reddit_section = raw_config.get("reddit", {})
     if (
         not isinstance(app_section, dict)
         or not isinstance(runtime_section, dict)
-        or not isinstance(
-            source_section,
-            dict,
-        )
+        or not isinstance(source_section, dict)
+        or not isinstance(reddit_section, dict)
     ):
         raise ConfigurationError("config sections must be TOML tables")
 
@@ -195,11 +221,64 @@ def load_config(
             ),
         ),
     )
+    reddit = RedditConfig(
+        user_agent=_read_str(
+            resolved_env,
+            "THREADSENSE_REDDIT_USER_AGENT",
+            str(
+                reddit_section.get(
+                    "user_agent",
+                    "threadsense/0.1.0 (https://github.com/Mathews-Tom/ThreadSense)",
+                )
+            ),
+        ),
+        timeout_seconds=_parse_float(
+            _read_str(
+                resolved_env,
+                "THREADSENSE_REDDIT_TIMEOUT",
+                str(reddit_section.get("timeout_seconds", "15")),
+            ),
+            "THREADSENSE_REDDIT_TIMEOUT",
+        ),
+        max_retries=_parse_int(
+            _read_str(
+                resolved_env,
+                "THREADSENSE_REDDIT_MAX_RETRIES",
+                str(reddit_section.get("max_retries", "2")),
+            ),
+            "THREADSENSE_REDDIT_MAX_RETRIES",
+        ),
+        backoff_seconds=_parse_float(
+            _read_str(
+                resolved_env,
+                "THREADSENSE_REDDIT_BACKOFF",
+                str(reddit_section.get("backoff_seconds", "0.5")),
+            ),
+            "THREADSENSE_REDDIT_BACKOFF",
+        ),
+        request_delay_seconds=_parse_float(
+            _read_str(
+                resolved_env,
+                "THREADSENSE_REDDIT_REQUEST_DELAY",
+                str(reddit_section.get("request_delay_seconds", "0.6")),
+            ),
+            "THREADSENSE_REDDIT_REQUEST_DELAY",
+        ),
+        listing_limit=_parse_int(
+            _read_str(
+                resolved_env,
+                "THREADSENSE_REDDIT_LISTING_LIMIT",
+                str(reddit_section.get("listing_limit", "500")),
+            ),
+            "THREADSENSE_REDDIT_LISTING_LIMIT",
+        ),
+    )
     return AppConfig(
         inference_backend=backend,
         privacy_mode=privacy_mode,
         runtime=runtime,
         source_policy=source_policy,
+        reddit=reddit,
     )
 
 
