@@ -9,11 +9,17 @@ from threadsense.config import AppConfig, load_config
 from threadsense.connectors.reddit import (
     RedditConnector,
     RedditThreadRequest,
-    write_thread_artifact,
 )
 from threadsense.errors import ThreadSenseError
 from threadsense.inference.local_runtime import LocalRuntimeClient, RuntimeProbeResult
 from threadsense.logging_config import configure_logging
+from threadsense.pipeline.normalize import normalize_reddit_artifact_file
+from threadsense.pipeline.storage import (
+    build_storage_paths,
+    load_normalized_artifact,
+    persist_normalized_artifact,
+    persist_raw_artifact,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -49,8 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--output",
         "-o",
         type=Path,
-        required=True,
-        help="Artifact output path.",
+        help="Raw artifact output path. Defaults to the configured raw store path.",
     )
     reddit_parser.add_argument(
         "--config",
@@ -66,6 +71,49 @@ def build_parser() -> argparse.ArgumentParser:
         "--flat",
         action="store_true",
         help="Flatten nested comments in the persisted artifact.",
+    )
+
+    normalize_parser = subparsers.add_parser(
+        "normalize",
+        help="Normalize raw source artifacts into canonical thread artifacts.",
+    )
+    normalize_subparsers = normalize_parser.add_subparsers(dest="source", required=True)
+    normalize_reddit_parser = normalize_subparsers.add_parser(
+        "reddit",
+        help="Normalize one Reddit raw artifact.",
+    )
+    normalize_reddit_parser.add_argument(
+        "--input",
+        type=Path,
+        required=True,
+        help="Raw Reddit artifact path.",
+    )
+    normalize_reddit_parser.add_argument(
+        "--output",
+        "-o",
+        type=Path,
+        help="Normalized artifact output path. Defaults to the configured normalized store path.",
+    )
+    normalize_reddit_parser.add_argument(
+        "--config",
+        type=Path,
+        help="Optional path to a TOML config file.",
+    )
+
+    inspect_parser = subparsers.add_parser(
+        "inspect",
+        help="Inspect canonical thread artifacts.",
+    )
+    inspect_subparsers = inspect_parser.add_subparsers(dest="artifact_type", required=True)
+    normalized_parser = inspect_subparsers.add_parser(
+        "normalized",
+        help="Inspect one normalized thread artifact.",
+    )
+    normalized_parser.add_argument(
+        "--input",
+        type=Path,
+        required=True,
+        help="Normalized artifact path.",
     )
     return parser
 
@@ -120,19 +168,79 @@ def run_reddit_fetch(
             flat=flat,
         )
     )
-    write_thread_artifact(output_path, result)
+    storage_paths = build_storage_paths(config.storage, "reddit", result.post.id)
+    resolved_output_path = output_path or storage_paths.raw_path
+    persist_raw_artifact(resolved_output_path, result)
     print(
         json.dumps(
             {
                 "status": "ready",
                 "source": "reddit",
-                "output_path": str(output_path),
+                "output_path": str(resolved_output_path),
+                "default_store_path": str(storage_paths.raw_path),
                 "normalized_url": result.normalized_url,
                 "post_id": result.post.id,
                 "post_title": result.post.title,
                 "total_comment_count": result.total_comment_count,
                 "expanded_more_count": result.expanded_more_count,
                 "flat": flat,
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
+def run_reddit_normalize(
+    config_path: Path | None,
+    input_path: Path,
+    output_path: Path | None,
+) -> int:
+    configure_logging()
+    config = load_config(config_path)
+    thread = normalize_reddit_artifact_file(input_path)
+    storage_paths = build_storage_paths(config.storage, "reddit", thread.source.source_thread_id)
+    resolved_output_path = output_path or storage_paths.normalized_path
+    persist_normalized_artifact(resolved_output_path, thread)
+    print(
+        json.dumps(
+            {
+                "status": "ready",
+                "artifact_type": "normalized",
+                "input_path": str(input_path),
+                "output_path": str(resolved_output_path),
+                "default_store_path": str(storage_paths.normalized_path),
+                "thread_id": thread.thread_id,
+                "comment_count": thread.comment_count,
+                "schema_version": thread.provenance.schema_version,
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
+def run_normalized_inspect(input_path: Path) -> int:
+    configure_logging()
+    thread = load_normalized_artifact(input_path)
+    comment_ids = [comment.comment_id for comment in thread.comments[:10]]
+    print(
+        json.dumps(
+            {
+                "status": "ready",
+                "artifact_type": "normalized",
+                "input_path": str(input_path),
+                "thread_id": thread.thread_id,
+                "source_name": thread.source.source_name,
+                "community": thread.source.community,
+                "source_thread_id": thread.source.source_thread_id,
+                "title": thread.title,
+                "comment_count": thread.comment_count,
+                "schema_version": thread.provenance.schema_version,
+                "normalization_version": thread.provenance.normalization_version,
+                "raw_artifact_path": thread.provenance.raw_artifact_path,
+                "raw_sha256": thread.provenance.raw_sha256,
+                "sample_comment_ids": comment_ids,
             },
             indent=2,
         )
@@ -154,6 +262,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 expand_more=args.expand_more,
                 flat=args.flat,
             )
+        if args.command == "normalize" and args.source == "reddit":
+            return run_reddit_normalize(
+                config_path=args.config,
+                input_path=args.input,
+                output_path=args.output,
+            )
+        if args.command == "inspect" and args.artifact_type == "normalized":
+            return run_normalized_inspect(args.input)
     except ThreadSenseError as error:
         print(json.dumps({"status": "error", "error": error.to_dict()}, indent=2))
         return 1
