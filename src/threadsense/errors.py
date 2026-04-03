@@ -45,6 +45,11 @@ class InferenceBoundaryError(ThreadSenseError):
         super().__init__(message=message, code="inference_error", details=details or {})
 
 
+class AnalysisBoundaryError(ThreadSenseError):
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message=message, code="analysis_error", details=details or {})
+
+
 class RedditInputError(ThreadSenseError):
     def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
         super().__init__(message=message, code="reddit_input_error", details=details or {})

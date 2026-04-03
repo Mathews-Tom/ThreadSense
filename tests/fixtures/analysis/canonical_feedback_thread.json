@@ -1,0 +1,129 @@
+{
+  "artifact_kind": "canonical_thread",
+  "schema_version": 1,
+  "normalization_version": "reddit-to-canonical-v1",
+  "thread": {
+    "thread_id": "reddit:analysis123",
+    "source": {
+      "source_name": "reddit",
+      "community": "ClaudeCode",
+      "source_thread_id": "analysis123",
+      "thread_url": "https://www.reddit.com/r/ClaudeCode/comments/analysis123/example/"
+    },
+    "title": "Deterministic analysis fixture thread",
+    "permalink": "https://www.reddit.com/r/ClaudeCode/comments/analysis123/example/",
+    "author": {
+      "username": "op",
+      "source_author_id": null
+    },
+    "comments": [
+      {
+        "thread_id": "reddit:analysis123",
+        "comment_id": "reddit:c1",
+        "parent_comment_id": null,
+        "author": {
+          "username": "alpha",
+          "source_author_id": null
+        },
+        "body": "The onboarding docs are confusing and incomplete. Please add a quickstart.",
+        "score": 9,
+        "created_utc": 1710000000.0,
+        "depth": 0,
+        "permalink": "https://reddit.com/comments/analysis123/c1"
+      },
+      {
+        "thread_id": "reddit:analysis123",
+        "comment_id": "reddit:c2",
+        "parent_comment_id": null,
+        "author": {
+          "username": "beta",
+          "source_author_id": null
+        },
+        "body": "The onboarding docs are confusing and incomplete. Please add a quickstart.",
+        "score": 7,
+        "created_utc": 1710000001.0,
+        "depth": 0,
+        "permalink": "https://reddit.com/comments/analysis123/c2"
+      },
+      {
+        "thread_id": "reddit:analysis123",
+        "comment_id": "reddit:c3",
+        "parent_comment_id": null,
+        "author": {
+          "username": "gamma",
+          "source_author_id": null
+        },
+        "body": "Search is slow and the app feels laggy on large threads.",
+        "score": 8,
+        "created_utc": 1710000002.0,
+        "depth": 0,
+        "permalink": "https://reddit.com/comments/analysis123/c3"
+      },
+      {
+        "thread_id": "reddit:analysis123",
+        "comment_id": "reddit:c4",
+        "parent_comment_id": null,
+        "author": {
+          "username": "delta",
+          "source_author_id": null
+        },
+        "body": "Search is slow and the app feels laggy on large threads.",
+        "score": 6,
+        "created_utc": 1710000003.0,
+        "depth": 0,
+        "permalink": "https://reddit.com/comments/analysis123/c4"
+      },
+      {
+        "thread_id": "reddit:analysis123",
+        "comment_id": "reddit:c5",
+        "parent_comment_id": null,
+        "author": {
+          "username": "epsilon",
+          "source_author_id": null
+        },
+        "body": "I hit a crash when expanding comments in the browser.",
+        "score": 5,
+        "created_utc": 1710000004.0,
+        "depth": 0,
+        "permalink": "https://reddit.com/comments/analysis123/c5"
+      },
+      {
+        "thread_id": "reddit:analysis123",
+        "comment_id": "reddit:c6",
+        "parent_comment_id": null,
+        "author": {
+          "username": "zeta",
+          "source_author_id": null
+        },
+        "body": "Can you add export to markdown and json?",
+        "score": 4,
+        "created_utc": 1710000005.0,
+        "depth": 0,
+        "permalink": "https://reddit.com/comments/analysis123/c6"
+      },
+      {
+        "thread_id": "reddit:analysis123",
+        "comment_id": "reddit:c7",
+        "parent_comment_id": null,
+        "author": {
+          "username": "eta",
+          "source_author_id": null
+        },
+        "body": "A dashboard for themes would help.",
+        "score": 3,
+        "created_utc": 1710000006.0,
+        "depth": 0,
+        "permalink": "https://reddit.com/comments/analysis123/c7"
+      }
+    ],
+    "comment_count": 7,
+    "provenance": {
+      "raw_artifact_path": "/tmp/raw-analysis123.json",
+      "raw_sha256": "fixture-sha",
+      "retrieved_at_utc": 1710000000.0,
+      "normalized_at_utc": 1710000007.0,
+      "schema_version": 1,
+      "normalization_version": "reddit-to-canonical-v1"
+    }
+  }
+}

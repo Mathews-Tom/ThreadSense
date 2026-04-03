@@ -13,10 +13,13 @@ from threadsense.connectors.reddit import (
 from threadsense.errors import ThreadSenseError
 from threadsense.inference.local_runtime import LocalRuntimeClient, RuntimeProbeResult
 from threadsense.logging_config import configure_logging
+from threadsense.pipeline.analyze import analyze_thread_file
 from threadsense.pipeline.normalize import normalize_reddit_artifact_file
 from threadsense.pipeline.storage import (
     build_storage_paths,
+    load_analysis_artifact,
     load_normalized_artifact,
+    persist_analysis_artifact,
     persist_normalized_artifact,
     persist_raw_artifact,
 )
@@ -100,9 +103,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional path to a TOML config file.",
     )
 
+    analyze_parser = subparsers.add_parser(
+        "analyze",
+        help="Run deterministic analysis over canonical thread artifacts.",
+    )
+    analyze_subparsers = analyze_parser.add_subparsers(dest="artifact_type", required=True)
+    analyze_normalized_parser = analyze_subparsers.add_parser(
+        "normalized",
+        help="Analyze one normalized thread artifact.",
+    )
+    analyze_normalized_parser.add_argument(
+        "--input",
+        type=Path,
+        required=True,
+        help="Normalized artifact path.",
+    )
+    analyze_normalized_parser.add_argument(
+        "--output",
+        "-o",
+        type=Path,
+        help="Analysis artifact output path. Defaults to the configured analysis store path.",
+    )
+    analyze_normalized_parser.add_argument(
+        "--config",
+        type=Path,
+        help="Optional path to a TOML config file.",
+    )
+
     inspect_parser = subparsers.add_parser(
         "inspect",
-        help="Inspect canonical thread artifacts.",
+        help="Inspect persisted thread artifacts.",
     )
     inspect_subparsers = inspect_parser.add_subparsers(dest="artifact_type", required=True)
     normalized_parser = inspect_subparsers.add_parser(
@@ -114,6 +144,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         required=True,
         help="Normalized artifact path.",
+    )
+    analysis_parser = inspect_subparsers.add_parser(
+        "analysis",
+        help="Inspect one deterministic analysis artifact.",
+    )
+    analysis_parser.add_argument(
+        "--input",
+        type=Path,
+        required=True,
+        help="Analysis artifact path.",
     )
     return parser
 
@@ -220,6 +260,40 @@ def run_reddit_normalize(
     return 0
 
 
+def run_normalized_analyze(
+    config_path: Path | None,
+    input_path: Path,
+    output_path: Path | None,
+) -> int:
+    configure_logging()
+    config = load_config(config_path)
+    analysis = analyze_thread_file(input_path)
+    storage_paths = build_storage_paths(
+        config.storage,
+        analysis.source_name,
+        analysis.provenance.source_thread_id,
+    )
+    resolved_output_path = output_path or storage_paths.analysis_path
+    persist_analysis_artifact(resolved_output_path, analysis)
+    print(
+        json.dumps(
+            {
+                "status": "ready",
+                "artifact_type": "analysis",
+                "input_path": str(input_path),
+                "output_path": str(resolved_output_path),
+                "default_store_path": str(storage_paths.analysis_path),
+                "thread_id": analysis.thread_id,
+                "finding_count": len(analysis.findings),
+                "duplicate_group_count": analysis.duplicate_group_count,
+                "top_phrases": analysis.top_phrases[:5],
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
 def run_normalized_inspect(input_path: Path) -> int:
     configure_logging()
     thread = load_normalized_artifact(input_path)
@@ -248,6 +322,43 @@ def run_normalized_inspect(input_path: Path) -> int:
     return 0
 
 
+def run_analysis_inspect(input_path: Path) -> int:
+    configure_logging()
+    analysis = load_analysis_artifact(input_path)
+    print(
+        json.dumps(
+            {
+                "status": "ready",
+                "artifact_type": "analysis",
+                "input_path": str(input_path),
+                "thread_id": analysis.thread_id,
+                "title": analysis.title,
+                "total_comments": analysis.total_comments,
+                "distinct_comment_count": analysis.distinct_comment_count,
+                "duplicate_group_count": analysis.duplicate_group_count,
+                "schema_version": analysis.provenance.schema_version,
+                "analysis_version": analysis.provenance.analysis_version,
+                "normalized_artifact_path": analysis.provenance.normalized_artifact_path,
+                "normalized_sha256": analysis.provenance.normalized_sha256,
+                "top_phrases": analysis.top_phrases[:5],
+                "top_findings": [
+                    {
+                        "theme_key": finding.theme_key,
+                        "severity": finding.severity,
+                        "comment_count": finding.comment_count,
+                        "key_phrases": finding.key_phrases[:3],
+                        "evidence_comment_ids": finding.evidence_comment_ids,
+                        "quotes": [quote.body_excerpt for quote in finding.quotes[:2]],
+                    }
+                    for finding in analysis.findings[:5]
+                ],
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -268,8 +379,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 input_path=args.input,
                 output_path=args.output,
             )
+        if args.command == "analyze" and args.artifact_type == "normalized":
+            return run_normalized_analyze(
+                config_path=args.config,
+                input_path=args.input,
+                output_path=args.output,
+            )
         if args.command == "inspect" and args.artifact_type == "normalized":
             return run_normalized_inspect(args.input)
+        if args.command == "inspect" and args.artifact_type == "analysis":
+            return run_analysis_inspect(args.input)
     except ThreadSenseError as error:
         print(json.dumps({"status": "error", "error": error.to_dict()}, indent=2))
         return 1

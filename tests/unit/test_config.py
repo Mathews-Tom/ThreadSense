@@ -20,6 +20,7 @@ def test_load_config_uses_defaults_when_no_file_exists(monkeypatch: pytest.Monke
     assert config.reddit.timeout_seconds == 15.0
     assert config.storage.root_dir == Path(".threadsense")
     assert config.storage.normalized_dirname == "normalized"
+    assert config.storage.analysis_dirname == "analysis"
 
 
 def test_load_config_reads_toml_and_env_overrides(
@@ -55,6 +56,7 @@ def test_load_config_reads_toml_and_env_overrides(
                 'root_dir = ".artifacts"',
                 'raw_dirname = "raw-store"',
                 'normalized_dirname = "canonical-store"',
+                'analysis_dirname = "analysis-store"',
             ]
         ),
         encoding="utf-8",
@@ -76,6 +78,7 @@ def test_load_config_reads_toml_and_env_overrides(
     assert config.storage.root_dir == Path(".runtime-store")
     assert config.storage.raw_dirname == "raw-store"
     assert config.storage.normalized_dirname == "canonical-store"
+    assert config.storage.analysis_dirname == "analysis-store"
 
 
 def test_load_config_rejects_invalid_privacy_mode(tmp_path: Path) -> None:
