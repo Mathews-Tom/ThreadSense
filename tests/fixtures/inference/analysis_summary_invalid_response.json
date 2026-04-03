@@ -1,0 +1,21 @@
+{
+  "id": "chatcmpl-local-summary-invalid",
+  "object": "chat.completion",
+  "created": 1760000101,
+  "model": "local-model",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "This is not valid JSON."
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 200,
+    "completion_tokens": 10,
+    "total_tokens": 210
+  }
+}
