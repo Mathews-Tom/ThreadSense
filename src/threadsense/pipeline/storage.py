@@ -9,6 +9,7 @@ from typing import Any
 from threadsense.config import StorageConfig
 from threadsense.connectors.reddit import RedditThreadResult
 from threadsense.errors import SchemaBoundaryError
+from threadsense.models.analysis import ThreadAnalysis, load_analysis_artifact_file
 from threadsense.models.canonical import Thread, load_canonical_thread
 
 
@@ -16,6 +17,7 @@ from threadsense.models.canonical import Thread, load_canonical_thread
 class StoragePaths:
     raw_path: Path
     normalized_path: Path
+    analysis_path: Path
 
 
 def build_storage_paths(
@@ -29,6 +31,7 @@ def build_storage_paths(
         normalized_path=(
             root / storage.normalized_dirname / source_name / f"{source_thread_id}.json"
         ),
+        analysis_path=root / storage.analysis_dirname / source_name / f"{source_thread_id}.json",
     )
 
 
@@ -38,6 +41,10 @@ def persist_raw_artifact(path: Path, artifact: RedditThreadResult) -> None:
 
 def persist_normalized_artifact(path: Path, thread: Thread) -> None:
     write_json(path, thread.to_dict())
+
+
+def persist_analysis_artifact(path: Path, artifact: ThreadAnalysis) -> None:
+    write_json(path, artifact.to_dict())
 
 
 def load_raw_artifact(path: Path) -> dict[str, Any]:
@@ -54,6 +61,10 @@ def load_raw_artifact(path: Path) -> dict[str, Any]:
 
 def load_normalized_artifact(path: Path) -> Thread:
     return load_canonical_thread(path)
+
+
+def load_analysis_artifact(path: Path) -> ThreadAnalysis:
+    return load_analysis_artifact_file(path)
 
 
 def calculate_sha256(path: Path) -> str:
