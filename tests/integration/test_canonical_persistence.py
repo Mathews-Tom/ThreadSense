@@ -11,6 +11,7 @@ from threadsense.config import RedditConfig
 from threadsense.connectors.reddit import RedditConnector, RedditThreadRequest
 from threadsense.pipeline.storage import (
     build_storage_paths,
+    load_analysis_artifact,
     load_normalized_artifact,
     load_raw_artifact,
 )
@@ -63,7 +64,7 @@ def test_normalize_and_reload_persisted_thread(tmp_path: Path) -> None:
     assert normalized_loaded.comment_count == raw_loaded["total_comment_count"]
 
 
-def test_end_to_end_fetch_normalize_and_inspect(
+def test_end_to_end_fetch_normalize_analyze_and_inspect(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -110,28 +111,91 @@ def test_end_to_end_fetch_normalize_and_inspect(
     normalize_report = json.loads(capsys.readouterr().out)
     normalized_path = Path(normalize_report["output_path"])
 
-    inspect_exit = main(["inspect", "normalized", "--input", str(normalized_path)])
+    analyze_exit = main(["analyze", "normalized", "--input", str(normalized_path)])
+    analyze_report = json.loads(capsys.readouterr().out)
+    analysis_path = Path(analyze_report["output_path"])
+
+    inspect_exit = main(["inspect", "analysis", "--input", str(analysis_path)])
     inspect_report = json.loads(capsys.readouterr().out)
 
     assert fetch_exit == 0
     assert normalize_exit == 0
+    assert analyze_exit == 0
     assert inspect_exit == 0
     assert raw_path.exists()
     assert normalized_path.exists()
+    assert analysis_path.exists()
     assert inspect_report["thread_id"] == "reddit:abc123"
-    assert inspect_report["comment_count"] == 3
-    assert inspect_report["source_thread_id"] == "abc123"
+    assert inspect_report["distinct_comment_count"] == 3
+    assert inspect_report["duplicate_group_count"] == 0
+    assert inspect_report["top_findings"]
 
 
 def test_build_storage_paths_keep_raw_and_normalized_separate(tmp_path: Path) -> None:
     from threadsense.config import StorageConfig
 
     paths = build_storage_paths(
-        StorageConfig(root_dir=tmp_path, raw_dirname="raw", normalized_dirname="normalized"),
+        StorageConfig(
+            root_dir=tmp_path,
+            raw_dirname="raw",
+            normalized_dirname="normalized",
+            analysis_dirname="analysis",
+        ),
         source_name="reddit",
         source_thread_id="abc123",
     )
 
     assert paths.raw_path != paths.normalized_path
+    assert paths.normalized_path != paths.analysis_path
     assert paths.raw_path.name == "abc123.json"
     assert paths.normalized_path.name == "abc123.json"
+    assert paths.analysis_path.name == "abc123.json"
+
+
+def test_persisted_analysis_artifact_reloads(tmp_path: Path) -> None:
+    fixture = load_fixture("normal_thread.json")
+    connector = RedditConnector(
+        config=RedditConfig(
+            user_agent="threadsense/test",
+            timeout_seconds=15,
+            max_retries=0,
+            backoff_seconds=0.1,
+            request_delay_seconds=0,
+            listing_limit=500,
+        ),
+        transport=lambda url, headers, params, timeout: fixture,
+        sleeper=lambda value: None,
+    )
+    raw_payload = connector.fetch_thread(
+        RedditThreadRequest(
+            post_url="https://www.reddit.com/r/ThreadSense/comments/abc123/normal_thread",
+        )
+    ).to_dict()
+    raw_path = tmp_path / "raw.json"
+    raw_path.write_text(json.dumps(raw_payload), encoding="utf-8")
+    normalized_path = tmp_path / "normalized.json"
+    analysis_path = tmp_path / "analysis.json"
+
+    assert (
+        main(["normalize", "reddit", "--input", str(raw_path), "--output", str(normalized_path)])
+        == 0
+    )
+    assert (
+        main(
+            [
+                "analyze",
+                "normalized",
+                "--input",
+                str(normalized_path),
+                "--output",
+                str(analysis_path),
+            ]
+        )
+        == 0
+    )
+
+    analysis = load_analysis_artifact(analysis_path)
+
+    assert analysis.thread_id == "reddit:abc123"
+    assert analysis.total_comments == 3
+    assert analysis.provenance.source_thread_id == "abc123"
