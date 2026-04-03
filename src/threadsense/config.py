@@ -280,7 +280,7 @@ def load_config(
             _read_str(
                 resolved_env,
                 "THREADSENSE_RUNTIME_TIMEOUT_SECONDS",
-                str(runtime_section.get("timeout_seconds", "30")),
+                str(runtime_section.get("timeout_seconds", "90")),
             ),
             "THREADSENSE_RUNTIME_TIMEOUT_SECONDS",
         ),
