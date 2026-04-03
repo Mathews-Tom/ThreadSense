@@ -20,10 +20,14 @@ from threadsense.pipeline.storage import (
     build_storage_paths,
     load_analysis_artifact,
     load_normalized_artifact,
+    load_report_artifact,
     persist_analysis_artifact,
     persist_normalized_artifact,
     persist_raw_artifact,
+    persist_report_artifact,
+    write_text,
 )
+from threadsense.reporting import build_thread_report, render_report_markdown
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -187,6 +191,63 @@ def build_parser() -> argparse.ArgumentParser:
         "--config",
         type=Path,
         help="Optional path to a TOML config file.",
+    )
+
+    report_parser = subparsers.add_parser(
+        "report",
+        help="Generate Markdown or JSON reports from analysis artifacts.",
+    )
+    report_subparsers = report_parser.add_subparsers(dest="artifact_type", required=True)
+    report_analysis_parser = report_subparsers.add_parser(
+        "analysis",
+        help="Generate a report from one analysis artifact.",
+    )
+    report_analysis_parser.add_argument(
+        "--input",
+        type=Path,
+        required=True,
+        help="Analysis artifact path.",
+    )
+    report_analysis_parser.add_argument(
+        "--format",
+        choices=["markdown", "json"],
+        default="markdown",
+        help="Report output format.",
+    )
+    report_analysis_parser.add_argument(
+        "--output",
+        "-o",
+        type=Path,
+        help=(
+            "Report output path. Defaults to the configured report store path "
+            "for the selected format."
+        ),
+    )
+    report_analysis_parser.add_argument(
+        "--with-summary",
+        action="store_true",
+        help="Use local inference to generate a bounded executive summary.",
+    )
+    report_analysis_parser.add_argument(
+        "--summary-required",
+        action="store_true",
+        help="Fail instead of falling back when local summary generation is unavailable.",
+    )
+    report_analysis_parser.add_argument(
+        "--config",
+        type=Path,
+        help="Optional path to a TOML config file.",
+    )
+
+    report_inspect_parser = inspect_subparsers.add_parser(
+        "report",
+        help="Inspect one structured report artifact.",
+    )
+    report_inspect_parser.add_argument(
+        "--input",
+        type=Path,
+        required=True,
+        help="Report artifact path.",
     )
     return parser
 
@@ -428,6 +489,92 @@ def run_analysis_infer(
     return 0 if not response.degraded or not required else 1
 
 
+def run_analysis_report(
+    config_path: Path | None,
+    input_path: Path,
+    output_path: Path | None,
+    report_format: str,
+    with_summary: bool,
+    summary_required: bool,
+) -> int:
+    configure_logging()
+    config = load_config(config_path)
+    analysis = load_analysis_artifact(input_path)
+    summary_response = None
+    if with_summary:
+        summary_response = InferenceRouter(config).run_analysis_task(
+            analysis=analysis,
+            task=InferenceTask.ANALYSIS_SUMMARY,
+            required=summary_required,
+        )
+
+    report = build_thread_report(
+        analysis=analysis,
+        analysis_artifact_path=str(input_path),
+        summary_response=summary_response,
+    )
+    storage_paths = build_storage_paths(
+        config.storage,
+        analysis.source_name,
+        analysis.provenance.source_thread_id,
+    )
+    default_output_path = (
+        storage_paths.report_markdown_path
+        if report_format == "markdown"
+        else storage_paths.report_json_path
+    )
+    resolved_output_path = output_path or default_output_path
+
+    if report_format == "json":
+        persist_report_artifact(resolved_output_path, report)
+    else:
+        write_text(resolved_output_path, render_report_markdown(report))
+
+    print(
+        json.dumps(
+            {
+                "status": "ready",
+                "artifact_type": "report",
+                "input_path": str(input_path),
+                "output_path": str(resolved_output_path),
+                "default_store_path": str(default_output_path),
+                "format": report_format,
+                "thread_id": report.thread_id,
+                "summary_provider": report.provenance.summary_provider,
+                "degraded_summary": report.executive_summary.degraded,
+                "quality_check_count": len(report.quality_checks),
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
+def run_report_inspect(input_path: Path) -> int:
+    configure_logging()
+    report = load_report_artifact(input_path)
+    print(
+        json.dumps(
+            {
+                "status": "ready",
+                "artifact_type": "report",
+                "input_path": str(input_path),
+                "thread_id": report.thread_id,
+                "title": report.title,
+                "summary_provider": report.provenance.summary_provider,
+                "finding_count": len(report.findings),
+                "caveat_count": len(report.caveats),
+                "quality_checks": [
+                    {"code": check.code, "level": check.level} for check in report.quality_checks
+                ],
+                "top_findings": [finding.theme_key for finding in report.findings[:5]],
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -458,12 +605,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             return run_normalized_inspect(args.input)
         if args.command == "inspect" and args.artifact_type == "analysis":
             return run_analysis_inspect(args.input)
+        if args.command == "inspect" and args.artifact_type == "report":
+            return run_report_inspect(args.input)
         if args.command == "infer" and args.artifact_type == "analysis":
             return run_analysis_infer(
                 config_path=args.config,
                 input_path=args.input,
                 task_name=args.task,
                 required=args.required,
+            )
+        if args.command == "report" and args.artifact_type == "analysis":
+            return run_analysis_report(
+                config_path=args.config,
+                input_path=args.input,
+                output_path=args.output,
+                report_format=args.format,
+                with_summary=args.with_summary,
+                summary_required=args.summary_required,
             )
     except ThreadSenseError as error:
         print(json.dumps({"status": "error", "error": error.to_dict()}, indent=2))
