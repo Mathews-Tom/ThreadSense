@@ -25,10 +25,12 @@ EnumT = TypeVar("EnumT", bound=StrEnum)
 
 @dataclass(frozen=True)
 class RuntimeConfig:
+    enabled: bool
     base_url: str
     chat_path: str
     model: str
     timeout_seconds: float
+    repair_retries: int
 
     @property
     def chat_endpoint(self) -> str:
@@ -152,6 +154,18 @@ def _parse_int(value: str, env_key: str) -> int:
     return parsed
 
 
+def _parse_bool(value: str, env_key: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ConfigurationError(
+        f"configuration value must be boolean: {env_key}",
+        details={"env_key": env_key, "value": value},
+    )
+
+
 def load_config(
     config_path: Path | None = None,
     env: Mapping[str, str] | None = None,
@@ -199,6 +213,14 @@ def load_config(
         "THREADSENSE_PRIVACY_MODE",
     )
     runtime = RuntimeConfig(
+        enabled=_parse_bool(
+            _read_str(
+                resolved_env,
+                "THREADSENSE_RUNTIME_ENABLED",
+                str(runtime_section.get("enabled", "true")),
+            ),
+            "THREADSENSE_RUNTIME_ENABLED",
+        ),
         base_url=_read_str(
             resolved_env,
             "THREADSENSE_RUNTIME_BASE_URL",
@@ -221,6 +243,14 @@ def load_config(
                 str(runtime_section.get("timeout_seconds", "30")),
             ),
             "THREADSENSE_RUNTIME_TIMEOUT_SECONDS",
+        ),
+        repair_retries=_parse_int(
+            _read_str(
+                resolved_env,
+                "THREADSENSE_RUNTIME_REPAIR_RETRIES",
+                str(runtime_section.get("repair_retries", "1")),
+            ),
+            "THREADSENSE_RUNTIME_REPAIR_RETRIES",
         ),
     )
     source_policy = SourcePolicyConfig(
