@@ -5,29 +5,29 @@ import json
 from collections.abc import Sequence
 from pathlib import Path
 
+from threadsense.api_server import start_api_server
+from threadsense.batching import run_batch_manifest
 from threadsense.config import AppConfig, load_config
 from threadsense.connectors.reddit import (
     RedditConnector,
-    RedditThreadRequest,
 )
 from threadsense.errors import ThreadSenseError
-from threadsense.inference import InferenceRouter, InferenceTask
+from threadsense.inference import InferenceTask
 from threadsense.inference.local_runtime import LocalRuntimeClient, RuntimeProbeResult
 from threadsense.logging_config import configure_logging
-from threadsense.pipeline.analyze import analyze_thread_file
-from threadsense.pipeline.normalize import normalize_reddit_artifact_file
+from threadsense.observability import DEFAULT_METRICS, TraceContext
 from threadsense.pipeline.storage import (
-    build_storage_paths,
     load_analysis_artifact,
     load_normalized_artifact,
     load_report_artifact,
-    persist_analysis_artifact,
-    persist_normalized_artifact,
-    persist_raw_artifact,
-    persist_report_artifact,
-    write_text,
 )
-from threadsense.reporting import build_thread_report, render_report_markdown
+from threadsense.workflows import (
+    analyze_normalized_thread,
+    fetch_reddit_thread,
+    infer_analysis,
+    normalize_reddit_thread,
+    report_analysis,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -249,6 +249,52 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Report artifact path.",
     )
+
+    batch_parser = subparsers.add_parser(
+        "batch",
+        help="Run reproducible multi-thread workflows from a manifest.",
+    )
+    batch_subparsers = batch_parser.add_subparsers(dest="batch_command", required=True)
+    batch_run_parser = batch_subparsers.add_parser(
+        "run",
+        help="Execute a batch manifest and persist the batch run artifact.",
+    )
+    batch_run_parser.add_argument(
+        "--manifest",
+        type=Path,
+        required=True,
+        help="Batch manifest path.",
+    )
+    batch_run_parser.add_argument(
+        "--output",
+        "-o",
+        type=Path,
+        help="Batch run artifact output path. Defaults to the configured batch store path.",
+    )
+    batch_run_parser.add_argument(
+        "--config",
+        type=Path,
+        help="Optional path to a TOML config file.",
+    )
+
+    serve_parser = subparsers.add_parser(
+        "serve",
+        help="Run the local HTTP API surface for the pipeline.",
+    )
+    serve_parser.add_argument(
+        "--config",
+        type=Path,
+        help="Optional path to a TOML config file.",
+    )
+    serve_parser.add_argument(
+        "--host",
+        help="Override the configured API host.",
+    )
+    serve_parser.add_argument(
+        "--port",
+        type=int,
+        help="Override the configured API port.",
+    )
     return parser
 
 
@@ -290,40 +336,23 @@ def build_reddit_connector(config: AppConfig) -> RedditConnector:
 def run_reddit_fetch(
     config_path: Path | None,
     url: str,
-    output_path: Path,
+    output_path: Path | None,
     expand_more: bool,
     flat: bool,
 ) -> int:
-    configure_logging()
+    logger = configure_logging()
     config = load_config(config_path)
-    result = build_reddit_connector(config).fetch_thread(
-        RedditThreadRequest(
-            post_url=url,
-            output_path=output_path,
-            expand_more=expand_more,
-            flat=flat,
-        )
+    payload = fetch_reddit_thread(
+        config=config,
+        logger=logger,
+        trace=TraceContext.create(run_id="cli-fetch", source_name="reddit"),
+        url=url,
+        output_path=output_path,
+        expand_more=expand_more,
+        flat=flat,
+        connector_factory=build_reddit_connector,
     )
-    storage_paths = build_storage_paths(config.storage, "reddit", result.post.id)
-    resolved_output_path = output_path or storage_paths.raw_path
-    persist_raw_artifact(resolved_output_path, result)
-    print(
-        json.dumps(
-            {
-                "status": "ready",
-                "source": "reddit",
-                "output_path": str(resolved_output_path),
-                "default_store_path": str(storage_paths.raw_path),
-                "normalized_url": result.normalized_url,
-                "post_id": result.post.id,
-                "post_title": result.post.title,
-                "total_comment_count": result.total_comment_count,
-                "expanded_more_count": result.expanded_more_count,
-                "flat": flat,
-            },
-            indent=2,
-        )
-    )
+    print(json.dumps(payload, indent=2))
     return 0
 
 
@@ -332,27 +361,16 @@ def run_reddit_normalize(
     input_path: Path,
     output_path: Path | None,
 ) -> int:
-    configure_logging()
+    logger = configure_logging()
     config = load_config(config_path)
-    thread = normalize_reddit_artifact_file(input_path)
-    storage_paths = build_storage_paths(config.storage, "reddit", thread.source.source_thread_id)
-    resolved_output_path = output_path or storage_paths.normalized_path
-    persist_normalized_artifact(resolved_output_path, thread)
-    print(
-        json.dumps(
-            {
-                "status": "ready",
-                "artifact_type": "normalized",
-                "input_path": str(input_path),
-                "output_path": str(resolved_output_path),
-                "default_store_path": str(storage_paths.normalized_path),
-                "thread_id": thread.thread_id,
-                "comment_count": thread.comment_count,
-                "schema_version": thread.provenance.schema_version,
-            },
-            indent=2,
-        )
+    payload = normalize_reddit_thread(
+        config=config,
+        logger=logger,
+        trace=TraceContext.create(run_id="cli-normalize", source_name="reddit"),
+        input_path=input_path,
+        output_path=output_path,
     )
+    print(json.dumps(payload, indent=2))
     return 0
 
 
@@ -361,32 +379,16 @@ def run_normalized_analyze(
     input_path: Path,
     output_path: Path | None,
 ) -> int:
-    configure_logging()
+    logger = configure_logging()
     config = load_config(config_path)
-    analysis = analyze_thread_file(input_path)
-    storage_paths = build_storage_paths(
-        config.storage,
-        analysis.source_name,
-        analysis.provenance.source_thread_id,
+    payload = analyze_normalized_thread(
+        config=config,
+        logger=logger,
+        trace=TraceContext.create(run_id="cli-analyze", source_name="reddit"),
+        input_path=input_path,
+        output_path=output_path,
     )
-    resolved_output_path = output_path or storage_paths.analysis_path
-    persist_analysis_artifact(resolved_output_path, analysis)
-    print(
-        json.dumps(
-            {
-                "status": "ready",
-                "artifact_type": "analysis",
-                "input_path": str(input_path),
-                "output_path": str(resolved_output_path),
-                "default_store_path": str(storage_paths.analysis_path),
-                "thread_id": analysis.thread_id,
-                "finding_count": len(analysis.findings),
-                "duplicate_group_count": analysis.duplicate_group_count,
-                "top_phrases": analysis.top_phrases[:5],
-            },
-            indent=2,
-        )
-    )
+    print(json.dumps(payload, indent=2))
     return 0
 
 
@@ -461,32 +463,18 @@ def run_analysis_infer(
     task_name: str,
     required: bool,
 ) -> int:
-    configure_logging()
+    logger = configure_logging()
     config = load_config(config_path)
-    analysis = load_analysis_artifact(input_path)
-    response = InferenceRouter(config).run_analysis_task(
-        analysis=analysis,
+    payload = infer_analysis(
+        config=config,
+        logger=logger,
+        trace=TraceContext.create(run_id="cli-infer", source_name="reddit"),
+        input_path=input_path,
         task=InferenceTask(task_name),
         required=required,
     )
-    print(
-        json.dumps(
-            {
-                "status": "ready" if not response.degraded else "degraded",
-                "artifact_type": "analysis",
-                "input_path": str(input_path),
-                "thread_id": analysis.thread_id,
-                "task": response.task.value,
-                "provider": response.provider,
-                "model": response.model,
-                "used_fallback": response.used_fallback,
-                "failure_reason": response.failure_reason,
-                "output": response.output,
-            },
-            indent=2,
-        )
-    )
-    return 0 if not response.degraded or not required else 1
+    print(json.dumps(payload, indent=2))
+    return 0 if payload["status"] != "degraded" or not required else 1
 
 
 def run_analysis_report(
@@ -497,56 +485,72 @@ def run_analysis_report(
     with_summary: bool,
     summary_required: bool,
 ) -> int:
-    configure_logging()
+    logger = configure_logging()
     config = load_config(config_path)
-    analysis = load_analysis_artifact(input_path)
-    summary_response = None
-    if with_summary:
-        summary_response = InferenceRouter(config).run_analysis_task(
-            analysis=analysis,
-            task=InferenceTask.ANALYSIS_SUMMARY,
-            required=summary_required,
+    payload = report_analysis(
+        config=config,
+        logger=logger,
+        trace=TraceContext.create(run_id="cli-report", source_name="reddit"),
+        input_path=input_path,
+        output_path=output_path,
+        report_format=report_format,
+        with_summary=with_summary,
+        summary_required=summary_required,
+    )
+    print(json.dumps(payload, indent=2))
+    return 0
+
+
+def run_batch(
+    config_path: Path | None,
+    manifest_path: Path,
+    output_path: Path | None,
+) -> int:
+    logger = configure_logging()
+    config = load_config(config_path)
+    payload = run_batch_manifest(
+        config=config,
+        logger=logger,
+        manifest_path=manifest_path,
+        output_path=output_path,
+        connector_factory=build_reddit_connector,
+    )
+    print(json.dumps(payload, indent=2))
+    return 0 if payload["failed_jobs"] == 0 else 1
+
+
+def run_api_server(
+    config_path: Path | None,
+    host: str | None,
+    port: int | None,
+) -> int:
+    logger = configure_logging()
+    config = load_config(config_path)
+    handle = start_api_server(
+        config=config,
+        logger=logger,
+        connector_factory=build_reddit_connector,
+        registry=DEFAULT_METRICS,
+        host=host,
+        port=port,
+    )
+    try:
+        print(
+            json.dumps(
+                {
+                    "status": "ready",
+                    "artifact_type": "api_server",
+                    "host": handle.server.server_address[0],
+                    "port": handle.server.server_address[1],
+                    "metrics_path": "/v1/metrics",
+                },
+                indent=2,
+            )
         )
-
-    report = build_thread_report(
-        analysis=analysis,
-        analysis_artifact_path=str(input_path),
-        summary_response=summary_response,
-    )
-    storage_paths = build_storage_paths(
-        config.storage,
-        analysis.source_name,
-        analysis.provenance.source_thread_id,
-    )
-    default_output_path = (
-        storage_paths.report_markdown_path
-        if report_format == "markdown"
-        else storage_paths.report_json_path
-    )
-    resolved_output_path = output_path or default_output_path
-
-    if report_format == "json":
-        persist_report_artifact(resolved_output_path, report)
-    else:
-        write_text(resolved_output_path, render_report_markdown(report))
-
-    print(
-        json.dumps(
-            {
-                "status": "ready",
-                "artifact_type": "report",
-                "input_path": str(input_path),
-                "output_path": str(resolved_output_path),
-                "default_store_path": str(default_output_path),
-                "format": report_format,
-                "thread_id": report.thread_id,
-                "summary_provider": report.provenance.summary_provider,
-                "degraded_summary": report.executive_summary.degraded,
-                "quality_check_count": len(report.quality_checks),
-            },
-            indent=2,
-        )
-    )
+        handle.thread.join()
+    except KeyboardInterrupt:
+        handle.server.shutdown()
+        handle.server.server_close()
     return 0
 
 
@@ -622,6 +626,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 report_format=args.format,
                 with_summary=args.with_summary,
                 summary_required=args.summary_required,
+            )
+        if args.command == "batch" and args.batch_command == "run":
+            return run_batch(
+                config_path=args.config,
+                manifest_path=args.manifest,
+                output_path=args.output,
+            )
+        if args.command == "serve":
+            return run_api_server(
+                config_path=args.config,
+                host=args.host,
+                port=args.port,
             )
     except ThreadSenseError as error:
         print(json.dumps({"status": "error", "error": error.to_dict()}, indent=2))
