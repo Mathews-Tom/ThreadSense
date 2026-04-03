@@ -27,3 +27,17 @@ raw_dirname = "raw"
 normalized_dirname = "normalized"
 analysis_dirname = "analysis"
 report_dirname = "reports"
+batch_dirname = "batches"
+
+[batch]
+max_workers = 2
+max_jobs = 25
+fail_fast = false
+
+[api]
+host = "127.0.0.1"
+port = 8090
+max_request_bytes = 1048576
+
+[limits]
+runtime_concurrency = 1

@@ -24,6 +24,14 @@ def test_load_config_uses_defaults_when_no_file_exists(monkeypatch: pytest.Monke
     assert config.storage.normalized_dirname == "normalized"
     assert config.storage.analysis_dirname == "analysis"
     assert config.storage.report_dirname == "reports"
+    assert config.storage.batch_dirname == "batches"
+    assert config.batch.max_workers == 2
+    assert config.batch.max_jobs == 25
+    assert config.batch.fail_fast is False
+    assert config.api.host == "127.0.0.1"
+    assert config.api.port == 8090
+    assert config.api.max_request_bytes == 1048576
+    assert config.limits.runtime_concurrency == 1
 
 
 def test_load_config_reads_toml_and_env_overrides(
@@ -63,6 +71,20 @@ def test_load_config_reads_toml_and_env_overrides(
                 'normalized_dirname = "canonical-store"',
                 'analysis_dirname = "analysis-store"',
                 'report_dirname = "report-store"',
+                'batch_dirname = "batch-store"',
+                "",
+                "[batch]",
+                "max_workers = 3",
+                "max_jobs = 40",
+                "fail_fast = true",
+                "",
+                "[api]",
+                'host = "0.0.0.0"',
+                "port = 9001",
+                "max_request_bytes = 2048",
+                "",
+                "[limits]",
+                "runtime_concurrency = 2",
             ]
         ),
         encoding="utf-8",
@@ -72,6 +94,8 @@ def test_load_config_reads_toml_and_env_overrides(
     monkeypatch.setenv("THREADSENSE_REDDIT_TIMEOUT", "25")
     monkeypatch.setenv("THREADSENSE_REDDIT_REQUEST_DELAY", "0.75")
     monkeypatch.setenv("THREADSENSE_STORAGE_ROOT", ".runtime-store")
+    monkeypatch.setenv("THREADSENSE_BATCH_MAX_WORKERS", "4")
+    monkeypatch.setenv("THREADSENSE_RUNTIME_CONCURRENCY", "3")
 
     config = load_config(config_path=config_path)
 
@@ -89,6 +113,14 @@ def test_load_config_reads_toml_and_env_overrides(
     assert config.storage.normalized_dirname == "canonical-store"
     assert config.storage.analysis_dirname == "analysis-store"
     assert config.storage.report_dirname == "report-store"
+    assert config.storage.batch_dirname == "batch-store"
+    assert config.batch.max_workers == 4
+    assert config.batch.max_jobs == 40
+    assert config.batch.fail_fast is True
+    assert config.api.host == "0.0.0.0"
+    assert config.api.port == 9001
+    assert config.api.max_request_bytes == 2048
+    assert config.limits.runtime_concurrency == 3
 
 
 def test_load_config_rejects_invalid_privacy_mode(tmp_path: Path) -> None:
