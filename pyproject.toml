@@ -6,10 +6,12 @@ build-backend = "hatchling.build"
 name = "threadsense"
 version = "0.1.0"
 description = "Evidence-first discussion intelligence tooling."
-readme = "docs/overview.md"
+readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "rich>=14.3.3",
+]
 
 [project.scripts]
 threadsense = "threadsense.cli:main"
