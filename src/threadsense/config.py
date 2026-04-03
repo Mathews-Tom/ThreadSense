@@ -53,12 +53,20 @@ class RedditConfig:
 
 
 @dataclass(frozen=True)
+class StorageConfig:
+    root_dir: Path
+    raw_dirname: str
+    normalized_dirname: str
+
+
+@dataclass(frozen=True)
 class AppConfig:
     inference_backend: InferenceBackend
     privacy_mode: PrivacyMode
     runtime: RuntimeConfig
     source_policy: SourcePolicyConfig
     reddit: RedditConfig
+    storage: StorageConfig
 
 
 def _read_toml(path: Path | None) -> dict[str, Any]:
@@ -156,11 +164,13 @@ def load_config(
     runtime_section = raw_config.get("runtime", {})
     source_section = raw_config.get("sources", {})
     reddit_section = raw_config.get("reddit", {})
+    storage_section = raw_config.get("storage", {})
     if (
         not isinstance(app_section, dict)
         or not isinstance(runtime_section, dict)
         or not isinstance(source_section, dict)
         or not isinstance(reddit_section, dict)
+        or not isinstance(storage_section, dict)
     ):
         raise ConfigurationError("config sections must be TOML tables")
 
@@ -273,12 +283,32 @@ def load_config(
             "THREADSENSE_REDDIT_LISTING_LIMIT",
         ),
     )
+    storage = StorageConfig(
+        root_dir=Path(
+            _read_str(
+                resolved_env,
+                "THREADSENSE_STORAGE_ROOT",
+                str(storage_section.get("root_dir", ".threadsense")),
+            )
+        ),
+        raw_dirname=_read_str(
+            resolved_env,
+            "THREADSENSE_STORAGE_RAW_DIR",
+            str(storage_section.get("raw_dirname", "raw")),
+        ),
+        normalized_dirname=_read_str(
+            resolved_env,
+            "THREADSENSE_STORAGE_NORMALIZED_DIR",
+            str(storage_section.get("normalized_dirname", "normalized")),
+        ),
+    )
     return AppConfig(
         inference_backend=backend,
         privacy_mode=privacy_mode,
         runtime=runtime,
         source_policy=source_policy,
         reddit=reddit,
+        storage=storage,
     )
 
 

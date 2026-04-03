@@ -18,6 +18,8 @@ def test_load_config_uses_defaults_when_no_file_exists(monkeypatch: pytest.Monke
     assert config.source_policy.enabled_sources == ("reddit",)
     assert config.reddit.listing_limit == 500
     assert config.reddit.timeout_seconds == 15.0
+    assert config.storage.root_dir == Path(".threadsense")
+    assert config.storage.normalized_dirname == "normalized"
 
 
 def test_load_config_reads_toml_and_env_overrides(
@@ -48,6 +50,11 @@ def test_load_config_reads_toml_and_env_overrides(
                 "backoff_seconds = 0.25",
                 "request_delay_seconds = 0.6",
                 "listing_limit = 100",
+                "",
+                "[storage]",
+                'root_dir = ".artifacts"',
+                'raw_dirname = "raw-store"',
+                'normalized_dirname = "canonical-store"',
             ]
         ),
         encoding="utf-8",
@@ -55,6 +62,7 @@ def test_load_config_reads_toml_and_env_overrides(
     monkeypatch.setenv("THREADSENSE_RUNTIME_MODEL", "override-model")
     monkeypatch.setenv("THREADSENSE_REDDIT_TIMEOUT", "25")
     monkeypatch.setenv("THREADSENSE_REDDIT_REQUEST_DELAY", "0.75")
+    monkeypatch.setenv("THREADSENSE_STORAGE_ROOT", ".runtime-store")
 
     config = load_config(config_path=config_path)
 
@@ -65,6 +73,9 @@ def test_load_config_reads_toml_and_env_overrides(
     assert config.reddit.timeout_seconds == 25.0
     assert config.reddit.request_delay_seconds == 0.75
     assert config.reddit.listing_limit == 100
+    assert config.storage.root_dir == Path(".runtime-store")
+    assert config.storage.raw_dirname == "raw-store"
+    assert config.storage.normalized_dirname == "canonical-store"
 
 
 def test_load_config_rejects_invalid_privacy_mode(tmp_path: Path) -> None:

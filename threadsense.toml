@@ -18,3 +18,8 @@ max_retries = 2
 backoff_seconds = 0.5
 request_delay_seconds = 0.6
 listing_limit = 500
+
+[storage]
+root_dir = ".threadsense"
+raw_dirname = "raw"
+normalized_dirname = "normalized"
