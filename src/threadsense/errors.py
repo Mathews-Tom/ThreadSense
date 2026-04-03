@@ -43,3 +43,18 @@ class SchemaBoundaryError(ThreadSenseError):
 class InferenceBoundaryError(ThreadSenseError):
     def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
         super().__init__(message=message, code="inference_error", details=details or {})
+
+
+class RedditInputError(ThreadSenseError):
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message=message, code="reddit_input_error", details=details or {})
+
+
+class RedditRequestError(ThreadSenseError):
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message=message, code="reddit_request_error", details=details or {})
+
+
+class RedditResponseError(ThreadSenseError):
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message=message, code="reddit_response_error", details=details or {})
