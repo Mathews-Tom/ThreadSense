@@ -9,6 +9,12 @@ from urllib import error, request
 
 from threadsense.config import RuntimeConfig
 from threadsense.errors import InferenceBoundaryError, NetworkBoundaryError, SchemaBoundaryError
+from threadsense.inference.contracts import (
+    InferenceMessage,
+    InferenceRequest,
+    InferenceResponse,
+    validate_task_output,
+)
 
 JsonObject = dict[str, Any]
 JsonRequest = Callable[[str, JsonObject, float], tuple[int, JsonObject]]
@@ -47,14 +53,26 @@ class LocalRuntimeClient:
         self._config = config
 
     def build_probe_payload(self) -> JsonObject:
+        return self.build_chat_payload(
+            messages=[
+                InferenceMessage(role="system", content="Return the single token READY."),
+                InferenceMessage(role="user", content="READY"),
+            ],
+            temperature=0,
+        )
+
+    def build_chat_payload(
+        self,
+        messages: list[InferenceMessage],
+        temperature: float,
+    ) -> JsonObject:
         return {
             "model": self._config.model,
             "messages": [
-                {"role": "system", "content": "Return the single token READY."},
-                {"role": "user", "content": "READY"},
+                {"role": message.role, "content": message.content} for message in messages
             ],
             "stream": False,
-            "temperature": 0,
+            "temperature": temperature,
         }
 
     def probe(self, opener: JsonRequest | None = None) -> RuntimeProbeResult:
@@ -97,6 +115,50 @@ class LocalRuntimeClient:
             stream=False,
             error=None,
         )
+
+    def complete(
+        self,
+        inference_request: InferenceRequest,
+        opener: JsonRequest | None = None,
+    ) -> InferenceResponse:
+        request_fn = opener or send_json_request
+        messages = list(inference_request.messages)
+        for attempt in range(inference_request.repair_retries + 1):
+            payload = self.build_chat_payload(messages=messages, temperature=0)
+            _status_code, response_body = request_fn(
+                self._config.chat_endpoint,
+                payload,
+                self._config.timeout_seconds,
+            )
+            parsed = validate_chat_completion_response(response_body)
+            content = extract_message_content(parsed)
+            try:
+                output = validate_task_output(
+                    inference_request.task,
+                    parse_structured_output(content),
+                )
+            except SchemaBoundaryError:
+                if attempt >= inference_request.repair_retries:
+                    raise
+                messages = repair_messages(
+                    existing=messages,
+                    invalid_content=content,
+                    repair_instruction=inference_request.repair_instruction,
+                )
+                continue
+
+            return InferenceResponse(
+                task=inference_request.task,
+                provider="local_openai_compatible",
+                model=parsed["model"],
+                finish_reason=parsed["choices"][0]["finish_reason"],
+                output=output,
+                used_fallback=False,
+                degraded=False,
+                failure_reason=None,
+            )
+
+        raise InferenceBoundaryError("inference request exhausted repair attempts")
 
 
 def send_json_request(
@@ -176,3 +238,40 @@ def validate_chat_completion_response(response_body: Mapping[str, Any]) -> JsonO
         "model": model,
         "choices": choices,
     }
+
+
+def extract_message_content(response_body: Mapping[str, Any]) -> str:
+    choices = response_body["choices"]
+    first_choice = choices[0]
+    message = first_choice["message"]
+    content = message["content"]
+    if not isinstance(content, str) or not content.strip():
+        raise SchemaBoundaryError("runtime response message content must be a non-empty string")
+    return content.strip()
+
+
+def parse_structured_output(content: str) -> dict[str, Any]:
+    normalized = content.strip()
+    if normalized.startswith("```"):
+        normalized = normalized.removeprefix("```json").removeprefix("```").strip()
+        if normalized.endswith("```"):
+            normalized = normalized[:-3].strip()
+    try:
+        payload = json.loads(normalized)
+    except json.JSONDecodeError as error:
+        raise SchemaBoundaryError("runtime response content is not valid JSON") from error
+    if not isinstance(payload, dict):
+        raise SchemaBoundaryError("runtime response content must decode to an object")
+    return payload
+
+
+def repair_messages(
+    existing: list[InferenceMessage],
+    invalid_content: str,
+    repair_instruction: str,
+) -> list[InferenceMessage]:
+    return [
+        *existing,
+        InferenceMessage(role="assistant", content=invalid_content),
+        InferenceMessage(role="user", content=repair_instruction),
+    ]

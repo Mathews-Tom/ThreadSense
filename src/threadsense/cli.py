@@ -11,6 +11,7 @@ from threadsense.connectors.reddit import (
     RedditThreadRequest,
 )
 from threadsense.errors import ThreadSenseError
+from threadsense.inference import InferenceRouter, InferenceTask
 from threadsense.inference.local_runtime import LocalRuntimeClient, RuntimeProbeResult
 from threadsense.logging_config import configure_logging
 from threadsense.pipeline.analyze import analyze_thread_file
@@ -155,6 +156,38 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Analysis artifact path.",
     )
+
+    infer_parser = subparsers.add_parser(
+        "infer",
+        help="Run local inference tasks against deterministic analysis artifacts.",
+    )
+    infer_subparsers = infer_parser.add_subparsers(dest="artifact_type", required=True)
+    infer_analysis_parser = infer_subparsers.add_parser(
+        "analysis",
+        help="Run one inference task for a persisted analysis artifact.",
+    )
+    infer_analysis_parser.add_argument(
+        "--input",
+        type=Path,
+        required=True,
+        help="Analysis artifact path.",
+    )
+    infer_analysis_parser.add_argument(
+        "--task",
+        choices=[task.value for task in InferenceTask],
+        default=InferenceTask.ANALYSIS_SUMMARY.value,
+        help="Inference task to run.",
+    )
+    infer_analysis_parser.add_argument(
+        "--required",
+        action="store_true",
+        help="Fail instead of falling back when local inference is unavailable.",
+    )
+    infer_analysis_parser.add_argument(
+        "--config",
+        type=Path,
+        help="Optional path to a TOML config file.",
+    )
     return parser
 
 
@@ -165,10 +198,12 @@ def render_preflight_report(config: AppConfig, probe: RuntimeProbeResult | None)
         "privacy_mode": config.privacy_mode.value,
         "sources": list(config.source_policy.enabled_sources),
         "runtime": {
+            "enabled": config.runtime.enabled,
             "base_url": config.runtime.base_url,
             "chat_endpoint": config.runtime.chat_endpoint,
             "model": config.runtime.model,
             "timeout_seconds": config.runtime.timeout_seconds,
+            "repair_retries": config.runtime.repair_retries,
         },
     }
     if probe is not None:
@@ -359,6 +394,40 @@ def run_analysis_inspect(input_path: Path) -> int:
     return 0
 
 
+def run_analysis_infer(
+    config_path: Path | None,
+    input_path: Path,
+    task_name: str,
+    required: bool,
+) -> int:
+    configure_logging()
+    config = load_config(config_path)
+    analysis = load_analysis_artifact(input_path)
+    response = InferenceRouter(config).run_analysis_task(
+        analysis=analysis,
+        task=InferenceTask(task_name),
+        required=required,
+    )
+    print(
+        json.dumps(
+            {
+                "status": "ready" if not response.degraded else "degraded",
+                "artifact_type": "analysis",
+                "input_path": str(input_path),
+                "thread_id": analysis.thread_id,
+                "task": response.task.value,
+                "provider": response.provider,
+                "model": response.model,
+                "used_fallback": response.used_fallback,
+                "failure_reason": response.failure_reason,
+                "output": response.output,
+            },
+            indent=2,
+        )
+    )
+    return 0 if not response.degraded or not required else 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -389,6 +458,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             return run_normalized_inspect(args.input)
         if args.command == "inspect" and args.artifact_type == "analysis":
             return run_analysis_inspect(args.input)
+        if args.command == "infer" and args.artifact_type == "analysis":
+            return run_analysis_infer(
+                config_path=args.config,
+                input_path=args.input,
+                task_name=args.task,
+                required=args.required,
+            )
     except ThreadSenseError as error:
         print(json.dumps({"status": "error", "error": error.to_dict()}, indent=2))
         return 1
