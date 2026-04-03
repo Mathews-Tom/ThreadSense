@@ -1,0 +1,27 @@
+{
+  "manifest_version": 1,
+  "run_name": "fixture-replay",
+  "created_at_utc": 1710000000.0,
+  "jobs": [
+    {
+      "job_id": "normal-thread",
+      "source_name": "reddit",
+      "thread_url": "https://www.reddit.com/r/ThreadSense/comments/abc123/normal_thread",
+      "expand_more": false,
+      "flat": false,
+      "report_format": "json",
+      "with_summary": false,
+      "summary_required": false
+    },
+    {
+      "job_id": "large-thread",
+      "source_name": "reddit",
+      "thread_url": "https://www.reddit.com/r/ThreadSense/comments/jkl012/large_thread",
+      "expand_more": false,
+      "flat": false,
+      "report_format": "json",
+      "with_summary": false,
+      "summary_required": false
+    }
+  ]
+}

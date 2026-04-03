@@ -50,6 +50,21 @@ class AnalysisBoundaryError(ThreadSenseError):
         super().__init__(message=message, code="analysis_error", details=details or {})
 
 
+class BatchBoundaryError(ThreadSenseError):
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message=message, code="batch_error", details=details or {})
+
+
+class ResourceLimitError(ThreadSenseError):
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message=message, code="resource_limit_error", details=details or {})
+
+
+class ApiInputError(ThreadSenseError):
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message=message, code="api_input_error", details=details or {})
+
+
 class RedditInputError(ThreadSenseError):
     def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
         super().__init__(message=message, code="reddit_input_error", details=details or {})

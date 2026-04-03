@@ -61,6 +61,26 @@ class StorageConfig:
     normalized_dirname: str
     analysis_dirname: str
     report_dirname: str
+    batch_dirname: str
+
+
+@dataclass(frozen=True)
+class BatchConfig:
+    max_workers: int
+    max_jobs: int
+    fail_fast: bool
+
+
+@dataclass(frozen=True)
+class ApiConfig:
+    host: str
+    port: int
+    max_request_bytes: int
+
+
+@dataclass(frozen=True)
+class LimitsConfig:
+    runtime_concurrency: int
 
 
 @dataclass(frozen=True)
@@ -71,6 +91,9 @@ class AppConfig:
     source_policy: SourcePolicyConfig
     reddit: RedditConfig
     storage: StorageConfig
+    batch: BatchConfig
+    api: ApiConfig
+    limits: LimitsConfig
 
 
 def _read_toml(path: Path | None) -> dict[str, Any]:
@@ -155,6 +178,16 @@ def _parse_int(value: str, env_key: str) -> int:
     return parsed
 
 
+def _parse_positive_int(value: str, env_key: str) -> int:
+    parsed = _parse_int(value, env_key)
+    if parsed <= 0:
+        raise ConfigurationError(
+            f"configuration value must be greater than zero: {env_key}",
+            details={"env_key": env_key, "value": value},
+        )
+    return parsed
+
+
 def _parse_bool(value: str, env_key: str) -> bool:
     normalized = value.strip().lower()
     if normalized in {"1", "true", "yes", "on"}:
@@ -181,12 +214,18 @@ def load_config(
     source_section = raw_config.get("sources", {})
     reddit_section = raw_config.get("reddit", {})
     storage_section = raw_config.get("storage", {})
+    batch_section = raw_config.get("batch", {})
+    api_section = raw_config.get("api", {})
+    limits_section = raw_config.get("limits", {})
     if (
         not isinstance(app_section, dict)
         or not isinstance(runtime_section, dict)
         or not isinstance(source_section, dict)
         or not isinstance(reddit_section, dict)
         or not isinstance(storage_section, dict)
+        or not isinstance(batch_section, dict)
+        or not isinstance(api_section, dict)
+        or not isinstance(limits_section, dict)
     ):
         raise ConfigurationError("config sections must be TOML tables")
 
@@ -343,6 +382,70 @@ def load_config(
             "THREADSENSE_STORAGE_REPORT_DIR",
             str(storage_section.get("report_dirname", "reports")),
         ),
+        batch_dirname=_read_str(
+            resolved_env,
+            "THREADSENSE_STORAGE_BATCH_DIR",
+            str(storage_section.get("batch_dirname", "batches")),
+        ),
+    )
+    batch = BatchConfig(
+        max_workers=_parse_positive_int(
+            _read_str(
+                resolved_env,
+                "THREADSENSE_BATCH_MAX_WORKERS",
+                str(batch_section.get("max_workers", "2")),
+            ),
+            "THREADSENSE_BATCH_MAX_WORKERS",
+        ),
+        max_jobs=_parse_positive_int(
+            _read_str(
+                resolved_env,
+                "THREADSENSE_BATCH_MAX_JOBS",
+                str(batch_section.get("max_jobs", "25")),
+            ),
+            "THREADSENSE_BATCH_MAX_JOBS",
+        ),
+        fail_fast=_parse_bool(
+            _read_str(
+                resolved_env,
+                "THREADSENSE_BATCH_FAIL_FAST",
+                str(batch_section.get("fail_fast", "false")),
+            ),
+            "THREADSENSE_BATCH_FAIL_FAST",
+        ),
+    )
+    api = ApiConfig(
+        host=_read_str(
+            resolved_env,
+            "THREADSENSE_API_HOST",
+            str(api_section.get("host", "127.0.0.1")),
+        ),
+        port=_parse_int(
+            _read_str(
+                resolved_env,
+                "THREADSENSE_API_PORT",
+                str(api_section.get("port", "8090")),
+            ),
+            "THREADSENSE_API_PORT",
+        ),
+        max_request_bytes=_parse_positive_int(
+            _read_str(
+                resolved_env,
+                "THREADSENSE_API_MAX_REQUEST_BYTES",
+                str(api_section.get("max_request_bytes", "1048576")),
+            ),
+            "THREADSENSE_API_MAX_REQUEST_BYTES",
+        ),
+    )
+    limits = LimitsConfig(
+        runtime_concurrency=_parse_positive_int(
+            _read_str(
+                resolved_env,
+                "THREADSENSE_RUNTIME_CONCURRENCY",
+                str(limits_section.get("runtime_concurrency", "1")),
+            ),
+            "THREADSENSE_RUNTIME_CONCURRENCY",
+        ),
     )
     return AppConfig(
         inference_backend=backend,
@@ -351,6 +454,9 @@ def load_config(
         source_policy=source_policy,
         reddit=reddit,
         storage=storage,
+        batch=batch,
+        api=api,
+        limits=limits,
     )
 
 
