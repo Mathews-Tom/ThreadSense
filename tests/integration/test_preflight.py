@@ -19,7 +19,7 @@ def test_preflight_reports_ready_when_runtime_probe_succeeds(
     ) -> tuple[int, dict[str, object]]:
         assert url == "http://127.0.0.1:8080/v1/chat/completions"
         assert payload["model"] == "local-model"
-        assert timeout_seconds == 30.0
+        assert timeout_seconds == 90.0
         return (
             200,
             {

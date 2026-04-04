@@ -195,6 +195,11 @@ def send_json_request(
             "runtime endpoint is unreachable",
             details={"url": url, "reason": str(url_error.reason)},
         ) from url_error
+    except TimeoutError as timeout_error:
+        raise NetworkBoundaryError(
+            "runtime request timed out",
+            details={"url": url, "timeout_seconds": timeout_seconds},
+        ) from timeout_error
     except json.JSONDecodeError as decode_error:
         raise SchemaBoundaryError(
             "runtime returned invalid JSON",

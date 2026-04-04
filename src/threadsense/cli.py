@@ -7,6 +7,7 @@ from pathlib import Path
 
 from threadsense.api_server import start_api_server
 from threadsense.batching import run_batch_manifest
+from threadsense.cli_display import cli_log_level, emit_error, emit_payload, status
 from threadsense.config import AppConfig, load_config
 from threadsense.connectors.reddit import (
     RedditConnector,
@@ -27,6 +28,7 @@ from threadsense.workflows import (
     infer_analysis,
     normalize_reddit_thread,
     report_analysis,
+    run_reddit_pipeline,
 )
 
 
@@ -295,6 +297,48 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         help="Override the configured API port.",
     )
+
+    run_parser = subparsers.add_parser(
+        "run",
+        help="Execute the full workflow for one source input.",
+    )
+    run_subparsers = run_parser.add_subparsers(dest="source", required=True)
+    run_reddit_parser = run_subparsers.add_parser(
+        "reddit",
+        help="Fetch, normalize, analyze, and report one Reddit thread.",
+    )
+    run_reddit_parser.add_argument("url", help="Full Reddit thread URL")
+    run_reddit_parser.add_argument(
+        "--config",
+        type=Path,
+        help="Optional path to a TOML config file.",
+    )
+    run_reddit_parser.add_argument(
+        "--expand-more",
+        action="store_true",
+        help="Expand deferred comment branches through morechildren.",
+    )
+    run_reddit_parser.add_argument(
+        "--flat",
+        action="store_true",
+        help="Flatten nested comments in the persisted raw artifact.",
+    )
+    run_reddit_parser.add_argument(
+        "--format",
+        choices=["markdown", "json"],
+        default="markdown",
+        help="Final report output format.",
+    )
+    run_reddit_parser.add_argument(
+        "--with-summary",
+        action="store_true",
+        help="Use local inference to generate a bounded executive summary.",
+    )
+    run_reddit_parser.add_argument(
+        "--summary-required",
+        action="store_true",
+        help="Fail instead of falling back when local summary generation is unavailable.",
+    )
     return parser
 
 
@@ -319,13 +363,13 @@ def render_preflight_report(config: AppConfig, probe: RuntimeProbeResult | None)
 
 
 def run_preflight(config_path: Path | None, skip_runtime: bool) -> int:
-    configure_logging()
+    configure_logging(level=cli_log_level())
     config = load_config(config_path)
     probe: RuntimeProbeResult | None = None
     if not skip_runtime:
         probe = LocalRuntimeClient(config.runtime).probe()
 
-    print(render_preflight_report(config, probe))
+    emit_payload(json.loads(render_preflight_report(config, probe)))
     return 0 if probe is None or probe.ok else 1
 
 
@@ -340,7 +384,7 @@ def run_reddit_fetch(
     expand_more: bool,
     flat: bool,
 ) -> int:
-    logger = configure_logging()
+    logger = configure_logging(level=cli_log_level())
     config = load_config(config_path)
     payload = fetch_reddit_thread(
         config=config,
@@ -352,7 +396,7 @@ def run_reddit_fetch(
         flat=flat,
         connector_factory=build_reddit_connector,
     )
-    print(json.dumps(payload, indent=2))
+    emit_payload(payload)
     return 0
 
 
@@ -361,7 +405,7 @@ def run_reddit_normalize(
     input_path: Path,
     output_path: Path | None,
 ) -> int:
-    logger = configure_logging()
+    logger = configure_logging(level=cli_log_level())
     config = load_config(config_path)
     payload = normalize_reddit_thread(
         config=config,
@@ -370,7 +414,7 @@ def run_reddit_normalize(
         input_path=input_path,
         output_path=output_path,
     )
-    print(json.dumps(payload, indent=2))
+    emit_payload(payload)
     return 0
 
 
@@ -379,7 +423,7 @@ def run_normalized_analyze(
     input_path: Path,
     output_path: Path | None,
 ) -> int:
-    logger = configure_logging()
+    logger = configure_logging(level=cli_log_level())
     config = load_config(config_path)
     payload = analyze_normalized_thread(
         config=config,
@@ -388,71 +432,65 @@ def run_normalized_analyze(
         input_path=input_path,
         output_path=output_path,
     )
-    print(json.dumps(payload, indent=2))
+    emit_payload(payload)
     return 0
 
 
 def run_normalized_inspect(input_path: Path) -> int:
-    configure_logging()
+    configure_logging(level=cli_log_level())
     thread = load_normalized_artifact(input_path)
     comment_ids = [comment.comment_id for comment in thread.comments[:10]]
-    print(
-        json.dumps(
-            {
-                "status": "ready",
-                "artifact_type": "normalized",
-                "input_path": str(input_path),
-                "thread_id": thread.thread_id,
-                "source_name": thread.source.source_name,
-                "community": thread.source.community,
-                "source_thread_id": thread.source.source_thread_id,
-                "title": thread.title,
-                "comment_count": thread.comment_count,
-                "schema_version": thread.provenance.schema_version,
-                "normalization_version": thread.provenance.normalization_version,
-                "raw_artifact_path": thread.provenance.raw_artifact_path,
-                "raw_sha256": thread.provenance.raw_sha256,
-                "sample_comment_ids": comment_ids,
-            },
-            indent=2,
-        )
+    emit_payload(
+        {
+            "status": "ready",
+            "artifact_type": "normalized",
+            "input_path": str(input_path),
+            "thread_id": thread.thread_id,
+            "source_name": thread.source.source_name,
+            "community": thread.source.community,
+            "source_thread_id": thread.source.source_thread_id,
+            "title": thread.title,
+            "comment_count": thread.comment_count,
+            "schema_version": thread.provenance.schema_version,
+            "normalization_version": thread.provenance.normalization_version,
+            "raw_artifact_path": thread.provenance.raw_artifact_path,
+            "raw_sha256": thread.provenance.raw_sha256,
+            "sample_comment_ids": comment_ids,
+        }
     )
     return 0
 
 
 def run_analysis_inspect(input_path: Path) -> int:
-    configure_logging()
+    configure_logging(level=cli_log_level())
     analysis = load_analysis_artifact(input_path)
-    print(
-        json.dumps(
-            {
-                "status": "ready",
-                "artifact_type": "analysis",
-                "input_path": str(input_path),
-                "thread_id": analysis.thread_id,
-                "title": analysis.title,
-                "total_comments": analysis.total_comments,
-                "distinct_comment_count": analysis.distinct_comment_count,
-                "duplicate_group_count": analysis.duplicate_group_count,
-                "schema_version": analysis.provenance.schema_version,
-                "analysis_version": analysis.provenance.analysis_version,
-                "normalized_artifact_path": analysis.provenance.normalized_artifact_path,
-                "normalized_sha256": analysis.provenance.normalized_sha256,
-                "top_phrases": analysis.top_phrases[:5],
-                "top_findings": [
-                    {
-                        "theme_key": finding.theme_key,
-                        "severity": finding.severity,
-                        "comment_count": finding.comment_count,
-                        "key_phrases": finding.key_phrases[:3],
-                        "evidence_comment_ids": finding.evidence_comment_ids,
-                        "quotes": [quote.body_excerpt for quote in finding.quotes[:2]],
-                    }
-                    for finding in analysis.findings[:5]
-                ],
-            },
-            indent=2,
-        )
+    emit_payload(
+        {
+            "status": "ready",
+            "artifact_type": "analysis",
+            "input_path": str(input_path),
+            "thread_id": analysis.thread_id,
+            "title": analysis.title,
+            "total_comments": analysis.total_comments,
+            "distinct_comment_count": analysis.distinct_comment_count,
+            "duplicate_group_count": analysis.duplicate_group_count,
+            "schema_version": analysis.provenance.schema_version,
+            "analysis_version": analysis.provenance.analysis_version,
+            "normalized_artifact_path": analysis.provenance.normalized_artifact_path,
+            "normalized_sha256": analysis.provenance.normalized_sha256,
+            "top_phrases": analysis.top_phrases[:5],
+            "top_findings": [
+                {
+                    "theme_key": finding.theme_key,
+                    "severity": finding.severity,
+                    "comment_count": finding.comment_count,
+                    "key_phrases": finding.key_phrases[:3],
+                    "evidence_comment_ids": finding.evidence_comment_ids,
+                    "quotes": [quote.body_excerpt for quote in finding.quotes[:2]],
+                }
+                for finding in analysis.findings[:5]
+            ],
+        }
     )
     return 0
 
@@ -463,7 +501,7 @@ def run_analysis_infer(
     task_name: str,
     required: bool,
 ) -> int:
-    logger = configure_logging()
+    logger = configure_logging(level=cli_log_level())
     config = load_config(config_path)
     payload = infer_analysis(
         config=config,
@@ -473,7 +511,7 @@ def run_analysis_infer(
         task=InferenceTask(task_name),
         required=required,
     )
-    print(json.dumps(payload, indent=2))
+    emit_payload(payload)
     return 0 if payload["status"] != "degraded" or not required else 1
 
 
@@ -485,7 +523,7 @@ def run_analysis_report(
     with_summary: bool,
     summary_required: bool,
 ) -> int:
-    logger = configure_logging()
+    logger = configure_logging(level=cli_log_level())
     config = load_config(config_path)
     payload = report_analysis(
         config=config,
@@ -497,7 +535,7 @@ def run_analysis_report(
         with_summary=with_summary,
         summary_required=summary_required,
     )
-    print(json.dumps(payload, indent=2))
+    emit_payload(payload)
     return 0
 
 
@@ -506,7 +544,7 @@ def run_batch(
     manifest_path: Path,
     output_path: Path | None,
 ) -> int:
-    logger = configure_logging()
+    logger = configure_logging(level=cli_log_level())
     config = load_config(config_path)
     payload = run_batch_manifest(
         config=config,
@@ -515,7 +553,7 @@ def run_batch(
         output_path=output_path,
         connector_factory=build_reddit_connector,
     )
-    print(json.dumps(payload, indent=2))
+    emit_payload(payload)
     return 0 if payload["failed_jobs"] == 0 else 1
 
 
@@ -535,17 +573,14 @@ def run_api_server(
         port=port,
     )
     try:
-        print(
-            json.dumps(
-                {
-                    "status": "ready",
-                    "artifact_type": "api_server",
-                    "host": handle.server.server_address[0],
-                    "port": handle.server.server_address[1],
-                    "metrics_path": "/v1/metrics",
-                },
-                indent=2,
-            )
+        emit_payload(
+            {
+                "status": "ready",
+                "artifact_type": "api_server",
+                "host": handle.server.server_address[0],
+                "port": handle.server.server_address[1],
+                "metrics_path": "/v1/metrics",
+            }
         )
         handle.thread.join()
     except KeyboardInterrupt:
@@ -555,27 +590,52 @@ def run_api_server(
 
 
 def run_report_inspect(input_path: Path) -> int:
-    configure_logging()
+    configure_logging(level=cli_log_level())
     report = load_report_artifact(input_path)
-    print(
-        json.dumps(
-            {
-                "status": "ready",
-                "artifact_type": "report",
-                "input_path": str(input_path),
-                "thread_id": report.thread_id,
-                "title": report.title,
-                "summary_provider": report.provenance.summary_provider,
-                "finding_count": len(report.findings),
-                "caveat_count": len(report.caveats),
-                "quality_checks": [
-                    {"code": check.code, "level": check.level} for check in report.quality_checks
-                ],
-                "top_findings": [finding.theme_key for finding in report.findings[:5]],
-            },
-            indent=2,
-        )
+    emit_payload(
+        {
+            "status": "ready",
+            "artifact_type": "report",
+            "input_path": str(input_path),
+            "thread_id": report.thread_id,
+            "title": report.title,
+            "summary_provider": report.provenance.summary_provider,
+            "finding_count": len(report.findings),
+            "caveat_count": len(report.caveats),
+            "quality_checks": [
+                {"code": check.code, "level": check.level} for check in report.quality_checks
+            ],
+            "top_findings": [finding.theme_key for finding in report.findings[:5]],
+        }
     )
+    return 0
+
+
+def run_reddit_end_to_end(
+    config_path: Path | None,
+    url: str,
+    expand_more: bool,
+    flat: bool,
+    report_format: str,
+    with_summary: bool,
+    summary_required: bool,
+) -> int:
+    logger = configure_logging(level=cli_log_level())
+    config = load_config(config_path)
+    with status("Running Reddit workflow"):
+        payload = run_reddit_pipeline(
+            config=config,
+            logger=logger,
+            trace=TraceContext.create(run_id="cli-run", source_name="reddit"),
+            url=url,
+            expand_more=expand_more,
+            flat=flat,
+            report_format=report_format,
+            with_summary=with_summary,
+            summary_required=summary_required,
+            connector_factory=build_reddit_connector,
+        )
+    emit_payload(payload)
     return 0
 
 
@@ -639,8 +699,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 host=args.host,
                 port=args.port,
             )
+        if args.command == "run" and args.source == "reddit":
+            return run_reddit_end_to_end(
+                config_path=args.config,
+                url=args.url,
+                expand_more=args.expand_more,
+                flat=args.flat,
+                report_format=args.format,
+                with_summary=args.with_summary,
+                summary_required=args.summary_required,
+            )
     except ThreadSenseError as error:
-        print(json.dumps({"status": "error", "error": error.to_dict()}, indent=2))
+        emit_error(error)
         return 1
 
     parser.error(f"unknown command: {args.command}")

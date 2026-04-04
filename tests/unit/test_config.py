@@ -16,6 +16,7 @@ def test_load_config_uses_defaults_when_no_file_exists(monkeypatch: pytest.Monke
     assert config.privacy_mode is PrivacyMode.LOCAL_ONLY
     assert config.runtime.enabled is True
     assert config.runtime.chat_endpoint == "http://127.0.0.1:8080/v1/chat/completions"
+    assert config.runtime.timeout_seconds == 90.0
     assert config.runtime.repair_retries == 1
     assert config.source_policy.enabled_sources == ("reddit",)
     assert config.reddit.listing_limit == 500

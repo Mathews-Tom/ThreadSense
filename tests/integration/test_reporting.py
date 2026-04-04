@@ -188,3 +188,108 @@ def test_end_to_end_fetch_normalize_analyze_and_report(
     assert report_exit == 0
     assert markdown_path.exists()
     assert "Representative Quotes" in markdown_path.read_text(encoding="utf-8")
+
+
+def test_run_reddit_executes_the_full_pipeline(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fixture = json.loads(
+        Path("tests/fixtures/reddit/raw/normal_thread.json").read_text(encoding="utf-8")
+    )
+    assert isinstance(fixture, list)
+
+    class FixtureConnector:
+        def __init__(self, config: RedditConfig) -> None:
+            self._connector = RedditConnector(
+                config=RedditConfig(
+                    user_agent=config.user_agent,
+                    timeout_seconds=config.timeout_seconds,
+                    max_retries=0,
+                    backoff_seconds=config.backoff_seconds,
+                    request_delay_seconds=0,
+                    listing_limit=config.listing_limit,
+                ),
+                transport=lambda url, headers, params, timeout: fixture,
+                sleeper=lambda value: None,
+            )
+
+        def fetch_thread(self, scrape_request: RedditThreadRequest) -> object:
+            return self._connector.fetch_thread(scrape_request)
+
+    monkeypatch.setattr(
+        "threadsense.cli.build_reddit_connector",
+        lambda config: FixtureConnector(config.reddit),
+    )
+    monkeypatch.setenv("THREADSENSE_STORAGE_ROOT", str(tmp_path / "store"))
+
+    exit_code = main(
+        [
+            "run",
+            "reddit",
+            "https://www.reddit.com/r/ThreadSense/comments/abc123/normal_thread",
+            "--format",
+            "markdown",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["source"] == "reddit"
+    assert payload["fetch"]["post_id"] == "abc123"
+    assert Path(payload["normalize"]["output_path"]).exists()
+    assert Path(payload["analyze"]["output_path"]).exists()
+    assert Path(payload["report"]["output_path"]).exists()
+
+
+def test_run_reddit_can_require_a_live_summary(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fixture = json.loads(
+        Path("tests/fixtures/reddit/raw/normal_thread.json").read_text(encoding="utf-8")
+    )
+    assert isinstance(fixture, list)
+
+    class FixtureConnector:
+        def __init__(self, config: RedditConfig) -> None:
+            self._connector = RedditConnector(
+                config=RedditConfig(
+                    user_agent=config.user_agent,
+                    timeout_seconds=config.timeout_seconds,
+                    max_retries=0,
+                    backoff_seconds=config.backoff_seconds,
+                    request_delay_seconds=0,
+                    listing_limit=config.listing_limit,
+                ),
+                transport=lambda url, headers, params, timeout: fixture,
+                sleeper=lambda value: None,
+            )
+
+        def fetch_thread(self, scrape_request: RedditThreadRequest) -> object:
+            return self._connector.fetch_thread(scrape_request)
+
+    monkeypatch.setattr(
+        "threadsense.cli.build_reddit_connector",
+        lambda config: FixtureConnector(config.reddit),
+    )
+    monkeypatch.setenv("THREADSENSE_STORAGE_ROOT", str(tmp_path / "store"))
+
+    exit_code = main(
+        [
+            "run",
+            "reddit",
+            "https://www.reddit.com/r/ThreadSense/comments/abc123/normal_thread",
+            "--format",
+            "markdown",
+            "--with-summary",
+            "--summary-required",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["report"]["summary_provider"] == "local_openai_compatible"
+    assert Path(payload["report"]["output_path"]).exists()
