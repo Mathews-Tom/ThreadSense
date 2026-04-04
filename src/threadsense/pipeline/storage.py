@@ -10,6 +10,12 @@ from threadsense.config import StorageConfig
 from threadsense.errors import SchemaBoundaryError
 from threadsense.models.analysis import ThreadAnalysis, load_analysis_artifact_file
 from threadsense.models.canonical import Thread, load_canonical_thread
+from threadsense.models.corpus import (
+    CorpusAnalysis,
+    CorpusManifest,
+    load_corpus_analysis_file,
+    load_corpus_manifest_file,
+)
 from threadsense.models.report import ThreadReport, load_report_artifact_file
 
 
@@ -19,6 +25,13 @@ class StoragePaths:
     normalized_path: Path
     analysis_path: Path
     report_json_path: Path
+    report_markdown_path: Path
+
+
+@dataclass(frozen=True)
+class CorpusPaths:
+    manifest_path: Path
+    analysis_path: Path
     report_markdown_path: Path
 
 
@@ -40,6 +53,15 @@ def build_storage_paths(
     )
 
 
+def build_corpus_paths(storage: StorageConfig, corpus_id: str) -> CorpusPaths:
+    root = storage.root_dir / storage.corpus_dirname / corpus_id
+    return CorpusPaths(
+        manifest_path=root / "manifest.json",
+        analysis_path=root / "analysis.json",
+        report_markdown_path=root / "report.md",
+    )
+
+
 def persist_raw_artifact(path: Path, artifact: Any) -> None:
     write_json(path, artifact.to_dict())
 
@@ -53,6 +75,14 @@ def persist_analysis_artifact(path: Path, artifact: ThreadAnalysis) -> None:
 
 
 def persist_report_artifact(path: Path, artifact: ThreadReport) -> None:
+    write_json(path, artifact.to_dict())
+
+
+def persist_corpus_manifest(path: Path, manifest: CorpusManifest) -> None:
+    write_json(path, manifest.to_dict())
+
+
+def persist_corpus_analysis(path: Path, artifact: CorpusAnalysis) -> None:
     write_json(path, artifact.to_dict())
 
 
@@ -78,6 +108,14 @@ def load_analysis_artifact(path: Path) -> ThreadAnalysis:
 
 def load_report_artifact(path: Path) -> ThreadReport:
     return load_report_artifact_file(path)
+
+
+def load_corpus_manifest(path: Path) -> CorpusManifest:
+    return load_corpus_manifest_file(path)
+
+
+def load_corpus_analysis(path: Path) -> CorpusAnalysis:
+    return load_corpus_analysis_file(path)
 
 
 def calculate_sha256(path: Path) -> str:

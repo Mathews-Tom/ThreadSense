@@ -20,6 +20,7 @@ from threadsense.contracts import (
     contract_from_config,
 )
 from threadsense.errors import ThreadSenseError
+from threadsense.evaluation import load_golden_manifest
 from threadsense.inference import InferenceTask
 from threadsense.inference.local_runtime import LocalRuntimeClient, RuntimeProbeResult
 from threadsense.logging_config import configure_logging
@@ -27,19 +28,25 @@ from threadsense.observability import DEFAULT_METRICS, TraceContext
 from threadsense.pipeline.replay import replay_analysis
 from threadsense.pipeline.storage import (
     load_analysis_artifact,
+    load_corpus_analysis,
     load_normalized_artifact,
     load_report_artifact,
 )
 from threadsense.preflight import DiagnosticCheck, run_diagnostic_checks
 from threadsense.workflows import (
+    analyze_corpus,
     analyze_normalized_thread,
     build_source_registry,
+    create_corpus,
+    evaluate_golden_dataset,
     fetch_reddit_thread,
     fetch_source_thread,
     infer_analysis,
+    infer_corpus,
     normalize_reddit_thread,
     normalize_source_thread,
     report_analysis,
+    report_corpus,
     run_reddit_pipeline,
     run_source_pipeline,
 )
@@ -256,7 +263,11 @@ def _build_infer_parser(subparsers: argparse._SubParsersAction[argparse.Argument
     )
     infer_analysis_parser.add_argument(
         "--task",
-        choices=[task.value for task in InferenceTask],
+        choices=[
+            InferenceTask.ANALYSIS_SUMMARY.value,
+            InferenceTask.FINDING_CLASSIFICATION.value,
+            InferenceTask.REPORT_SUMMARY.value,
+        ],
         default=InferenceTask.ANALYSIS_SUMMARY.value,
         help="Inference task to run.",
     )
@@ -266,6 +277,22 @@ def _build_infer_parser(subparsers: argparse._SubParsersAction[argparse.Argument
         help="Fail instead of falling back when local inference is unavailable.",
     )
     _add_config_argument(infer_analysis_parser)
+    infer_corpus_parser = infer_subparsers.add_parser(
+        "corpus",
+        help="Run corpus synthesis for a persisted corpus analysis artifact.",
+    )
+    infer_corpus_parser.add_argument(
+        "--input",
+        type=Path,
+        required=True,
+        help="Corpus analysis artifact path.",
+    )
+    infer_corpus_parser.add_argument(
+        "--required",
+        action="store_true",
+        help="Fail instead of falling back when local inference is unavailable.",
+    )
+    _add_config_argument(infer_corpus_parser)
 
 
 def _build_report_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -314,6 +341,106 @@ def _build_replay_parser(subparsers: argparse._SubParsersAction[argparse.Argumen
         required=True,
         help="Analysis artifact path.",
     )
+
+
+def _build_corpus_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    corpus_parser = subparsers.add_parser(
+        "corpus",
+        help="Create and analyze cross-thread corpora from analysis artifacts.",
+    )
+    corpus_subparsers = corpus_parser.add_subparsers(dest="corpus_command", required=True)
+
+    corpus_create_parser = corpus_subparsers.add_parser(
+        "create",
+        help="Create a corpus manifest from analysis artifacts.",
+    )
+    corpus_create_parser.add_argument("--name", required=True, help="Corpus name.")
+    corpus_create_parser.add_argument(
+        "--description",
+        default="Corpus created from stored analysis artifacts.",
+        help="Corpus description.",
+    )
+    corpus_create_parser.add_argument(
+        "--domain",
+        required=True,
+        choices=[domain.value for domain in DomainType],
+        help="Corpus domain.",
+    )
+    corpus_create_parser.add_argument(
+        "--analysis-dir",
+        type=Path,
+        required=True,
+        help="Directory containing analysis artifacts.",
+    )
+    corpus_create_parser.add_argument(
+        "--source",
+        choices=["reddit", "hackernews"],
+        help="Optional source filter.",
+    )
+    corpus_create_parser.add_argument(
+        "--output",
+        "-o",
+        type=Path,
+        help="Manifest output path. Defaults to the configured corpus store path.",
+    )
+    _add_config_argument(corpus_create_parser)
+
+    corpus_analyze_parser = corpus_subparsers.add_parser(
+        "analyze",
+        help="Build deterministic corpus analysis from a corpus manifest.",
+    )
+    corpus_analyze_parser.add_argument(
+        "--corpus",
+        type=Path,
+        required=True,
+        help="Corpus manifest path.",
+    )
+    corpus_analyze_parser.add_argument(
+        "--output",
+        "-o",
+        type=Path,
+        help="Corpus analysis output path. Defaults to the configured corpus store path.",
+    )
+    _add_config_argument(corpus_analyze_parser)
+
+    corpus_report_parser = corpus_subparsers.add_parser(
+        "report",
+        help="Render a corpus report from a corpus manifest.",
+    )
+    corpus_report_parser.add_argument(
+        "--corpus",
+        type=Path,
+        required=True,
+        help="Corpus manifest path.",
+    )
+    corpus_report_parser.add_argument(
+        "--output",
+        "-o",
+        type=Path,
+        help="Corpus report output path. Defaults to the configured corpus store path.",
+    )
+    _add_report_summary_arguments(corpus_report_parser)
+    _add_config_argument(corpus_report_parser)
+
+
+def _build_evaluate_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    evaluate_parser = subparsers.add_parser(
+        "evaluate",
+        help="Run golden dataset evaluation and compare strategy outputs.",
+    )
+    evaluate_parser.add_argument(
+        "--golden",
+        type=Path,
+        required=True,
+        help="Golden dataset path or manifest path.",
+    )
+    evaluate_parser.add_argument(
+        "--strategy",
+        nargs=2,
+        required=True,
+        help="Two strategies to compare.",
+    )
+    _add_config_argument(evaluate_parser)
 
 
 def _build_batch_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -407,6 +534,8 @@ def build_parser() -> argparse.ArgumentParser:
     _build_infer_parser(subparsers)
     _build_report_parser(subparsers)
     _build_replay_parser(subparsers)
+    _build_corpus_parser(subparsers)
+    _build_evaluate_parser(subparsers)
     _build_batch_parser(subparsers)
     _build_serve_parser(subparsers)
     _build_run_parser(subparsers)
@@ -656,6 +785,36 @@ def run_analysis_infer(
     return 0 if payload.status != "degraded" or not required else 1
 
 
+def run_corpus_infer(
+    config_path: Path | None,
+    input_path: Path,
+    required: bool,
+) -> int:
+    logger, config = load_cli_context(config_path)
+    corpus = load_corpus_analysis(input_path)
+    response = infer_corpus(
+        config=config,
+        logger=logger,
+        trace=cli_trace("cli-infer"),
+        corpus=corpus,
+        required=required,
+    )
+    emit_payload(
+        {
+            "status": "ready" if not response.degraded else "degraded",
+            "artifact_type": "corpus",
+            "input_path": str(input_path),
+            "task": response.task.value,
+            "provider": response.provider,
+            "model": response.model,
+            "used_fallback": response.used_fallback,
+            "failure_reason": response.failure_reason,
+            "output": response.output,
+        }
+    )
+    return 0 if not required or not response.degraded else 1
+
+
 def run_analysis_report(
     config_path: Path | None,
     input_path: Path,
@@ -756,6 +915,95 @@ def run_replay(analysis_artifact_path: Path) -> int:
     return 0
 
 
+def run_corpus_create(
+    config_path: Path | None,
+    name: str,
+    description: str,
+    domain: str,
+    analysis_dir: Path,
+    source_filter: str | None,
+    output_path: Path | None,
+) -> int:
+    logger, config = load_cli_context(config_path)
+    payload = create_corpus(
+        config=config,
+        logger=logger,
+        trace=cli_trace("cli-corpus-create"),
+        name=name,
+        description=description,
+        domain=domain,
+        analysis_dir=analysis_dir,
+        source_filter=source_filter,
+        output_path=output_path,
+    )
+    emit_payload(payload.to_dict())
+    return 0
+
+
+def run_corpus_analyze(
+    config_path: Path | None,
+    manifest_path: Path,
+    output_path: Path | None,
+) -> int:
+    logger, config = load_cli_context(config_path)
+    payload = analyze_corpus(
+        config=config,
+        logger=logger,
+        trace=cli_trace("cli-corpus-analyze"),
+        manifest_path=manifest_path,
+        output_path=output_path,
+    )
+    emit_payload(payload.to_dict())
+    return 0
+
+
+def run_corpus_report(
+    config_path: Path | None,
+    manifest_path: Path,
+    output_path: Path | None,
+    with_summary: bool,
+    summary_required: bool,
+) -> int:
+    logger, config = load_cli_context(config_path)
+    payload = report_corpus(
+        config=config,
+        logger=logger,
+        trace=cli_trace("cli-corpus-report"),
+        manifest_path=manifest_path,
+        output_path=output_path,
+        with_summary=with_summary,
+        summary_required=summary_required,
+    )
+    emit_payload(payload.to_dict())
+    return 0 if not summary_required or not payload.degraded_summary else 1
+
+
+def run_evaluate(
+    config_path: Path | None,
+    golden_path: Path,
+    strategies: list[str],
+) -> int:
+    logger, config = load_cli_context(config_path)
+    resolved_golden_path = (golden_path / "manifest.json") if golden_path.is_dir() else golden_path
+    dataset_paths = (
+        load_golden_manifest(resolved_golden_path)
+        if resolved_golden_path.name == "manifest.json"
+        else [resolved_golden_path.resolve()]
+    )
+    payloads = [
+        evaluate_golden_dataset(
+            config=config,
+            logger=logger,
+            trace=cli_trace("cli-evaluate"),
+            dataset_path=dataset_path,
+            strategy_names=(strategies[0], strategies[1]),
+        ).to_dict()
+        for dataset_path in dataset_paths
+    ]
+    emit_payload({"status": "ready", "results": payloads})
+    return 0
+
+
 def run_reddit_end_to_end(
     config_path: Path | None,
     url: str,
@@ -843,11 +1091,12 @@ def _dispatch_command(args: argparse.Namespace) -> int:
         getattr(args, "source", None),
         getattr(args, "artifact_type", None),
         getattr(args, "batch_command", None),
+        getattr(args, "corpus_command", None),
     )
     match command_key:
-        case ("preflight", _, _, _):
+        case ("preflight", _, _, _, _):
             return run_preflight(args.config, args.skip_runtime)
-        case ("fetch", "reddit", _, _):
+        case ("fetch", "reddit", _, _, _):
             return run_reddit_fetch(
                 config_path=args.config,
                 url=args.url,
@@ -855,7 +1104,7 @@ def _dispatch_command(args: argparse.Namespace) -> int:
                 expand_more=args.expand_more,
                 flat=args.flat,
             )
-        case ("fetch", "hn" | "hackernews", _, _):
+        case ("fetch", "hn" | "hackernews", _, _, _):
             logger, config = load_cli_context(args.config)
             payload = fetch_source_thread(
                 config=config,
@@ -868,19 +1117,19 @@ def _dispatch_command(args: argparse.Namespace) -> int:
             )
             emit_payload(payload.to_dict())
             return 0
-        case ("normalize", "reddit", _, _):
+        case ("normalize", "reddit", _, _, _):
             return run_reddit_normalize(
                 config_path=args.config,
                 input_path=args.input,
                 output_path=args.output,
             )
-        case ("normalize", "hn" | "hackernews", _, _):
+        case ("normalize", "hn" | "hackernews", _, _, _):
             return run_source_normalize(
                 config_path=args.config,
                 input_path=args.input,
                 output_path=args.output,
             )
-        case ("analyze", _, "normalized", _):
+        case ("analyze", _, "normalized", _, _):
             return run_normalized_analyze(
                 config_path=args.config,
                 input_path=args.input,
@@ -889,20 +1138,26 @@ def _dispatch_command(args: argparse.Namespace) -> int:
                 objective=args.objective,
                 abstraction_level=args.abstraction_level,
             )
-        case ("inspect", _, "normalized", _):
+        case ("inspect", _, "normalized", _, _):
             return run_normalized_inspect(args.input)
-        case ("inspect", _, "analysis", _):
+        case ("inspect", _, "analysis", _, _):
             return run_analysis_inspect(args.input)
-        case ("inspect", _, "report", _):
+        case ("inspect", _, "report", _, _):
             return run_report_inspect(args.input)
-        case ("infer", _, "analysis", _):
+        case ("infer", _, "analysis", _, _):
             return run_analysis_infer(
                 config_path=args.config,
                 input_path=args.input,
                 task_name=args.task,
                 required=args.required,
             )
-        case ("report", _, "analysis", _):
+        case ("infer", _, "corpus", _, _):
+            return run_corpus_infer(
+                config_path=args.config,
+                input_path=args.input,
+                required=args.required,
+            )
+        case ("report", _, "analysis", _, _):
             return run_analysis_report(
                 config_path=args.config,
                 input_path=args.input,
@@ -911,21 +1166,51 @@ def _dispatch_command(args: argparse.Namespace) -> int:
                 with_summary=args.with_summary,
                 summary_required=args.summary_required,
             )
-        case ("replay", _, _, _):
+        case ("replay", _, _, _, _):
             return run_replay(args.analysis_artifact)
-        case ("batch", _, _, "run"):
+        case ("corpus", _, _, _, "create"):
+            return run_corpus_create(
+                config_path=args.config,
+                name=args.name,
+                description=args.description,
+                domain=args.domain,
+                analysis_dir=args.analysis_dir,
+                source_filter=args.source,
+                output_path=args.output,
+            )
+        case ("corpus", _, _, _, "analyze"):
+            return run_corpus_analyze(
+                config_path=args.config,
+                manifest_path=args.corpus,
+                output_path=args.output,
+            )
+        case ("corpus", _, _, _, "report"):
+            return run_corpus_report(
+                config_path=args.config,
+                manifest_path=args.corpus,
+                output_path=args.output,
+                with_summary=args.with_summary,
+                summary_required=args.summary_required,
+            )
+        case ("evaluate", _, _, _, _):
+            return run_evaluate(
+                config_path=args.config,
+                golden_path=args.golden,
+                strategies=args.strategy,
+            )
+        case ("batch", _, _, "run", _):
             return run_batch(
                 config_path=args.config,
                 manifest_path=args.manifest,
                 output_path=args.output,
             )
-        case ("serve", _, _, _):
+        case ("serve", _, _, _, _):
             return run_api_server(
                 config_path=args.config,
                 host=args.host,
                 port=args.port,
             )
-        case ("run", _, _, _):
+        case ("run", _, _, _, _):
             return run_source_end_to_end(
                 config_path=args.config,
                 target=args.target,

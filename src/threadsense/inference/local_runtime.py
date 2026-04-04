@@ -19,6 +19,7 @@ from threadsense.inference.contracts import (
 
 if TYPE_CHECKING:
     from threadsense.models.analysis import ThreadAnalysis
+    from threadsense.models.corpus import CorpusAnalysis
 
 JsonObject = dict[str, Any]
 JsonRequest = Callable[[str, JsonObject, float], tuple[int, JsonObject]]
@@ -129,6 +130,7 @@ class LocalRuntimeClient:
         opener: JsonRequest | None = None,
         *,
         analysis: ThreadAnalysis | None = None,
+        corpus: CorpusAnalysis | None = None,
     ) -> InferenceResponse:
         request_fn = opener or send_json_request
         messages = list(inference_request.messages)
@@ -147,6 +149,7 @@ class LocalRuntimeClient:
                     inference_request.task,
                     parse_structured_output(content),
                     analysis=analysis,
+                    corpus=corpus,
                 )
             except SchemaBoundaryError:
                 if attempt >= inference_request.repair_retries:

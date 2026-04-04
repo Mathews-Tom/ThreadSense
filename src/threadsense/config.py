@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, field_validator
 from threadsense import __version__
 from threadsense.contracts import AbstractionLevel, DomainType, ObjectiveType
 from threadsense.errors import ConfigurationError
+from threadsense.models.corpus import TrendPeriod
 
 
 class InferenceBackend(StrEnum):
@@ -92,6 +93,7 @@ class StorageConfig(BaseModel):
     analysis_dirname: str = "analysis"
     report_dirname: str = "reports"
     batch_dirname: str = "batches"
+    corpus_dirname: str = "corpora"
 
 
 class BatchConfig(BaseModel):
@@ -138,6 +140,20 @@ class AnalysisConfig(BaseModel):
         return v
 
 
+class CorpusConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    trend_period: TrendPeriod = TrendPeriod.MONTH
+    evidence_limit: int = 3
+
+    @field_validator("evidence_limit")
+    @classmethod
+    def validate_evidence_limit(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("evidence_limit must be greater than zero")
+        return v
+
+
 class AppConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -152,6 +168,7 @@ class AppConfig(BaseModel):
     api: ApiConfig = ApiConfig()
     limits: LimitsConfig = LimitsConfig()
     analysis: AnalysisConfig = AnalysisConfig()
+    corpus: CorpusConfig = CorpusConfig()
 
 
 # Maps environment variable names to their (section, field) path in the config dict.
@@ -181,6 +198,7 @@ _ENV_MAP: dict[str, tuple[str, ...]] = {
     "THREADSENSE_STORAGE_ANALYSIS_DIR": ("storage", "analysis_dirname"),
     "THREADSENSE_STORAGE_REPORT_DIR": ("storage", "report_dirname"),
     "THREADSENSE_STORAGE_BATCH_DIR": ("storage", "batch_dirname"),
+    "THREADSENSE_STORAGE_CORPUS_DIR": ("storage", "corpus_dirname"),
     "THREADSENSE_BATCH_MAX_WORKERS": ("batch", "max_workers"),
     "THREADSENSE_BATCH_MAX_JOBS": ("batch", "max_jobs"),
     "THREADSENSE_BATCH_FAIL_FAST": ("batch", "fail_fast"),
@@ -193,6 +211,8 @@ _ENV_MAP: dict[str, tuple[str, ...]] = {
     "THREADSENSE_ANALYSIS_OBJECTIVE": ("analysis", "objective"),
     "THREADSENSE_ANALYSIS_LEVEL": ("analysis", "abstraction_level"),
     "THREADSENSE_ANALYSIS_DUPLICATE_THRESHOLD": ("analysis", "duplicate_threshold"),
+    "THREADSENSE_CORPUS_TREND_PERIOD": ("corpus", "trend_period"),
+    "THREADSENSE_CORPUS_EVIDENCE_LIMIT": ("corpus", "evidence_limit"),
 }
 
 # Maps TOML section names to config model keys, with field renames where needed.
@@ -206,6 +226,7 @@ _TOML_SECTION_MAP: dict[str, str] = {
     "api": "api",
     "limits": "limits",
     "analysis": "analysis",
+    "corpus": "corpus",
 }
 
 _TOML_APP_FIELDS = ("inference_backend", "privacy_mode")

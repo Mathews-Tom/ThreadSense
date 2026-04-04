@@ -140,6 +140,92 @@ class ReportResult:
 
 
 @dataclass(frozen=True)
+class CorpusCreateResult:
+    status: str
+    manifest_path: Path
+    default_store_path: Path
+    corpus_id: str
+    thread_count: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "manifest_path": str(self.manifest_path),
+            "default_store_path": str(self.default_store_path),
+            "corpus_id": self.corpus_id,
+            "thread_count": self.thread_count,
+        }
+
+
+@dataclass(frozen=True)
+class CorpusAnalyzeResult:
+    status: str
+    input_path: Path
+    output_path: Path
+    default_store_path: Path
+    corpus_id: str
+    thread_count: int
+    finding_count: int
+    trend_count: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "input_path": str(self.input_path),
+            "output_path": str(self.output_path),
+            "default_store_path": str(self.default_store_path),
+            "corpus_id": self.corpus_id,
+            "thread_count": self.thread_count,
+            "finding_count": self.finding_count,
+            "trend_count": self.trend_count,
+        }
+
+
+@dataclass(frozen=True)
+class CorpusReportResult:
+    status: str
+    input_path: Path
+    output_path: Path
+    default_store_path: Path
+    corpus_id: str
+    summary_provider: str | None
+    degraded_summary: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "input_path": str(self.input_path),
+            "output_path": str(self.output_path),
+            "default_store_path": str(self.default_store_path),
+            "corpus_id": self.corpus_id,
+            "summary_provider": self.summary_provider,
+            "degraded_summary": self.degraded_summary,
+        }
+
+
+@dataclass(frozen=True)
+class EvaluateResult:
+    status: str
+    dataset_path: Path
+    strategy_a: str
+    strategy_b: str
+    winner: str | None
+    metrics_a: dict[str, float]
+    metrics_b: dict[str, float]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "dataset_path": str(self.dataset_path),
+            "strategy_a": self.strategy_a,
+            "strategy_b": self.strategy_b,
+            "winner": self.winner,
+            "metrics_a": self.metrics_a,
+            "metrics_b": self.metrics_b,
+        }
+
+
+@dataclass(frozen=True)
 class PipelineResult:
     status: str
     source: str

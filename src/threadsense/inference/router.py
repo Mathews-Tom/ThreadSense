@@ -9,6 +9,7 @@ from threadsense.inference.contracts import InferenceRequest, InferenceResponse,
 from threadsense.inference.local_runtime import LocalRuntimeClient
 from threadsense.inference.prompts import build_task_request
 from threadsense.models.analysis import ThreadAnalysis
+from threadsense.models.corpus import CorpusAnalysis
 
 
 class InferenceClient(Protocol):
@@ -18,6 +19,7 @@ class InferenceClient(Protocol):
         opener: Any = ...,
         *,
         analysis: ThreadAnalysis | None = ...,
+        corpus: CorpusAnalysis | None = ...,
     ) -> InferenceResponse: ...
 
 
@@ -49,16 +51,55 @@ class InferenceRouter:
         request = build_task_request(
             task=task,
             analysis=analysis,
+            corpus=None,
             required=required,
             repair_retries=self._config.runtime.repair_retries,
         )
 
         try:
-            return self._client_factory(self._config).complete(request, analysis=analysis)
+            return self._client_factory(self._config).complete(
+                request,
+                analysis=analysis,
+                corpus=None,
+            )
         except (InferenceBoundaryError, NetworkBoundaryError, SchemaBoundaryError) as error:
             if required:
                 raise
             return fallback_response(analysis, task, str(error))
+
+    def run_corpus_task(
+        self,
+        corpus: CorpusAnalysis,
+        task: InferenceTask,
+        required: bool,
+    ) -> InferenceResponse:
+        if task is not InferenceTask.CORPUS_SYNTHESIS:
+            raise InferenceBoundaryError(
+                "corpus inference requires corpus_synthesis task",
+                details={"task": task.value},
+            )
+        if not self._config.runtime.enabled:
+            if required:
+                raise InferenceBoundaryError("local inference is disabled by configuration")
+            return fallback_corpus_response(corpus, "runtime_disabled")
+
+        request = build_task_request(
+            task=task,
+            analysis=None,
+            corpus=corpus,
+            required=required,
+            repair_retries=self._config.runtime.repair_retries,
+        )
+        try:
+            return self._client_factory(self._config).complete(
+                request,
+                analysis=None,
+                corpus=corpus,
+            )
+        except (InferenceBoundaryError, NetworkBoundaryError, SchemaBoundaryError) as error:
+            if required:
+                raise
+            return fallback_corpus_response(corpus, str(error))
 
 
 def fallback_response(
@@ -115,6 +156,46 @@ def fallback_response(
         model=None,
         finish_reason=None,
         output=output,
+        used_fallback=True,
+        degraded=True,
+        failure_reason=failure_reason,
+    )
+
+
+def fallback_corpus_response(
+    corpus: CorpusAnalysis,
+    failure_reason: str,
+) -> InferenceResponse:
+    first_finding = corpus.cross_thread_findings[0] if corpus.cross_thread_findings else None
+    cited_thread_ids = (
+        [evidence.thread_id for evidence in first_finding.top_evidence[:3]]
+        if first_finding is not None
+        else []
+    )
+    return InferenceResponse(
+        task=InferenceTask.CORPUS_SYNTHESIS,
+        provider="deterministic_fallback",
+        model=None,
+        finish_reason=None,
+        output={
+            "headline": (
+                f"{first_finding.theme_label.title()} is the dominant cross-thread pattern"
+                if first_finding is not None
+                else f"Deterministic corpus summary for {corpus.name}"
+            ),
+            "key_patterns": [
+                f"{finding.theme_key} appears in {finding.thread_count} threads"
+                for finding in corpus.cross_thread_findings[:5]
+            ],
+            "cited_thread_ids": cited_thread_ids,
+            "recommended_actions": [
+                f"Review cross-thread evidence for {finding.theme_key}"
+                for finding in corpus.cross_thread_findings[:3]
+            ],
+            "confidence_note": (
+                f"Built from {corpus.thread_count} threads without runtime synthesis."
+            ),
+        },
         used_fallback=True,
         degraded=True,
         failure_reason=failure_reason,

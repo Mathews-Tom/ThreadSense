@@ -9,12 +9,14 @@ from threadsense.errors import SchemaBoundaryError
 
 if TYPE_CHECKING:
     from threadsense.models.analysis import ThreadAnalysis
+    from threadsense.models.corpus import CorpusAnalysis
 
 
 class InferenceTask(StrEnum):
     ANALYSIS_SUMMARY = "analysis_summary"
     FINDING_CLASSIFICATION = "finding_classification"
     REPORT_SUMMARY = "report_summary"
+    CORPUS_SYNTHESIS = "corpus_synthesis"
 
 
 @dataclass(frozen=True)
@@ -60,6 +62,7 @@ def validate_task_output(
     task: InferenceTask,
     payload: Mapping[str, Any],
     analysis: ThreadAnalysis | None = None,
+    corpus: CorpusAnalysis | None = None,
 ) -> dict[str, Any]:
     if task is InferenceTask.ANALYSIS_SUMMARY:
         return validate_analysis_summary_output(payload, analysis)
@@ -67,6 +70,8 @@ def validate_task_output(
         return validate_finding_classification_output(payload)
     if task is InferenceTask.REPORT_SUMMARY:
         return validate_report_summary_output(payload, analysis)
+    if task is InferenceTask.CORPUS_SYNTHESIS:
+        return validate_corpus_synthesis_output(payload, corpus)
     raise SchemaBoundaryError("inference task validator is missing", details={"task": task.value})
 
 
@@ -131,6 +136,35 @@ def validate_report_summary_output(
         "executive_summary": executive_summary,
         "caveats": caveats,
         "cited_theme_keys": cited_theme_keys,
+    }
+
+
+def validate_corpus_synthesis_output(
+    payload: Mapping[str, Any],
+    corpus: CorpusAnalysis | None = None,
+) -> dict[str, Any]:
+    headline = required_str(payload, "headline")
+    key_patterns = required_str_list(payload, "key_patterns")
+    cited_thread_ids = required_str_list(payload, "cited_thread_ids")
+    recommended_actions = required_str_list(payload, "recommended_actions")
+    confidence_note = required_str(payload, "confidence_note")
+
+    if corpus is not None:
+        valid_thread_ids = {
+            evidence.thread_id
+            for finding in corpus.cross_thread_findings
+            for evidence in finding.top_evidence
+        }
+        cited_thread_ids = [
+            thread_id for thread_id in cited_thread_ids if thread_id in valid_thread_ids
+        ]
+
+    return {
+        "headline": headline,
+        "key_patterns": key_patterns,
+        "cited_thread_ids": cited_thread_ids,
+        "recommended_actions": recommended_actions,
+        "confidence_note": confidence_note,
     }
 
 
