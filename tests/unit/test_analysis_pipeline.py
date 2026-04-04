@@ -7,7 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from threadsense.config import AnalysisConfig
-from threadsense.contracts import AbstractionLevel
+from threadsense.contracts import AbstractionLevel, AnalysisContract
 from threadsense.domains import load_domain_vocabulary
 from threadsense.models.analysis import load_analysis_artifact_file
 from threadsense.models.canonical import (
@@ -23,11 +23,13 @@ from threadsense.pipeline.analyze import (
     analyze_thread_file,
 )
 from threadsense.pipeline.strategies.keyword_heuristic import (
+    CommentSignal,
     are_near_duplicates,
     build_comment_signal,
     canonicalize_text,
     clean_text,
     extract_top_phrases,
+    score_severity,
     select_representative_quotes,
 )
 
@@ -257,3 +259,180 @@ def test_abstraction_level_changes_finding_granularity() -> None:
     assert len(operational.findings) >= len(architectural.findings)
     assert len(architectural.findings) >= len(strategic.findings)
     assert all(finding.severity == "high" for finding in strategic.findings)
+
+
+# ---------------------------------------------------------------------------
+# Text preprocessing: URL stripping
+# ---------------------------------------------------------------------------
+
+
+def test_clean_text_strips_urls() -> None:
+    assert clean_text("check https://example.com/path for info") == "check for info"
+    assert clean_text("see www.example.com/foo or ask") == "see or ask"
+    assert clean_text("https://a.io https://b.io") == ""
+
+
+def test_clean_text_strips_urls_preserving_surrounding_text() -> None:
+    text = "I use https://github.com/user/repo and it works great"
+    assert clean_text(text) == "I use and it works great"
+
+
+def test_url_tokens_excluded_from_signal() -> None:
+    comment = Comment(
+        thread_id="t",
+        comment_id="c1",
+        parent_comment_id=None,
+        author=AuthorRef(username="u", source_author_id=None),
+        body="Check https://www.reddit.com/r/test for the slow performance bug",
+        score=5,
+        created_utc=1.0,
+        depth=0,
+        permalink="https://example.com",
+    )
+    signal = build_comment_signal(comment)
+    assert signal is not None
+    assert "reddit" not in signal.tokens
+    assert "www" not in signal.tokens
+    assert "com" not in signal.tokens
+    assert "slow" in signal.tokens
+    assert "performance" in signal.tokens
+
+
+# ---------------------------------------------------------------------------
+# Text preprocessing: platform noise stopwords
+# ---------------------------------------------------------------------------
+
+
+def test_platform_noise_excluded_from_phrases() -> None:
+    comments = [
+        Comment(
+            thread_id="t",
+            comment_id=f"c{i}",
+            parent_comment_id=None,
+            author=AuthorRef(username="u", source_author_id=None),
+            body=f"lol edit tbh the performance is really slow here topic{i}",
+            score=3,
+            created_utc=float(i),
+            depth=0,
+            permalink="https://example.com",
+        )
+        for i in range(5)
+    ]
+    signals = [s for c in comments if (s := build_comment_signal(c)) is not None]
+    phrases = extract_top_phrases(signals, limit=10)
+    assert not any("lol" in phrase for phrase in phrases)
+    assert not any("edit" in phrase.split() for phrase in phrases)
+    assert not any("tbh" in phrase for phrase in phrases)
+
+
+# ---------------------------------------------------------------------------
+# Phrase extraction: unigram support
+# ---------------------------------------------------------------------------
+
+
+def test_extract_top_phrases_includes_frequent_unigrams() -> None:
+    comments = [
+        Comment(
+            thread_id="t",
+            comment_id=f"c{i}",
+            parent_comment_id=None,
+            author=AuthorRef(username=f"u{i}", source_author_id=None),
+            body=f"obsidian vault is great for embedding notes about topic{i}",
+            score=5,
+            created_utc=float(i),
+            depth=0,
+            permalink="https://example.com",
+        )
+        for i in range(5)
+    ]
+    signals = [s for c in comments if (s := build_comment_signal(c)) is not None]
+    phrases = extract_top_phrases(signals, limit=15)
+    assert "obsidian" in phrases
+    assert "vault" in phrases
+    assert "great" in phrases
+    assert "embedding" in phrases
+
+
+def test_extract_top_phrases_unigrams_require_min_frequency() -> None:
+    comments = [
+        Comment(
+            thread_id="t",
+            comment_id=f"c{i}",
+            parent_comment_id=None,
+            author=AuthorRef(username=f"u{i}", source_author_id=None),
+            body=f"unique{i} obsidian embedding setup for knowledge",
+            score=3,
+            created_utc=float(i),
+            depth=0,
+            permalink="https://example.com",
+        )
+        for i in range(2)
+    ]
+    signals = [s for c in comments if (s := build_comment_signal(c)) is not None]
+    phrases = extract_top_phrases(signals, limit=10)
+    # "obsidian" appears only 2 times — below the minimum frequency of 3
+    assert "obsidian" not in phrases
+
+
+# ---------------------------------------------------------------------------
+# Severity scoring: density normalization
+# ---------------------------------------------------------------------------
+
+
+def _make_signal(comment_id: str, body: str, score: int) -> CommentSignal:
+    comment = Comment(
+        thread_id="t",
+        comment_id=comment_id,
+        parent_comment_id=None,
+        author=AuthorRef(username="u", source_author_id=None),
+        body=body,
+        score=score,
+        created_utc=1.0,
+        depth=0,
+        permalink="https://example.com",
+    )
+    signal = build_comment_signal(comment)
+    assert signal is not None
+    return signal
+
+
+def test_severity_density_normalization_penalizes_low_signal_volume() -> None:
+    contract = AnalysisContract.from_dict(
+        {
+            "domain": "developer_tools",
+            "objective": "general_survey",
+            "abstraction_level": "operational",
+            "schema_version": "1.0",
+            "created_at_utc": 1.0,
+        }
+    )
+    # 20 generic comments with 1 upvote each, no markers
+    high_volume_signals = [
+        _make_signal(f"c{i}", f"this is a generic comment number {i}", 1) for i in range(20)
+    ]
+    # raw_score = 0*3 + 0 + 20 = 20, old formula: severity = high (>= 15)
+    # density = 20/20 = 1.0, weighted = 1.0 * 10 = 10, severity = medium (>= 6, < 15)
+    severity = score_severity(high_volume_signals, 0, 0, contract=contract)
+    assert severity == "medium"
+
+
+def test_severity_density_normalization_preserves_focused_findings() -> None:
+    contract = AnalysisContract.from_dict(
+        {
+            "domain": "developer_tools",
+            "objective": "general_survey",
+            "abstraction_level": "operational",
+            "schema_version": "1.0",
+            "created_at_utc": 1.0,
+        }
+    )
+    # 3 focused comments with issue markers and upvotes
+    focused_signals = [
+        _make_signal("c1", "the error crash is broken", 5),
+        _make_signal("c2", "slow failure on large threads", 5),
+        _make_signal("c3", "bug in the export workflow", 5),
+    ]
+    # issue_markers=6, request_markers=0, upvotes=15
+    # raw_score = 6*3 + 0 + 15 = 33, density = 33/3 = 11, weighted = 11 * 3 = 33
+    severity = score_severity(focused_signals, 6, 0, contract=contract)
+    assert severity == "high"

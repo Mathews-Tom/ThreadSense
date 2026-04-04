@@ -49,6 +49,26 @@ STOPWORDS = frozenset(
         "your",
     }
 )
+_PLATFORM_NOISE = frozenset(
+    {
+        "lol",
+        "imo",
+        "tbh",
+        "iirc",
+        "fwiw",
+        "afaik",
+        "tldr",
+        "edit",
+        "deleted",
+        "removed",
+        "http",
+        "https",
+        "www",
+        "com",
+        "org",
+    }
+)
+STOPWORDS = STOPWORDS | _PLATFORM_NOISE
 DEFAULT_DOMAIN_VOCABULARY = load_domain_vocabulary("developer_tools")
 
 
@@ -157,7 +177,11 @@ def build_comment_signal(
     )
 
 
+_URL_PATTERN = re.compile(r"https?://\S+|www\.\S+")
+
+
 def clean_text(text: str) -> str:
+    text = _URL_PATTERN.sub("", text)
     return re.sub(r"\s+", " ", text.strip())
 
 
@@ -176,20 +200,35 @@ def count_markers(canonical_text: str, markers: tuple[str, ...]) -> int:
     return sum(canonical_text.count(marker) for marker in markers)
 
 
+_UNIGRAM_MIN_LENGTH = 5
+_UNIGRAM_MIN_FREQUENCY = 3
+
+
 def extract_top_phrases(signals: list[CommentSignal], limit: int) -> list[str]:
     counter: Counter[str] = Counter()
     phrase_weight: Counter[str] = Counter()
+    unigram_counter: Counter[str] = Counter()
+    unigram_weight: Counter[str] = Counter()
     seen_canonical_texts: set[str] = set()
     for signal in signals:
         if signal.canonical_text in seen_canonical_texts:
             continue
         seen_canonical_texts.add(signal.canonical_text)
         filtered = [token for token in signal.tokens if token not in STOPWORDS and len(token) > 2]
+        score = max(signal.comment.score, 0)
         for size in (2, 3):
             for index in range(0, len(filtered) - size + 1):
                 phrase = " ".join(filtered[index : index + size])
                 counter[phrase] += 1
-                phrase_weight[phrase] += max(signal.comment.score, 0)
+                phrase_weight[phrase] += score
+        for token in filtered:
+            if len(token) >= _UNIGRAM_MIN_LENGTH:
+                unigram_counter[token] += 1
+                unigram_weight[token] += score
+    for token, count in unigram_counter.items():
+        if count >= _UNIGRAM_MIN_FREQUENCY:
+            counter[token] = count
+            phrase_weight[token] = unigram_weight[token]
     ranked = sorted(
         counter.items(),
         key=lambda item: (-item[1], -phrase_weight[item[0]], item[0]),
@@ -496,6 +535,9 @@ def dedupe_signals(
     return sorted(by_representative.values(), key=lambda signal: signal.comment.comment_id)
 
 
+_SEVERITY_VOLUME_CAP = 10
+
+
 def score_severity(
     signals: list[CommentSignal],
     issue_marker_count: int,
@@ -504,11 +546,14 @@ def score_severity(
     contract: AnalysisContract,
     severity_levels: tuple[str, ...] = DEFAULT_DOMAIN_VOCABULARY.severity_levels,
 ) -> str:
-    weighted_score = (
+    raw_score = (
         issue_marker_count * 3
         + request_marker_count
         + sum(max(signal.comment.score, 0) for signal in signals)
     )
+    comment_count = max(len(signals), 1)
+    density = raw_score / comment_count
+    weighted_score = density * min(comment_count, _SEVERITY_VOLUME_CAP)
     high_threshold = 15
     medium_threshold = 6
     if contract.objective is ObjectiveType.FEATURE_DEMAND:
