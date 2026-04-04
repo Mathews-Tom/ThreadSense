@@ -214,24 +214,24 @@ def validate_vocabulary_expansion_output(payload: Mapping[str, Any]) -> dict[str
         raise SchemaBoundaryError(
             "vocabulary expansion must include new_themes dict",
         )
-    normalized_existing: dict[str, list[str]] = {}
-    for theme_key, keywords in existing_themes.items():
-        if not isinstance(keywords, list):
-            continue
-        normalized_existing[str(theme_key)] = [
-            str(k).strip().lower() for k in keywords if isinstance(k, str) and k.strip()
-        ][:10]
-    normalized_new: dict[str, list[str]] = {}
-    for theme_key, keywords in list(new_themes.items())[:3]:
-        if not isinstance(keywords, list):
-            continue
-        normalized_new[str(theme_key)] = [
-            str(k).strip().lower() for k in keywords if isinstance(k, str) and k.strip()
-        ][:10]
     return {
-        "existing_themes": normalized_existing,
-        "new_themes": normalized_new,
+        "existing_themes": _normalize_keyword_map(existing_themes),
+        "new_themes": _normalize_keyword_map(dict(list(new_themes.items())[:3])),
     }
+
+
+def _normalize_keyword_map(
+    raw: dict[str, object],
+    max_per_theme: int = 10,
+) -> dict[str, list[str]]:
+    normalized: dict[str, list[str]] = {}
+    for theme_key, keywords in raw.items():
+        if not isinstance(keywords, list):
+            continue
+        normalized[str(theme_key)] = [
+            str(k).strip().lower() for k in keywords if isinstance(k, str) and k.strip()
+        ][:max_per_theme]
+    return normalized
 
 
 def required_float(payload: Mapping[str, Any], key: str) -> float:

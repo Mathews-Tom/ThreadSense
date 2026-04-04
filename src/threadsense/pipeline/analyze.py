@@ -37,19 +37,6 @@ STRATEGY_REGISTRY: dict[str, type[KeywordHeuristicStrategy]] = {
 }
 
 
-def resolve_strategy(config: AnalysisConfig, contract: AnalysisContract) -> AnalysisStrategy:
-    strategy_cls = STRATEGY_REGISTRY.get(config.strategy)
-    if strategy_cls is None:
-        raise AnalysisBoundaryError(
-            f"unknown analysis strategy: {config.strategy}",
-            details={"strategy": config.strategy},
-        )
-    return strategy_cls(
-        duplicate_threshold=config.duplicate_threshold,
-        vocabulary=load_domain_vocabulary(contract.domain.value),
-    )
-
-
 def analyze_thread_file(
     normalized_artifact_path: Path,
     config: AnalysisConfig | None = None,
