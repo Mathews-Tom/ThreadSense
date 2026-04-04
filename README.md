@@ -52,23 +52,23 @@ Artifacts remain separate at each stage so the pipeline is inspectable and rerun
 
 Core modules:
 
-- [src/threadsense/connectors/reddit.py](/Users/druk/WorkSpace/AetherForge/ThreadSense/src/threadsense/connectors/reddit.py): Reddit ingestion, retries, response validation, `morechildren` expansion
-- [src/threadsense/models/canonical.py](/Users/druk/WorkSpace/AetherForge/ThreadSense/src/threadsense/models/canonical.py): canonical thread schema
-- [src/threadsense/pipeline/normalize.py](/Users/druk/WorkSpace/AetherForge/ThreadSense/src/threadsense/pipeline/normalize.py): Reddit-to-canonical normalization
-- [src/threadsense/pipeline/analyze.py](/Users/druk/WorkSpace/AetherForge/ThreadSense/src/threadsense/pipeline/analyze.py): deterministic analysis baseline
-- [src/threadsense/inference](/Users/druk/WorkSpace/AetherForge/ThreadSense/src/threadsense/inference): local inference contracts, prompts, runtime adapter, and routing
-- [src/threadsense/reporting](/Users/druk/WorkSpace/AetherForge/ThreadSense/src/threadsense/reporting): report assembly, rendering, and quality checks
-- [src/threadsense/workflows.py](/Users/druk/WorkSpace/AetherForge/ThreadSense/src/threadsense/workflows.py): shared fetch, normalize, analyze, infer, and report execution
-- [src/threadsense/batching.py](/Users/druk/WorkSpace/AetherForge/ThreadSense/src/threadsense/batching.py): batch manifests and bounded parallel runs
-- [src/threadsense/api_server.py](/Users/druk/WorkSpace/AetherForge/ThreadSense/src/threadsense/api_server.py): local HTTP surface
+- [src/threadsense/connectors/reddit.py](src/threadsense/connectors/reddit.py): Reddit ingestion, retries, response validation, `morechildren` expansion
+- [src/threadsense/models/canonical.py](src/threadsense/models/canonical.py): canonical thread schema
+- [src/threadsense/pipeline/normalize.py](src/threadsense/pipeline/normalize.py): Reddit-to-canonical normalization
+- [src/threadsense/pipeline/analyze.py](src/threadsense/pipeline/analyze.py): deterministic analysis baseline
+- [src/threadsense/inference](src/threadsense/inference): local inference contracts, prompts, runtime adapter, and routing
+- [src/threadsense/reporting](src/threadsense/reporting): report assembly, rendering, and quality checks
+- [src/threadsense/workflows.py](src/threadsense/workflows.py): shared fetch, normalize, analyze, infer, and report execution
+- [src/threadsense/batching.py](src/threadsense/batching.py): batch manifests and bounded parallel runs
+- [src/threadsense/api_server.py](src/threadsense/api_server.py): local HTTP surface
 
 Supporting docs:
 
-- [docs/overview.md](/Users/druk/WorkSpace/AetherForge/ThreadSense/docs/overview.md)
-- [docs/system-design.md](/Users/druk/WorkSpace/AetherForge/ThreadSense/docs/system-design.md)
-- [docs/local-runtime-contract.md](/Users/druk/WorkSpace/AetherForge/ThreadSense/docs/local-runtime-contract.md)
-- [docs/batch-api-runtime.md](/Users/druk/WorkSpace/AetherForge/ThreadSense/docs/batch-api-runtime.md)
-- [.docs/2026-04-04-system-enhancement-analysis.md](/Users/druk/WorkSpace/AetherForge/ThreadSense/.docs/2026-04-04-system-enhancement-analysis.md)
+- [docs/overview.md](docs/overview.md)
+- [docs/system-design.md](docs/system-design.md)
+- [docs/local-runtime-contract.md](docs/local-runtime-contract.md)
+- [docs/batch-api-runtime.md](docs/batch-api-runtime.md)
+- [.docs/2026-04-04-system-enhancement-analysis.md](.docs/2026-04-04-system-enhancement-analysis.md)
 
 ## Requirements
 
@@ -129,13 +129,13 @@ For the detailed command-by-command reference, including:
 - `serve`
 - `run reddit`
 
-see [docs/usage.md](/Users/druk/WorkSpace/AetherForge/ThreadSense/docs/usage.md).
+see [docs/usage.md](docs/usage.md).
 
 ## Configuration
 
 Default config file:
 
-- [threadsense.toml](/Users/druk/WorkSpace/AetherForge/ThreadSense/threadsense.toml)
+- [threadsense.toml](threadsense.toml)
 
 Important sections:
 
@@ -185,7 +185,7 @@ Default target:
 - chat path: `/v1/chat/completions`
 - resolved endpoint: `http://127.0.0.1:8080/v1/chat/completions`
 
-The local runtime contract is documented in [docs/local-runtime-contract.md](/Users/druk/WorkSpace/AetherForge/ThreadSense/docs/local-runtime-contract.md).
+The local runtime contract is documented in [docs/local-runtime-contract.md](docs/local-runtime-contract.md).
 
 ## Validation
 
@@ -205,7 +205,7 @@ The repo includes:
 
 - unit tests for config, connectors, normalization, analysis, inference, reporting, observability, batching, and API validation
 - integration tests for fetch, normalization, inference, reporting, batch runs, and API workflows
-- fixture-backed Reddit payloads and replay manifests under [tests/fixtures](/Users/druk/WorkSpace/AetherForge/ThreadSense/tests/fixtures)
+- fixture-backed Reddit payloads and replay manifests under [tests/fixtures](tests/fixtures)
 
 ## Current Limits
 
