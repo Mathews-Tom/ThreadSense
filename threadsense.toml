@@ -34,6 +34,7 @@ normalized_dirname = "normalized"
 analysis_dirname = "analysis"
 report_dirname = "reports"
 batch_dirname = "batches"
+corpus_dirname = "corpora"
 
 [batch]
 max_workers = 2
@@ -54,3 +55,7 @@ domain = "developer_tools"
 objective = "general_survey"
 abstraction_level = "operational"
 duplicate_threshold = 0.88
+
+[corpus]
+trend_period = "month"
+evidence_limit = 3

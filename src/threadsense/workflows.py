@@ -15,10 +15,17 @@ from threadsense.connectors.reddit import (
     RedditThreadRequest,
 )
 from threadsense.connectors.registry import SourceRegistry
-from threadsense.contracts import AnalysisContract
+from threadsense.contracts import AnalysisContract, DomainType
+from threadsense.evaluation import compare_strategies, load_golden_dataset
 from threadsense.inference import InferenceResponse, InferenceRouter, InferenceTask
+from threadsense.models.canonical import load_canonical_thread
+from threadsense.models.corpus import CorpusAnalysis
 from threadsense.models.results import (
     AnalyzeResult,
+    CorpusAnalyzeResult,
+    CorpusCreateResult,
+    CorpusReportResult,
+    EvaluateResult,
     FetchResult,
     InferResult,
     NormalizeResult,
@@ -32,17 +39,23 @@ from threadsense.observability import (
     observe_stage,
 )
 from threadsense.pipeline.analyze import analyze_thread_file
+from threadsense.pipeline.corpus import build_corpus_analysis, build_corpus_manifest
 from threadsense.pipeline.storage import (
+    build_corpus_paths,
     build_storage_paths,
     load_analysis_artifact,
+    load_corpus_manifest,
     load_raw_artifact,
     persist_analysis_artifact,
+    persist_corpus_analysis,
+    persist_corpus_manifest,
     persist_normalized_artifact,
     persist_raw_artifact,
     persist_report_artifact,
     write_text,
 )
 from threadsense.reporting import build_thread_report, render_report_markdown
+from threadsense.reporting.corpus_render import render_corpus_markdown
 
 RedditConnectorFactory = Callable[[AppConfig], RedditConnector]
 HackerNewsConnectorFactory = Callable[[AppConfig], HackerNewsConnector]
@@ -268,6 +281,32 @@ def infer_analysis(
         )
 
 
+def infer_corpus(
+    *,
+    config: AppConfig,
+    logger: logging.Logger,
+    trace: TraceContext,
+    corpus: CorpusAnalysis,
+    required: bool,
+    registry: MetricsRegistry = DEFAULT_METRICS,
+) -> InferenceResponse:
+    with observe_stage(
+        registry=registry,
+        logger=logger,
+        trace=trace,
+        stage="infer",
+        labels={"task": InferenceTask.CORPUS_SYNTHESIS.value},
+    ):
+        with runtime_slot_limit(config.limits.runtime_concurrency):
+            response = InferenceRouter(config).run_corpus_task(
+                corpus=corpus,
+                task=InferenceTask.CORPUS_SYNTHESIS,
+                required=required,
+            )
+        record_runtime_completion(registry, response)
+        return response
+
+
 def report_analysis(
     *,
     config: AppConfig,
@@ -459,6 +498,171 @@ def run_source_pipeline(
         analyze=analyze_result,
         report=report_result,
     )
+
+
+def create_corpus(
+    *,
+    config: AppConfig,
+    logger: logging.Logger,
+    trace: TraceContext,
+    name: str,
+    description: str,
+    domain: str,
+    analysis_dir: Path,
+    source_filter: str | None,
+    output_path: Path | None,
+    registry: MetricsRegistry = DEFAULT_METRICS,
+) -> CorpusCreateResult:
+    with observe_stage(
+        registry=registry,
+        logger=logger,
+        trace=trace,
+        stage="corpus_create",
+    ):
+        analysis_paths = sorted(analysis_dir.rglob("*.json"))
+        manifest = build_corpus_manifest(
+            name=name,
+            description=description,
+            domain=DomainType(domain),
+            analysis_paths=analysis_paths,
+            source_filter=source_filter,
+        )
+        corpus_paths = build_corpus_paths(config.storage, manifest.corpus_id)
+        resolved_output_path = output_path or corpus_paths.manifest_path
+        persist_corpus_manifest(resolved_output_path, manifest)
+        return CorpusCreateResult(
+            status="ready",
+            manifest_path=resolved_output_path,
+            default_store_path=corpus_paths.manifest_path,
+            corpus_id=manifest.corpus_id,
+            thread_count=len(manifest.thread_ids),
+        )
+
+
+def analyze_corpus(
+    *,
+    config: AppConfig,
+    logger: logging.Logger,
+    trace: TraceContext,
+    manifest_path: Path,
+    output_path: Path | None,
+    registry: MetricsRegistry = DEFAULT_METRICS,
+) -> CorpusAnalyzeResult:
+    with observe_stage(
+        registry=registry,
+        logger=logger,
+        trace=trace,
+        stage="corpus_analyze",
+    ):
+        manifest = load_corpus_manifest(manifest_path)
+        corpus = build_corpus_analysis(
+            manifest,
+            manifest_path=manifest_path,
+            evidence_limit=config.corpus.evidence_limit,
+            period=config.corpus.trend_period,
+        )
+        corpus_paths = build_corpus_paths(config.storage, manifest.corpus_id)
+        resolved_output_path = output_path or corpus_paths.analysis_path
+        persist_corpus_analysis(resolved_output_path, corpus)
+        return CorpusAnalyzeResult(
+            status="ready",
+            input_path=manifest_path,
+            output_path=resolved_output_path,
+            default_store_path=corpus_paths.analysis_path,
+            corpus_id=corpus.corpus_id,
+            thread_count=corpus.thread_count,
+            finding_count=len(corpus.cross_thread_findings),
+            trend_count=len(corpus.temporal_trends),
+        )
+
+
+def report_corpus(
+    *,
+    config: AppConfig,
+    logger: logging.Logger,
+    trace: TraceContext,
+    manifest_path: Path,
+    output_path: Path | None,
+    with_summary: bool,
+    summary_required: bool,
+    registry: MetricsRegistry = DEFAULT_METRICS,
+) -> CorpusReportResult:
+    with observe_stage(
+        registry=registry,
+        logger=logger,
+        trace=trace,
+        stage="corpus_report",
+    ):
+        manifest = load_corpus_manifest(manifest_path)
+        corpus = build_corpus_analysis(
+            manifest,
+            manifest_path=manifest_path,
+            evidence_limit=config.corpus.evidence_limit,
+            period=config.corpus.trend_period,
+        )
+        summary_response = None
+        if with_summary:
+            summary_response = infer_corpus(
+                config=config,
+                logger=logger,
+                trace=trace,
+                corpus=corpus,
+                required=summary_required,
+                registry=registry,
+            )
+        corpus_paths = build_corpus_paths(config.storage, corpus.corpus_id)
+        resolved_output_path = output_path or corpus_paths.report_markdown_path
+        write_text(resolved_output_path, render_corpus_markdown(corpus, summary_response))
+        return CorpusReportResult(
+            status="ready",
+            input_path=manifest_path,
+            output_path=resolved_output_path,
+            default_store_path=corpus_paths.report_markdown_path,
+            corpus_id=corpus.corpus_id,
+            summary_provider=summary_response.provider if summary_response is not None else None,
+            degraded_summary=summary_response.degraded if summary_response is not None else False,
+        )
+
+
+def evaluate_golden_dataset(
+    *,
+    config: AppConfig,
+    logger: logging.Logger,
+    trace: TraceContext,
+    dataset_path: Path,
+    strategy_names: tuple[str, str],
+    registry: MetricsRegistry = DEFAULT_METRICS,
+) -> EvaluateResult:
+    with observe_stage(
+        registry=registry,
+        logger=logger,
+        trace=trace,
+        stage="evaluate",
+    ):
+        dataset = load_golden_dataset(dataset_path)
+        thread = load_canonical_thread(Path(dataset.thread_fixture))
+        config_a = config.analysis.model_copy(
+            update={"strategy": strategy_names[0], "domain": dataset.domain}
+        )
+        config_b = config.analysis.model_copy(
+            update={"strategy": strategy_names[1], "domain": dataset.domain}
+        )
+        comparison = compare_strategies(
+            thread,
+            Path(dataset.thread_fixture),
+            config_a,
+            config_b,
+            dataset,
+        )
+        return EvaluateResult(
+            status="ready",
+            dataset_path=dataset_path,
+            strategy_a=comparison.strategy_a,
+            strategy_b=comparison.strategy_b,
+            winner=comparison.winner,
+            metrics_a=comparison.metrics_a.__dict__,
+            metrics_b=comparison.metrics_b.__dict__,
+        )
 
 
 def record_runtime_completion(

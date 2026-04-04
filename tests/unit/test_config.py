@@ -8,6 +8,7 @@ from threadsense import __version__
 from threadsense.config import InferenceBackend, PrivacyMode, load_config
 from threadsense.contracts import AbstractionLevel, DomainType, ObjectiveType
 from threadsense.errors import ConfigurationError
+from threadsense.models.corpus import TrendPeriod
 
 
 def test_load_config_uses_defaults_when_no_file_exists(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -34,6 +35,7 @@ def test_load_config_uses_defaults_when_no_file_exists(monkeypatch: pytest.Monke
     assert config.storage.analysis_dirname == "analysis"
     assert config.storage.report_dirname == "reports"
     assert config.storage.batch_dirname == "batches"
+    assert config.storage.corpus_dirname == "corpora"
     assert config.batch.max_workers == 2
     assert config.batch.max_jobs == 25
     assert config.batch.fail_fast is False
@@ -46,6 +48,8 @@ def test_load_config_uses_defaults_when_no_file_exists(monkeypatch: pytest.Monke
     assert config.analysis.objective is ObjectiveType.GENERAL_SURVEY
     assert config.analysis.abstraction_level is AbstractionLevel.OPERATIONAL
     assert config.analysis.duplicate_threshold == 0.88
+    assert config.corpus.trend_period is TrendPeriod.MONTH
+    assert config.corpus.evidence_limit == 3
 
 
 def test_load_config_reads_toml_and_env_overrides(
@@ -91,6 +95,7 @@ def test_load_config_reads_toml_and_env_overrides(
                 'analysis_dirname = "analysis-store"',
                 'report_dirname = "report-store"',
                 'batch_dirname = "batch-store"',
+                'corpus_dirname = "corpus-store"',
                 "",
                 "[batch]",
                 "max_workers = 3",
@@ -109,6 +114,10 @@ def test_load_config_reads_toml_and_env_overrides(
                 'domain = "product_feedback"',
                 'objective = "feature_demand"',
                 'abstraction_level = "architectural"',
+                "",
+                "[corpus]",
+                'trend_period = "week"',
+                "evidence_limit = 4",
             ]
         ),
         encoding="utf-8",
@@ -144,6 +153,7 @@ def test_load_config_reads_toml_and_env_overrides(
     assert config.storage.analysis_dirname == "analysis-store"
     assert config.storage.report_dirname == "report-store"
     assert config.storage.batch_dirname == "batch-store"
+    assert config.storage.corpus_dirname == "corpus-store"
     assert config.batch.max_workers == 4
     assert config.batch.max_jobs == 40
     assert config.batch.fail_fast is True
@@ -154,6 +164,8 @@ def test_load_config_reads_toml_and_env_overrides(
     assert config.analysis.domain is DomainType.HIRING_CAREERS
     assert config.analysis.objective is ObjectiveType.COMPETITIVE_INTELLIGENCE
     assert config.analysis.abstraction_level is AbstractionLevel.STRATEGIC
+    assert config.corpus.trend_period is TrendPeriod.WEEK
+    assert config.corpus.evidence_limit == 4
 
 
 def test_load_config_rejects_invalid_privacy_mode(tmp_path: Path) -> None:

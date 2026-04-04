@@ -4,29 +4,46 @@ import json
 
 from threadsense.inference.contracts import InferenceMessage, InferenceRequest, InferenceTask
 from threadsense.models.analysis import ThreadAnalysis
+from threadsense.models.corpus import CorpusAnalysis
 
 
 def build_task_request(
     task: InferenceTask,
-    analysis: ThreadAnalysis,
+    *,
+    analysis: ThreadAnalysis | None = None,
+    corpus: CorpusAnalysis | None = None,
     required: bool,
     repair_retries: int,
 ) -> InferenceRequest:
     if task is InferenceTask.ANALYSIS_SUMMARY:
+        if analysis is None:
+            raise ValueError("analysis payload is required for analysis summary")
         return build_analysis_summary_request(
             analysis=analysis,
             required=required,
             repair_retries=repair_retries,
         )
     if task is InferenceTask.FINDING_CLASSIFICATION:
+        if analysis is None:
+            raise ValueError("analysis payload is required for finding classification")
         return build_finding_classification_request(
             analysis=analysis,
             required=required,
             repair_retries=repair_retries,
         )
     if task is InferenceTask.REPORT_SUMMARY:
+        if analysis is None:
+            raise ValueError("analysis payload is required for report summary")
         return build_report_summary_request(
             analysis=analysis,
+            required=required,
+            repair_retries=repair_retries,
+        )
+    if task is InferenceTask.CORPUS_SYNTHESIS:
+        if corpus is None:
+            raise ValueError("corpus payload is required for corpus synthesis")
+        return build_corpus_synthesis_request(
+            corpus=corpus,
             required=required,
             repair_retries=repair_retries,
         )
@@ -132,6 +149,41 @@ def build_report_summary_request(
     )
 
 
+def build_corpus_synthesis_request(
+    corpus: CorpusAnalysis,
+    required: bool,
+    repair_retries: int,
+) -> InferenceRequest:
+    return InferenceRequest(
+        task=InferenceTask.CORPUS_SYNTHESIS,
+        messages=[
+            InferenceMessage(
+                role="system",
+                content=(
+                    "You synthesize evidence-backed corpus analysis across threads. "
+                    "Return only valid JSON with keys headline, key_patterns, "
+                    "cited_thread_ids, recommended_actions, confidence_note."
+                ),
+            ),
+            InferenceMessage(
+                role="user",
+                content=(
+                    "Use only the provided deterministic cross-thread evidence. "
+                    "Every cited thread id must come from the input. "
+                    f"Input:\n{render_corpus_payload(corpus)}"
+                ),
+            ),
+        ],
+        required=required,
+        repair_retries=repair_retries,
+        repair_instruction=(
+            "Return only valid JSON with keys headline, key_patterns, "
+            "cited_thread_ids, recommended_actions, confidence_note. "
+            "The list fields must all contain strings."
+        ),
+    )
+
+
 def render_analysis_payload(analysis: ThreadAnalysis) -> str:
     payload = {
         "thread_id": analysis.thread_id,
@@ -148,6 +200,36 @@ def render_analysis_payload(analysis: ThreadAnalysis) -> str:
                 "quotes": [quote.body_excerpt for quote in finding.quotes[:2]],
             }
             for finding in analysis.findings[:5]
+        ],
+    }
+    return json.dumps(payload, indent=2)
+
+
+def render_corpus_payload(corpus: CorpusAnalysis) -> str:
+    payload = {
+        "corpus_id": corpus.corpus_id,
+        "name": corpus.name,
+        "domain": corpus.domain.value,
+        "thread_count": corpus.thread_count,
+        "cross_thread_findings": [
+            {
+                "theme_key": finding.theme_key,
+                "theme_label": finding.theme_label,
+                "severity": finding.severity,
+                "thread_count": finding.thread_count,
+                "total_comment_count": finding.total_comment_count,
+                "top_evidence": [
+                    {
+                        "thread_id": evidence.thread_id,
+                        "thread_title": evidence.thread_title,
+                        "finding_severity": evidence.finding_severity,
+                        "comment_count": evidence.comment_count,
+                        "quote": evidence.top_quote.body_excerpt,
+                    }
+                    for evidence in finding.top_evidence[:3]
+                ],
+            }
+            for finding in corpus.cross_thread_findings[:5]
         ],
     }
     return json.dumps(payload, indent=2)

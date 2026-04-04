@@ -64,6 +64,12 @@ def _normalize_analysis_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     analysis = dict(normalized["analysis"])
     provenance = dict(analysis["provenance"])
     provenance["analyzed_at_utc"] = 0.0
+    contract = provenance.get("contract")
+    if isinstance(contract, dict):
+        normalized_contract = dict(contract)
+        if "created_at_utc" in normalized_contract:
+            normalized_contract["created_at_utc"] = 0.0
+        provenance["contract"] = normalized_contract
     analysis["provenance"] = provenance
     normalized["analysis"] = analysis
     return normalized

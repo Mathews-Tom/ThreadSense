@@ -181,3 +181,41 @@ def test_build_parser_parses_replay_command() -> None:
 
     assert args.command == "replay"
     assert args.analysis_artifact == Path("analysis.json")
+
+
+def test_build_parser_parses_corpus_create_command() -> None:
+    parser = cli.build_parser()
+    args = parser.parse_args(
+        [
+            "corpus",
+            "create",
+            "--name",
+            "Demo Corpus",
+            "--domain",
+            "developer_tools",
+            "--analysis-dir",
+            "analysis",
+        ]
+    )
+
+    assert args.command == "corpus"
+    assert args.corpus_command == "create"
+    assert args.analysis_dir == Path("analysis")
+
+
+def test_build_parser_parses_evaluate_command() -> None:
+    parser = cli.build_parser()
+    args = parser.parse_args(
+        [
+            "evaluate",
+            "--golden",
+            "tests/golden/manifest.json",
+            "--strategy",
+            "keyword_heuristic",
+            "keyword_heuristic",
+        ]
+    )
+
+    assert args.command == "evaluate"
+    assert args.golden == Path("tests/golden/manifest.json")
+    assert args.strategy == ["keyword_heuristic", "keyword_heuristic"]
