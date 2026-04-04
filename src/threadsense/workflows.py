@@ -136,7 +136,7 @@ def analyze_normalized_thread(
         trace=trace,
         stage="analyze",
     ):
-        analysis = analyze_thread_file(input_path)
+        analysis = analyze_thread_file(input_path, config=config.analysis)
         storage_paths = build_storage_paths(
             config.storage,
             analysis.source_name,

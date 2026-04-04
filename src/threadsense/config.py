@@ -88,6 +88,12 @@ class LimitsConfig:
 
 
 @dataclass(frozen=True)
+class AnalysisConfig:
+    strategy: str
+    duplicate_threshold: float
+
+
+@dataclass(frozen=True)
 class AppConfig:
     inference_backend: InferenceBackend
     privacy_mode: PrivacyMode
@@ -98,6 +104,7 @@ class AppConfig:
     batch: BatchConfig
     api: ApiConfig
     limits: LimitsConfig
+    analysis: AnalysisConfig
 
 
 def _read_toml(path: Path | None) -> dict[str, Any]:
@@ -517,6 +524,47 @@ def _load_api_config(
     )
 
 
+def _parse_threshold(value: str, env_key: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as error:
+        raise ConfigurationError(
+            f"configuration value must be numeric: {env_key}",
+            details={"env_key": env_key, "value": value},
+        ) from error
+    if not (0.0 < parsed <= 1.0):
+        raise ConfigurationError(
+            f"configuration threshold must be between 0 and 1: {env_key}",
+            details={"env_key": env_key, "value": value},
+        )
+    return parsed
+
+
+def _load_analysis_config(
+    resolved_env: Mapping[str, str],
+    analysis_section: Mapping[str, Any],
+) -> AnalysisConfig:
+    return AnalysisConfig(
+        strategy=_read_section_str(
+            resolved_env,
+            "THREADSENSE_ANALYSIS_STRATEGY",
+            analysis_section,
+            "strategy",
+            "keyword_heuristic",
+        ),
+        duplicate_threshold=_parse_threshold(
+            _read_section_str(
+                resolved_env,
+                "THREADSENSE_ANALYSIS_DUPLICATE_THRESHOLD",
+                analysis_section,
+                "duplicate_threshold",
+                "0.88",
+            ),
+            "THREADSENSE_ANALYSIS_DUPLICATE_THRESHOLD",
+        ),
+    )
+
+
 def _load_limits_config(
     resolved_env: Mapping[str, str],
     limits_section: Mapping[str, Any],
@@ -552,6 +600,7 @@ def load_config(
     batch_section = _read_section(raw_config, "batch")
     api_section = _read_section(raw_config, "api")
     limits_section = _read_section(raw_config, "limits")
+    analysis_section = _read_section(raw_config, "analysis")
     backend, privacy_mode = _load_app_settings(resolved_env, app_section)
     runtime = _load_runtime_config(resolved_env, runtime_section)
     source_policy = _load_source_policy(resolved_env, source_section)
@@ -560,6 +609,7 @@ def load_config(
     batch = _load_batch_config(resolved_env, batch_section)
     api = _load_api_config(resolved_env, api_section)
     limits = _load_limits_config(resolved_env, limits_section)
+    analysis = _load_analysis_config(resolved_env, analysis_section)
     return AppConfig(
         inference_backend=backend,
         privacy_mode=privacy_mode,
@@ -570,6 +620,7 @@ def load_config(
         batch=batch,
         api=api,
         limits=limits,
+        analysis=analysis,
     )
 
 
