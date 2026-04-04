@@ -41,3 +41,7 @@ max_request_bytes = 1048576
 
 [limits]
 runtime_concurrency = 1
+
+[analysis]
+strategy = "keyword_heuristic"
+duplicate_threshold = 0.88

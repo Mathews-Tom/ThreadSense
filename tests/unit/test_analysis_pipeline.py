@@ -11,6 +11,8 @@ from threadsense.models.canonical import load_canonical_thread
 from threadsense.pipeline.analyze import (
     analyze_thread,
     analyze_thread_file,
+)
+from threadsense.pipeline.strategies.keyword_heuristic import (
     are_near_duplicates,
     build_comment_signal,
     canonicalize_text,
@@ -34,7 +36,7 @@ def test_duplicate_detection_marks_exact_duplicate_comments() -> None:
     left = build_comment_signal(thread.comments[0])
     right = build_comment_signal(thread.comments[1])
 
-    assert are_near_duplicates(left, right) is True
+    assert are_near_duplicates(left, right, threshold=0.88) is True
 
 
 def test_quote_selection_prefers_high_signal_comments() -> None:

@@ -38,6 +38,8 @@ def test_load_config_uses_defaults_when_no_file_exists(monkeypatch: pytest.Monke
     assert config.api.port == 8090
     assert config.api.max_request_bytes == 1048576
     assert config.limits.runtime_concurrency == 1
+    assert config.analysis.strategy == "keyword_heuristic"
+    assert config.analysis.duplicate_threshold == 0.88
 
 
 def test_load_config_reads_toml_and_env_overrides(
