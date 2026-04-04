@@ -42,10 +42,10 @@ from threadsense.observability import (
     emit_log,
     observe_stage,
 )
-from threadsense.pipeline.alignment import suggest_domain
 from threadsense.pipeline.analyze import analyze_thread_file
 from threadsense.pipeline.corpus import build_corpus_analysis, build_corpus_manifest
 from threadsense.pipeline.corpus_index import index_corpus, search_index
+from threadsense.pipeline.domain_detect import detect_domain
 from threadsense.pipeline.storage import (
     build_corpus_paths,
     build_storage_paths,
@@ -823,11 +823,11 @@ def resolve_analysis_contract_for_thread(
             abstraction_level=config.analysis.abstraction_level,
         )
     thread = load_normalized_artifact(input_path)
-    suggested_domain = suggest_domain(thread, exclude=base_contract.domain)
-    if suggested_domain is None:
+    result = detect_domain(thread, base_contract.domain)
+    if not result.switched:
         return base_contract
     return AnalysisContract(
-        domain=DomainType(suggested_domain),
+        domain=result.selected,
         objective=base_contract.objective,
         abstraction_level=base_contract.abstraction_level,
     )

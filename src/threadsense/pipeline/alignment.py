@@ -3,10 +3,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from threadsense.contracts import AnalysisContract, DomainType
-from threadsense.domains import load_domain_vocabulary
 from threadsense.models.analysis import AlignmentCheck
 from threadsense.models.canonical import Thread
-from threadsense.pipeline.strategies.keyword_heuristic import build_comment_signal, classify_theme
+from threadsense.pipeline.domain_detect import detect_domain
 
 if TYPE_CHECKING:
     from threadsense.models.analysis import ThreadAnalysis
@@ -52,31 +51,7 @@ def check_domain_alignment(
 
 
 def suggest_domain(thread: Thread, exclude: DomainType) -> str | None:
-    best_domain: str | None = None
-    best_score = 0
-    for domain in DomainType:
-        if domain in {exclude, DomainType.CUSTOM}:
-            continue
-        vocabulary = load_domain_vocabulary(domain.value)
-        score = 0
-        for comment in thread.comments:
-            signal = build_comment_signal(
-                comment,
-                theme_rules=vocabulary.theme_rules,
-                issue_markers=vocabulary.issue_markers,
-                request_markers=vocabulary.request_markers,
-            )
-            if signal is None:
-                continue
-            theme = classify_theme(
-                signal,
-                issue_fallback_theme=vocabulary.issue_fallback_theme,
-                request_fallback_theme=vocabulary.request_fallback_theme,
-                default_theme=vocabulary.default_theme,
-            )
-            if theme != vocabulary.default_theme:
-                score += 1
-        if score > best_score:
-            best_score = score
-            best_domain = domain.value
-    return best_domain
+    result = detect_domain(thread, exclude)
+    if not result.switched:
+        return None
+    return result.selected.value
