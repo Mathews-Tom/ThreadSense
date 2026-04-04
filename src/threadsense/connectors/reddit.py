@@ -12,6 +12,7 @@ from urllib import parse
 import httpx
 
 from threadsense.config import RedditConfig
+from threadsense.connectors import FetchRequest, RawArtifact
 from threadsense.errors import (
     NetworkBoundaryError,
     RedditInputError,
@@ -74,6 +75,18 @@ class RedditThreadResult:
     raw_thread_payload: list[JsonObject]
     raw_morechildren_payloads: list[JsonObject]
 
+    @property
+    def source_name(self) -> str:
+        return "reddit"
+
+    @property
+    def source_thread_id(self) -> str:
+        return self.post.id
+
+    @property
+    def thread_title(self) -> str:
+        return self.post.title
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "artifact_version": 1,
@@ -91,6 +104,8 @@ class RedditThreadResult:
 
 
 class RedditConnector:
+    source_name = "reddit"
+
     def __init__(
         self,
         config: RedditConfig,
@@ -138,6 +153,26 @@ class RedditConnector:
             raw_thread_payload=payload_list,
             raw_morechildren_payloads=raw_morechildren_payloads,
         )
+
+    def fetch(self, request: FetchRequest) -> RawArtifact:
+        return self.fetch_thread(
+            RedditThreadRequest(
+                post_url=request.url,
+                expand_more=request.expand,
+            )
+        )
+
+    def normalize(self, raw_artifact: Mapping[str, Any], raw_artifact_path: Path) -> Any:
+        from threadsense.pipeline.normalize import normalize_reddit_artifact
+
+        return normalize_reddit_artifact(raw_artifact, raw_artifact_path)
+
+    def supports_url(self, url: str) -> bool:
+        try:
+            normalize_url(url)
+        except RedditInputError:
+            return False
+        return True
 
     def expand_more_comments(
         self,

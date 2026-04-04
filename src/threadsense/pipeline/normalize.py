@@ -22,6 +22,18 @@ from threadsense.schema_utils import SchemaReader
 _schema = SchemaReader(SchemaBoundaryError, "raw artifact")
 
 
+def normalize_artifact(raw_artifact: Mapping[str, Any], raw_artifact_path: Path) -> Thread:
+    source_name = _schema.required_str(raw_artifact, "source")
+    if source_name == "reddit":
+        return normalize_reddit_artifact(raw_artifact, raw_artifact_path)
+    if source_name == "hackernews":
+        return normalize_hackernews_artifact(raw_artifact, raw_artifact_path)
+    raise SchemaBoundaryError(
+        "raw artifact source is unsupported",
+        details={"source": source_name},
+    )
+
+
 def normalize_reddit_artifact(raw_artifact: Mapping[str, Any], raw_artifact_path: Path) -> Thread:
     post = _schema.nested_object(raw_artifact, "post")
     comments_payload = _schema.nested_list(raw_artifact, "comments")
@@ -69,7 +81,56 @@ def normalize_reddit_artifact(raw_artifact: Mapping[str, Any], raw_artifact_path
 
 def normalize_reddit_artifact_file(raw_artifact_path: Path) -> Thread:
     raw_artifact = load_raw_artifact(raw_artifact_path)
-    return normalize_reddit_artifact(raw_artifact, raw_artifact_path)
+    return normalize_artifact(raw_artifact, raw_artifact_path)
+
+
+def normalize_hackernews_artifact(
+    raw_artifact: Mapping[str, Any],
+    raw_artifact_path: Path,
+) -> Thread:
+    story = _schema.nested_object(raw_artifact, "story")
+    comments_payload = _schema.nested_list(raw_artifact, "comments")
+    flattened_comments_payload = flatten_raw_comment_payloads(comments_payload)
+    story_id = _schema.required_int(story, "id")
+    thread_id = f"hn:{story_id}"
+    source = SourceRef(
+        source_name="hackernews",
+        community="hackernews",
+        source_thread_id=str(story_id),
+        thread_url=_schema.required_str(raw_artifact, "normalized_url"),
+    )
+    author = AuthorRef(
+        username=_schema.required_str(story, "author"),
+        source_author_id=None,
+    )
+    comments = [
+        normalize_hackernews_comment(thread_id=thread_id, payload=comment_payload)
+        for comment_payload in flattened_comments_payload
+    ]
+    provenance = ProvenanceMetadata(
+        raw_artifact_path=str(raw_artifact_path),
+        raw_sha256=calculate_sha256(raw_artifact_path),
+        retrieved_at_utc=_schema.required_float(raw_artifact, "fetched_at_utc"),
+        normalized_at_utc=time(),
+        schema_version=CANONICAL_SCHEMA_VERSION,
+        normalization_version=CANONICAL_NORMALIZATION_VERSION,
+    )
+    comment_count = _schema.required_int(raw_artifact, "total_comment_count")
+    if comment_count != len(comments):
+        raise SchemaBoundaryError(
+            "normalized comment count does not match raw artifact",
+            details={"expected": comment_count, "actual": len(comments)},
+        )
+    return Thread(
+        thread_id=thread_id,
+        source=source,
+        title=_schema.required_str(story, "title"),
+        permalink=_schema.required_str(story, "permalink"),
+        author=author,
+        comments=comments,
+        comment_count=comment_count,
+        provenance=provenance,
+    )
 
 
 def normalize_comment(thread_id: str, payload: Mapping[str, Any]) -> Comment:
@@ -91,6 +152,25 @@ def normalize_comment(thread_id: str, payload: Mapping[str, Any]) -> Comment:
     )
 
 
+def normalize_hackernews_comment(thread_id: str, payload: Mapping[str, Any]) -> Comment:
+    parent_id = _schema.required_int(payload, "parent")
+    comment_id = _schema.required_int(payload, "id")
+    return Comment(
+        thread_id=thread_id,
+        comment_id=f"hn:{comment_id}",
+        parent_comment_id=normalize_hackernews_parent_id(thread_id, parent_id),
+        author=AuthorRef(
+            username=_schema.required_str(payload, "author"),
+            source_author_id=None,
+        ),
+        body=_schema.required_str(payload, "body"),
+        score=0,
+        created_utc=_schema.required_float(payload, "created_utc"),
+        depth=_schema.required_int(payload, "depth"),
+        permalink=_schema.required_str(payload, "permalink"),
+    )
+
+
 def normalize_parent_id(parent_id: str) -> str | None:
     if parent_id.startswith("t3_"):
         return None
@@ -100,6 +180,13 @@ def normalize_parent_id(parent_id: str) -> str | None:
         "reddit parent_id has unsupported prefix",
         details={"parent_id": parent_id},
     )
+
+
+def normalize_hackernews_parent_id(thread_id: str, parent_id: int) -> str | None:
+    story_id = int(thread_id.removeprefix("hn:"))
+    if parent_id == story_id:
+        return None
+    return f"hn:{parent_id}"
 
 
 def flatten_reddit_comments(comments: list[RedditComment]) -> list[RedditComment]:

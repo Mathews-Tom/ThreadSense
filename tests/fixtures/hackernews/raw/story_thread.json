@@ -1,0 +1,41 @@
+{
+  "url": "https://news.ycombinator.com/item?id=123",
+  "items": {
+    "123": {
+      "id": 123,
+      "type": "story",
+      "title": "HN Story",
+      "by": "pg",
+      "score": 42,
+      "time": 1710000000,
+      "kids": [201, 202]
+    },
+    "201": {
+      "id": 201,
+      "type": "comment",
+      "by": "alice",
+      "text": "<p>Latency is still too high.</p>",
+      "time": 1710000100,
+      "parent": 123,
+      "kids": [301]
+    },
+    "202": {
+      "id": 202,
+      "type": "comment",
+      "by": "bob",
+      "text": "<p>Please add an export option.</p>",
+      "time": 1710000200,
+      "parent": 123,
+      "kids": []
+    },
+    "301": {
+      "id": 301,
+      "type": "comment",
+      "by": "carol",
+      "text": "<p>The retry flow is confusing.</p>",
+      "time": 1710000300,
+      "parent": 201,
+      "kids": []
+    }
+  }
+}

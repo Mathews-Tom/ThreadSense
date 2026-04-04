@@ -8,10 +8,14 @@ from pathlib import Path
 from typing import Any
 
 from threadsense.config import AppConfig
+from threadsense.connectors import FetchRequest
+from threadsense.connectors.hackernews import HackerNewsConnector
 from threadsense.connectors.reddit import (
     RedditConnector,
     RedditThreadRequest,
 )
+from threadsense.connectors.registry import SourceRegistry
+from threadsense.contracts import AnalysisContract
 from threadsense.inference import InferenceResponse, InferenceRouter, InferenceTask
 from threadsense.models.results import (
     AnalyzeResult,
@@ -28,10 +32,10 @@ from threadsense.observability import (
     observe_stage,
 )
 from threadsense.pipeline.analyze import analyze_thread_file
-from threadsense.pipeline.normalize import normalize_reddit_artifact_file
 from threadsense.pipeline.storage import (
     build_storage_paths,
     load_analysis_artifact,
+    load_raw_artifact,
     persist_analysis_artifact,
     persist_normalized_artifact,
     persist_raw_artifact,
@@ -41,6 +45,8 @@ from threadsense.pipeline.storage import (
 from threadsense.reporting import build_thread_report, render_report_markdown
 
 RedditConnectorFactory = Callable[[AppConfig], RedditConnector]
+HackerNewsConnectorFactory = Callable[[AppConfig], HackerNewsConnector]
+SourceRegistryFactory = Callable[[AppConfig], SourceRegistry]
 
 
 def fetch_reddit_thread(
@@ -86,6 +92,48 @@ def fetch_reddit_thread(
         )
 
 
+def fetch_source_thread(
+    *,
+    config: AppConfig,
+    logger: logging.Logger,
+    trace: TraceContext,
+    url: str,
+    output_path: Path | None,
+    source_name: str | None,
+    registry_factory: SourceRegistryFactory,
+    registry: MetricsRegistry = DEFAULT_METRICS,
+) -> FetchResult:
+    with observe_stage(
+        registry=registry,
+        logger=logger,
+        trace=trace,
+        stage="fetch",
+    ):
+        source_registry = registry_factory(config)
+        resolved_source = source_name or source_registry.detect_source(url)
+        connector = source_registry.get(resolved_source)
+        result = connector.fetch(FetchRequest(url=url))
+        storage_paths = build_storage_paths(
+            config.storage,
+            result.source_name,
+            result.source_thread_id,
+        )
+        resolved_output_path = output_path or storage_paths.raw_path
+        persist_raw_artifact(resolved_output_path, result)
+        return FetchResult(
+            status="ready",
+            source=result.source_name,
+            output_path=resolved_output_path,
+            default_store_path=storage_paths.raw_path,
+            normalized_url=result.normalized_url,
+            post_id=result.source_thread_id,
+            post_title=result.thread_title,
+            total_comment_count=result.total_comment_count,
+            expanded_more_count=0,
+            flat=False,
+        )
+
+
 def normalize_reddit_thread(
     *,
     config: AppConfig,
@@ -95,16 +143,39 @@ def normalize_reddit_thread(
     output_path: Path | None,
     registry: MetricsRegistry = DEFAULT_METRICS,
 ) -> NormalizeResult:
+    return normalize_source_thread(
+        config=config,
+        logger=logger,
+        trace=trace,
+        input_path=input_path,
+        output_path=output_path,
+        registry_factory=build_source_registry,
+        registry=registry,
+    )
+
+
+def normalize_source_thread(
+    *,
+    config: AppConfig,
+    logger: logging.Logger,
+    trace: TraceContext,
+    input_path: Path,
+    output_path: Path | None,
+    registry_factory: SourceRegistryFactory,
+    registry: MetricsRegistry = DEFAULT_METRICS,
+) -> NormalizeResult:
     with observe_stage(
         registry=registry,
         logger=logger,
         trace=trace,
         stage="normalize",
     ):
-        thread = normalize_reddit_artifact_file(input_path)
+        raw_artifact = load_raw_artifact(input_path)
+        source_name = str(raw_artifact["source"])
+        thread = registry_factory(config).get(source_name).normalize(raw_artifact, input_path)
         storage_paths = build_storage_paths(
             config.storage,
-            "reddit",
+            thread.source.source_name,
             thread.source.source_thread_id,
         )
         resolved_output_path = output_path or storage_paths.normalized_path
@@ -128,6 +199,7 @@ def analyze_normalized_thread(
     trace: TraceContext,
     input_path: Path,
     output_path: Path | None,
+    contract: AnalysisContract | None = None,
     registry: MetricsRegistry = DEFAULT_METRICS,
 ) -> AnalyzeResult:
     with observe_stage(
@@ -136,7 +208,7 @@ def analyze_normalized_thread(
         trace=trace,
         stage="analyze",
     ):
-        analysis = analyze_thread_file(input_path, config=config.analysis)
+        analysis = analyze_thread_file(input_path, config=config.analysis, contract=contract)
         storage_paths = build_storage_paths(
             config.storage,
             analysis.source_name,
@@ -271,6 +343,7 @@ def run_reddit_pipeline(
     report_format: str,
     with_summary: bool,
     summary_required: bool,
+    contract: AnalysisContract | None = None,
     connector_factory: RedditConnectorFactory,
     registry: MetricsRegistry = DEFAULT_METRICS,
 ) -> PipelineResult:
@@ -299,6 +372,7 @@ def run_reddit_pipeline(
         trace=trace,
         input_path=normalize_result.output_path,
         output_path=None,
+        contract=contract,
         registry=registry,
     )
     report_result = report_analysis(
@@ -315,6 +389,70 @@ def run_reddit_pipeline(
     return PipelineResult(
         status="ready",
         source="reddit",
+        thread_url=url,
+        fetch=fetch_result,
+        normalize=normalize_result,
+        analyze=analyze_result,
+        report=report_result,
+    )
+
+
+def run_source_pipeline(
+    *,
+    config: AppConfig,
+    logger: logging.Logger,
+    trace: TraceContext,
+    url: str,
+    source_name: str | None,
+    report_format: str,
+    with_summary: bool,
+    summary_required: bool,
+    contract: AnalysisContract | None,
+    registry_factory: SourceRegistryFactory,
+    registry: MetricsRegistry = DEFAULT_METRICS,
+) -> PipelineResult:
+    fetch_result = fetch_source_thread(
+        config=config,
+        logger=logger,
+        trace=trace,
+        url=url,
+        output_path=None,
+        source_name=source_name,
+        registry_factory=registry_factory,
+        registry=registry,
+    )
+    normalize_result = normalize_source_thread(
+        config=config,
+        logger=logger,
+        trace=trace,
+        input_path=fetch_result.output_path,
+        output_path=None,
+        registry_factory=registry_factory,
+        registry=registry,
+    )
+    analyze_result = analyze_normalized_thread(
+        config=config,
+        logger=logger,
+        trace=trace,
+        input_path=normalize_result.output_path,
+        output_path=None,
+        contract=contract,
+        registry=registry,
+    )
+    report_result = report_analysis(
+        config=config,
+        logger=logger,
+        trace=trace,
+        input_path=analyze_result.output_path,
+        output_path=None,
+        report_format=report_format,
+        with_summary=with_summary,
+        summary_required=summary_required,
+        registry=registry,
+    )
+    return PipelineResult(
+        status="ready",
+        source=fetch_result.source,
         thread_url=url,
         fetch=fetch_result,
         normalize=normalize_result,
@@ -346,3 +484,7 @@ def runtime_slot_limit(concurrency_limit: int) -> Any:
         yield
     finally:
         limiter.release()
+
+
+def build_source_registry(config: AppConfig) -> SourceRegistry:
+    return SourceRegistry(config)

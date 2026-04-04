@@ -10,14 +10,21 @@ from threadsense.api_server import start_api_server
 from threadsense.batching import run_batch_manifest
 from threadsense.cli_display import cli_log_level, emit_error, emit_payload, status
 from threadsense.config import AppConfig, load_config
-from threadsense.connectors.reddit import (
-    RedditConnector,
+from threadsense.connectors.hackernews import HackerNewsConnector
+from threadsense.connectors.reddit import RedditConnector
+from threadsense.contracts import (
+    AbstractionLevel,
+    AnalysisContract,
+    DomainType,
+    ObjectiveType,
+    contract_from_config,
 )
 from threadsense.errors import ThreadSenseError
 from threadsense.inference import InferenceTask
 from threadsense.inference.local_runtime import LocalRuntimeClient, RuntimeProbeResult
 from threadsense.logging_config import configure_logging
 from threadsense.observability import DEFAULT_METRICS, TraceContext
+from threadsense.pipeline.replay import replay_analysis
 from threadsense.pipeline.storage import (
     load_analysis_artifact,
     load_normalized_artifact,
@@ -26,11 +33,15 @@ from threadsense.pipeline.storage import (
 from threadsense.preflight import DiagnosticCheck, run_diagnostic_checks
 from threadsense.workflows import (
     analyze_normalized_thread,
+    build_source_registry,
     fetch_reddit_thread,
+    fetch_source_thread,
     infer_analysis,
     normalize_reddit_thread,
+    normalize_source_thread,
     report_analysis,
     run_reddit_pipeline,
+    run_source_pipeline,
 )
 
 
@@ -56,6 +67,25 @@ def _add_report_summary_arguments(parser: argparse.ArgumentParser) -> None:
         "--summary-required",
         action="store_true",
         help="Fail instead of falling back when local summary generation is unavailable.",
+    )
+
+
+def _add_contract_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--domain",
+        choices=[domain.value for domain in DomainType],
+        help="Analysis domain vocabulary.",
+    )
+    parser.add_argument(
+        "--objective",
+        choices=[objective.value for objective in ObjectiveType],
+        help="Analysis objective.",
+    )
+    parser.add_argument(
+        "--level",
+        dest="abstraction_level",
+        choices=[level.value for level in AbstractionLevel],
+        help="Analysis abstraction level.",
     )
 
 
@@ -102,6 +132,19 @@ def _build_fetch_parser(subparsers: argparse._SubParsersAction[argparse.Argument
         action="store_true",
         help="Flatten nested comments in the persisted artifact.",
     )
+    hn_parser = fetch_subparsers.add_parser(
+        "hn",
+        aliases=["hackernews"],
+        help="Fetch one Hacker News discussion thread.",
+    )
+    hn_parser.add_argument("url", help="Full Hacker News item URL")
+    hn_parser.add_argument(
+        "--output",
+        "-o",
+        type=Path,
+        help="Raw artifact output path. Defaults to the configured raw store path.",
+    )
+    _add_config_argument(hn_parser)
 
 
 def _build_normalize_parser(
@@ -129,6 +172,24 @@ def _build_normalize_parser(
         help="Normalized artifact output path. Defaults to the configured normalized store path.",
     )
     _add_config_argument(normalize_reddit_parser)
+    normalize_hn_parser = normalize_subparsers.add_parser(
+        "hn",
+        aliases=["hackernews"],
+        help="Normalize one Hacker News raw artifact.",
+    )
+    normalize_hn_parser.add_argument(
+        "--input",
+        type=Path,
+        required=True,
+        help="Raw HN artifact path.",
+    )
+    normalize_hn_parser.add_argument(
+        "--output",
+        "-o",
+        type=Path,
+        help="Normalized artifact output path. Defaults to the configured normalized store path.",
+    )
+    _add_config_argument(normalize_hn_parser)
 
 
 def _build_analyze_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -153,6 +214,7 @@ def _build_analyze_parser(subparsers: argparse._SubParsersAction[argparse.Argume
         type=Path,
         help="Analysis artifact output path. Defaults to the configured analysis store path.",
     )
+    _add_contract_arguments(analyze_normalized_parser)
     _add_config_argument(analyze_normalized_parser)
 
 
@@ -241,6 +303,19 @@ def _build_report_parser(subparsers: argparse._SubParsersAction[argparse.Argumen
     _add_config_argument(report_analysis_parser)
 
 
+def _build_replay_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    replay_parser = subparsers.add_parser(
+        "replay",
+        help="Replay deterministic analysis from a stored analysis artifact.",
+    )
+    replay_parser.add_argument(
+        "--analysis-artifact",
+        type=Path,
+        required=True,
+        help="Analysis artifact path.",
+    )
+
+
 def _build_batch_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     batch_parser = subparsers.add_parser(
         "batch",
@@ -288,30 +363,30 @@ def _build_run_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPa
         "run",
         help="Execute the full workflow for one source input.",
     )
-    run_subparsers = run_parser.add_subparsers(dest="source", required=True)
-    run_reddit_parser = run_subparsers.add_parser(
-        "reddit",
-        help="Fetch, normalize, analyze, and report one Reddit thread.",
+    run_parser.add_argument(
+        "target",
+        nargs="+",
+        help="Either <url> or <source> <url>.",
     )
-    run_reddit_parser.add_argument("url", help="Full Reddit thread URL")
-    _add_config_argument(run_reddit_parser)
-    run_reddit_parser.add_argument(
+    _add_config_argument(run_parser)
+    run_parser.add_argument(
         "--expand-more",
         action="store_true",
         help="Expand deferred comment branches through morechildren.",
     )
-    run_reddit_parser.add_argument(
+    run_parser.add_argument(
         "--flat",
         action="store_true",
         help="Flatten nested comments in the persisted raw artifact.",
     )
-    run_reddit_parser.add_argument(
+    run_parser.add_argument(
         "--format",
         choices=["markdown", "json"],
         default="markdown",
         help="Final report output format.",
     )
-    _add_report_summary_arguments(run_reddit_parser)
+    _add_report_summary_arguments(run_parser)
+    _add_contract_arguments(run_parser)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -331,6 +406,7 @@ def build_parser() -> argparse.ArgumentParser:
     _build_inspect_parser(subparsers)
     _build_infer_parser(subparsers)
     _build_report_parser(subparsers)
+    _build_replay_parser(subparsers)
     _build_batch_parser(subparsers)
     _build_serve_parser(subparsers)
     _build_run_parser(subparsers)
@@ -372,7 +448,7 @@ def load_cli_context(config_path: Path | None) -> tuple[logging.Logger, AppConfi
 
 
 def cli_trace(run_id: str) -> TraceContext:
-    return TraceContext.create(run_id=run_id, source_name="reddit")
+    return TraceContext.create(run_id=run_id, source_name="cli")
 
 
 def run_preflight(config_path: Path | None, skip_runtime: bool) -> int:
@@ -393,6 +469,32 @@ def run_preflight(config_path: Path | None, skip_runtime: bool) -> int:
 
 def build_reddit_connector(config: AppConfig) -> RedditConnector:
     return RedditConnector(config.reddit)
+
+
+def build_hackernews_connector(config: AppConfig) -> HackerNewsConnector:
+    return HackerNewsConnector(config.hackernews)
+
+
+def resolve_contract_from_args(
+    config: AppConfig,
+    domain: str | None,
+    objective: str | None,
+    abstraction_level: str | None,
+) -> AnalysisContract:
+    analysis_config = config.analysis.model_copy(
+        update={
+            "domain": DomainType(domain) if domain is not None else config.analysis.domain,
+            "objective": (
+                ObjectiveType(objective) if objective is not None else config.analysis.objective
+            ),
+            "abstraction_level": (
+                AbstractionLevel(abstraction_level)
+                if abstraction_level is not None
+                else config.analysis.abstraction_level
+            ),
+        }
+    )
+    return contract_from_config(analysis_config)
 
 
 def run_reddit_fetch(
@@ -434,18 +536,41 @@ def run_reddit_normalize(
     return 0
 
 
-def run_normalized_analyze(
+def run_source_normalize(
     config_path: Path | None,
     input_path: Path,
     output_path: Path | None,
 ) -> int:
     logger, config = load_cli_context(config_path)
+    payload = normalize_source_thread(
+        config=config,
+        logger=logger,
+        trace=cli_trace("cli-normalize"),
+        input_path=input_path,
+        output_path=output_path,
+        registry_factory=build_source_registry,
+    )
+    emit_payload(payload.to_dict())
+    return 0
+
+
+def run_normalized_analyze(
+    config_path: Path | None,
+    input_path: Path,
+    output_path: Path | None,
+    domain: str | None,
+    objective: str | None,
+    abstraction_level: str | None,
+) -> int:
+    logger, config = load_cli_context(config_path)
+    contract = resolve_contract_from_args(config, domain, objective, abstraction_level)
     payload = analyze_normalized_thread(
         config=config,
         logger=logger,
         trace=cli_trace("cli-analyze"),
         input_path=input_path,
         output_path=output_path,
+        contract=contract,
     )
     emit_payload(payload.to_dict())
     return 0
@@ -491,6 +616,8 @@ def run_analysis_inspect(input_path: Path) -> int:
             "duplicate_group_count": analysis.duplicate_group_count,
             "schema_version": analysis.provenance.schema_version,
             "analysis_version": analysis.provenance.analysis_version,
+            "contract": analysis.provenance.contract,
+            "contract_schema_version": analysis.provenance.contract_schema_version,
             "normalized_artifact_path": analysis.provenance.normalized_artifact_path,
             "normalized_sha256": analysis.provenance.normalized_sha256,
             "top_phrases": analysis.top_phrases[:5],
@@ -623,6 +750,12 @@ def run_report_inspect(input_path: Path) -> int:
     return 0
 
 
+def run_replay(analysis_artifact_path: Path) -> int:
+    configure_logging(level=cli_log_level())
+    emit_payload(replay_analysis(analysis_artifact_path))
+    return 0
+
+
 def run_reddit_end_to_end(
     config_path: Path | None,
     url: str,
@@ -631,6 +764,7 @@ def run_reddit_end_to_end(
     report_format: str,
     with_summary: bool,
     summary_required: bool,
+    contract: AnalysisContract | None = None,
 ) -> int:
     logger, config = load_cli_context(config_path)
     with status("Running Reddit workflow"):
@@ -644,10 +778,63 @@ def run_reddit_end_to_end(
             report_format=report_format,
             with_summary=with_summary,
             summary_required=summary_required,
+            contract=contract,
             connector_factory=build_reddit_connector,
         )
     emit_payload(payload.to_dict())
     return 0
+
+
+def run_source_end_to_end(
+    config_path: Path | None,
+    target: list[str],
+    expand_more: bool,
+    flat: bool,
+    report_format: str,
+    with_summary: bool,
+    summary_required: bool,
+    domain: str | None,
+    objective: str | None,
+    abstraction_level: str | None,
+) -> int:
+    logger, config = load_cli_context(config_path)
+    source_name, url = parse_run_target(target)
+    contract = resolve_contract_from_args(config, domain, objective, abstraction_level)
+    if source_name == "reddit":
+        return run_reddit_end_to_end(
+            config_path=config_path,
+            url=url,
+            expand_more=expand_more,
+            flat=flat,
+            report_format=report_format,
+            with_summary=with_summary,
+            summary_required=summary_required,
+            contract=contract,
+        )
+    with status("Running workflow"):
+        payload = run_source_pipeline(
+            config=config,
+            logger=logger,
+            trace=cli_trace("cli-run"),
+            url=url,
+            source_name=source_name,
+            report_format=report_format,
+            with_summary=with_summary,
+            summary_required=summary_required,
+            contract=contract,
+            registry_factory=build_source_registry,
+        )
+    emit_payload(payload.to_dict())
+    return 0
+
+
+def parse_run_target(target: list[str]) -> tuple[str | None, str]:
+    if len(target) == 1:
+        return None, target[0]
+    if len(target) == 2:
+        source_name = "hackernews" if target[0] in {"hn", "hackernews"} else target[0]
+        return source_name, target[1]
+    raise _CommandDispatchError("run")
 
 
 def _dispatch_command(args: argparse.Namespace) -> int:
@@ -668,8 +855,27 @@ def _dispatch_command(args: argparse.Namespace) -> int:
                 expand_more=args.expand_more,
                 flat=args.flat,
             )
+        case ("fetch", "hn" | "hackernews", _, _):
+            logger, config = load_cli_context(args.config)
+            payload = fetch_source_thread(
+                config=config,
+                logger=logger,
+                trace=cli_trace("cli-fetch"),
+                url=args.url,
+                output_path=args.output,
+                source_name="hackernews",
+                registry_factory=build_source_registry,
+            )
+            emit_payload(payload.to_dict())
+            return 0
         case ("normalize", "reddit", _, _):
             return run_reddit_normalize(
+                config_path=args.config,
+                input_path=args.input,
+                output_path=args.output,
+            )
+        case ("normalize", "hn" | "hackernews", _, _):
+            return run_source_normalize(
                 config_path=args.config,
                 input_path=args.input,
                 output_path=args.output,
@@ -679,6 +885,9 @@ def _dispatch_command(args: argparse.Namespace) -> int:
                 config_path=args.config,
                 input_path=args.input,
                 output_path=args.output,
+                domain=args.domain,
+                objective=args.objective,
+                abstraction_level=args.abstraction_level,
             )
         case ("inspect", _, "normalized", _):
             return run_normalized_inspect(args.input)
@@ -702,6 +911,8 @@ def _dispatch_command(args: argparse.Namespace) -> int:
                 with_summary=args.with_summary,
                 summary_required=args.summary_required,
             )
+        case ("replay", _, _, _):
+            return run_replay(args.analysis_artifact)
         case ("batch", _, _, "run"):
             return run_batch(
                 config_path=args.config,
@@ -714,15 +925,18 @@ def _dispatch_command(args: argparse.Namespace) -> int:
                 host=args.host,
                 port=args.port,
             )
-        case ("run", "reddit", _, _):
-            return run_reddit_end_to_end(
+        case ("run", _, _, _):
+            return run_source_end_to_end(
                 config_path=args.config,
-                url=args.url,
+                target=args.target,
                 expand_more=args.expand_more,
                 flat=args.flat,
                 report_format=args.format,
                 with_summary=args.with_summary,
                 summary_required=args.summary_required,
+                domain=args.domain,
+                objective=args.objective,
+                abstraction_level=args.abstraction_level,
             )
         case _:
             raise _CommandDispatchError(args.command)

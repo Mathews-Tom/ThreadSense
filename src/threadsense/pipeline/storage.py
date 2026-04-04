@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any
 
 from threadsense.config import StorageConfig
-from threadsense.connectors.reddit import RedditThreadResult
 from threadsense.errors import SchemaBoundaryError
 from threadsense.models.analysis import ThreadAnalysis, load_analysis_artifact_file
 from threadsense.models.canonical import Thread, load_canonical_thread
@@ -29,18 +28,19 @@ def build_storage_paths(
     source_thread_id: str,
 ) -> StoragePaths:
     root = storage.root_dir
+    source_dir = storage_source_name(source_name)
     return StoragePaths(
-        raw_path=root / storage.raw_dirname / source_name / f"{source_thread_id}.json",
+        raw_path=root / storage.raw_dirname / source_dir / f"{source_thread_id}.json",
         normalized_path=(
-            root / storage.normalized_dirname / source_name / f"{source_thread_id}.json"
+            root / storage.normalized_dirname / source_dir / f"{source_thread_id}.json"
         ),
-        analysis_path=root / storage.analysis_dirname / source_name / f"{source_thread_id}.json",
-        report_json_path=root / storage.report_dirname / source_name / f"{source_thread_id}.json",
-        report_markdown_path=root / storage.report_dirname / source_name / f"{source_thread_id}.md",
+        analysis_path=root / storage.analysis_dirname / source_dir / f"{source_thread_id}.json",
+        report_json_path=root / storage.report_dirname / source_dir / f"{source_thread_id}.json",
+        report_markdown_path=root / storage.report_dirname / source_dir / f"{source_thread_id}.md",
     )
 
 
-def persist_raw_artifact(path: Path, artifact: RedditThreadResult) -> None:
+def persist_raw_artifact(path: Path, artifact: Any) -> None:
     write_json(path, artifact.to_dict())
 
 
@@ -60,7 +60,7 @@ def load_raw_artifact(path: Path) -> dict[str, Any]:
     payload = read_json(path)
     artifact_version = payload.get("artifact_version")
     source = payload.get("source")
-    if artifact_version != 1 or source != "reddit":
+    if artifact_version != 1 or not isinstance(source, str) or not source:
         raise SchemaBoundaryError(
             "raw artifact metadata is invalid",
             details={"artifact_version": artifact_version, "source": source},
@@ -105,3 +105,9 @@ def read_json(path: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise SchemaBoundaryError("artifact must decode to an object")
     return payload
+
+
+def storage_source_name(source_name: str) -> str:
+    if source_name == "hackernews":
+        return "hn"
+    return source_name
