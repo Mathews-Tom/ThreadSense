@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 from threadsense.errors import AnalysisBoundaryError
+from threadsense.schema_utils import SchemaReader
+
+_schema = SchemaReader(AnalysisBoundaryError, "analysis")
 
 ANALYSIS_SCHEMA_VERSION = 1
 ANALYSIS_ENGINE_VERSION = "deterministic-v1"
@@ -76,29 +80,31 @@ class ThreadAnalysis:
 
 def load_analysis_artifact_file(path: Path) -> ThreadAnalysis:
     payload = migrate_analysis_payload(read_json_file(path))
-    analysis_data = nested_object(payload, "analysis")
-    findings_data = nested_list(analysis_data, "findings")
-    duplicates_data = nested_list(analysis_data, "duplicate_groups")
-    top_quotes_data = nested_list(analysis_data, "top_quotes")
-    provenance_data = nested_object(analysis_data, "provenance")
+    analysis_data = _schema.nested_object(payload, "analysis")
+    findings_data = _schema.nested_list(analysis_data, "findings")
+    duplicates_data = _schema.nested_list(analysis_data, "duplicate_groups")
+    top_quotes_data = _schema.nested_list(analysis_data, "top_quotes")
+    provenance_data = _schema.nested_object(analysis_data, "provenance")
     return ThreadAnalysis(
-        thread_id=required_str(analysis_data, "thread_id"),
-        source_name=required_str(analysis_data, "source_name"),
-        title=required_str(analysis_data, "title"),
-        total_comments=required_int(analysis_data, "total_comments"),
-        distinct_comment_count=required_int(analysis_data, "distinct_comment_count"),
-        duplicate_group_count=required_int(analysis_data, "duplicate_group_count"),
+        thread_id=_schema.required_str(analysis_data, "thread_id"),
+        source_name=_schema.required_str(analysis_data, "source_name"),
+        title=_schema.required_str(analysis_data, "title"),
+        total_comments=_schema.required_int(analysis_data, "total_comments"),
+        distinct_comment_count=_schema.required_int(analysis_data, "distinct_comment_count"),
+        duplicate_group_count=_schema.required_int(analysis_data, "duplicate_group_count"),
         top_phrases=required_str_list(analysis_data, "top_phrases"),
         findings=[finding_from_dict(item) for item in findings_data],
         duplicate_groups=[duplicate_group_from_dict(item) for item in duplicates_data],
         top_quotes=[quote_from_dict(item) for item in top_quotes_data],
         provenance=AnalysisProvenance(
-            normalized_artifact_path=required_str(provenance_data, "normalized_artifact_path"),
-            normalized_sha256=required_str(provenance_data, "normalized_sha256"),
-            source_thread_id=required_str(provenance_data, "source_thread_id"),
-            analyzed_at_utc=required_float(provenance_data, "analyzed_at_utc"),
-            schema_version=required_int(provenance_data, "schema_version"),
-            analysis_version=required_str(provenance_data, "analysis_version"),
+            normalized_artifact_path=_schema.required_str(
+                provenance_data, "normalized_artifact_path"
+            ),
+            normalized_sha256=_schema.required_str(provenance_data, "normalized_sha256"),
+            source_thread_id=_schema.required_str(provenance_data, "source_thread_id"),
+            analyzed_at_utc=_schema.required_float(provenance_data, "analyzed_at_utc"),
+            schema_version=_schema.required_int(provenance_data, "schema_version"),
+            analysis_version=_schema.required_str(provenance_data, "analysis_version"),
         ),
     )
 
@@ -120,14 +126,14 @@ def migrate_analysis_payload(payload: Mapping[str, Any]) -> Mapping[str, Any]:
 
 
 def finding_from_dict(payload: Mapping[str, Any]) -> AnalysisFinding:
-    quotes_data = nested_list(payload, "quotes")
+    quotes_data = _schema.nested_list(payload, "quotes")
     return AnalysisFinding(
-        theme_key=required_str(payload, "theme_key"),
-        theme_label=required_str(payload, "theme_label"),
-        severity=required_str(payload, "severity"),
-        comment_count=required_int(payload, "comment_count"),
-        issue_marker_count=required_int(payload, "issue_marker_count"),
-        request_marker_count=required_int(payload, "request_marker_count"),
+        theme_key=_schema.required_str(payload, "theme_key"),
+        theme_label=_schema.required_str(payload, "theme_label"),
+        severity=_schema.required_str(payload, "severity"),
+        comment_count=_schema.required_int(payload, "comment_count"),
+        issue_marker_count=_schema.required_int(payload, "issue_marker_count"),
+        request_marker_count=_schema.required_int(payload, "request_marker_count"),
         key_phrases=required_str_list(payload, "key_phrases"),
         evidence_comment_ids=required_str_list(payload, "evidence_comment_ids"),
         quotes=[quote_from_dict(item) for item in quotes_data],
@@ -136,25 +142,23 @@ def finding_from_dict(payload: Mapping[str, Any]) -> AnalysisFinding:
 
 def duplicate_group_from_dict(payload: Mapping[str, Any]) -> DuplicateGroup:
     return DuplicateGroup(
-        canonical_text=required_str(payload, "canonical_text"),
+        canonical_text=_schema.required_str(payload, "canonical_text"),
         comment_ids=required_str_list(payload, "comment_ids"),
-        count=required_int(payload, "count"),
+        count=_schema.required_int(payload, "count"),
     )
 
 
 def quote_from_dict(payload: Mapping[str, Any]) -> RepresentativeQuote:
     return RepresentativeQuote(
-        comment_id=required_str(payload, "comment_id"),
-        permalink=required_str(payload, "permalink"),
-        author=required_str(payload, "author"),
-        body_excerpt=required_str(payload, "body_excerpt"),
-        score=required_int(payload, "score"),
+        comment_id=_schema.required_str(payload, "comment_id"),
+        permalink=_schema.required_str(payload, "permalink"),
+        author=_schema.required_str(payload, "author"),
+        body_excerpt=_schema.required_str(payload, "body_excerpt"),
+        score=_schema.required_int(payload, "score"),
     )
 
 
 def read_json_file(path: Path) -> dict[str, Any]:
-    import json
-
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as error:
@@ -167,63 +171,11 @@ def read_json_file(path: Path) -> dict[str, Any]:
     return payload
 
 
-def nested_object(payload: Mapping[str, Any], key: str) -> dict[str, Any]:
-    value = payload.get(key)
-    if not isinstance(value, dict):
-        raise AnalysisBoundaryError(
-            "analysis object field is invalid",
-            details={"key": key},
-        )
-    return value
-
-
-def nested_list(payload: Mapping[str, Any], key: str) -> list[Any]:
-    value = payload.get(key)
-    if not isinstance(value, list):
-        raise AnalysisBoundaryError(
-            "analysis list field is invalid",
-            details={"key": key},
-        )
-    return value
-
-
-def required_str(payload: Mapping[str, Any], key: str) -> str:
-    value = payload.get(key)
-    if not isinstance(value, str) or not value:
-        raise AnalysisBoundaryError(
-            "analysis string field is invalid",
-            details={"key": key},
-        )
-    return value
-
-
 def required_str_list(payload: Mapping[str, Any], key: str) -> list[str]:
     value = payload.get(key)
     if not isinstance(value, list) or any(not isinstance(item, str) or not item for item in value):
         raise AnalysisBoundaryError(
             "analysis string list field is invalid",
-            details={"key": key},
-        )
-    return value
-
-
-def required_int(payload: Mapping[str, Any], key: str) -> int:
-    value = payload.get(key)
-    if not isinstance(value, int):
-        raise AnalysisBoundaryError(
-            "analysis integer field is invalid",
-            details={"key": key},
-        )
-    return value
-
-
-def required_float(payload: Mapping[str, Any], key: str) -> float:
-    value = payload.get(key)
-    if isinstance(value, int):
-        return float(value)
-    if not isinstance(value, float):
-        raise AnalysisBoundaryError(
-            "analysis float field is invalid",
             details={"key": key},
         )
     return value
