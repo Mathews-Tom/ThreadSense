@@ -45,4 +45,5 @@ runtime_concurrency = 1
 
 [analysis]
 strategy = "keyword_heuristic"
+domain = "developer_tools"
 duplicate_threshold = 0.88

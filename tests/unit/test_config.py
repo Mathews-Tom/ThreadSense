@@ -39,6 +39,7 @@ def test_load_config_uses_defaults_when_no_file_exists(monkeypatch: pytest.Monke
     assert config.api.max_request_bytes == 1048576
     assert config.limits.runtime_concurrency == 1
     assert config.analysis.strategy == "keyword_heuristic"
+    assert config.analysis.domain == "developer_tools"
     assert config.analysis.duplicate_threshold == 0.88
 
 
@@ -93,6 +94,9 @@ def test_load_config_reads_toml_and_env_overrides(
                 "",
                 "[limits]",
                 "runtime_concurrency = 2",
+                "",
+                "[analysis]",
+                'domain = "product_feedback"',
             ]
         ),
         encoding="utf-8",
@@ -104,6 +108,7 @@ def test_load_config_reads_toml_and_env_overrides(
     monkeypatch.setenv("THREADSENSE_STORAGE_ROOT", ".runtime-store")
     monkeypatch.setenv("THREADSENSE_BATCH_MAX_WORKERS", "4")
     monkeypatch.setenv("THREADSENSE_RUNTIME_CONCURRENCY", "3")
+    monkeypatch.setenv("THREADSENSE_ANALYSIS_DOMAIN", "hiring_careers")
 
     config = load_config(config_path=config_path)
 
@@ -129,6 +134,7 @@ def test_load_config_reads_toml_and_env_overrides(
     assert config.api.port == 9001
     assert config.api.max_request_bytes == 2048
     assert config.limits.runtime_concurrency == 3
+    assert config.analysis.domain == "hiring_careers"
 
 
 def test_load_config_rejects_invalid_privacy_mode(tmp_path: Path) -> None:

@@ -1,0 +1,22 @@
+[meta]
+domain = "product_feedback"
+version = "1.0"
+
+[themes]
+pricing = ["pricing", "price", "subscription", "plan", "cost", "value"]
+limits = ["limit", "quota", "rate limit", "cap", "usage", "credits"]
+reliability = ["bug", "broken", "crash", "error", "downtime", "incident"]
+experience = ["confusing", "ux", "ui", "workflow", "onboarding", "discoverability"]
+support = ["support", "ticket", "response", "refund", "help", "billing"]
+
+[markers]
+issue = ["broken", "error", "bug", "downtime", "refund", "frustrating", "slow"]
+request = ["please", "need", "want", "can you", "should", "wish"]
+
+[severity]
+levels = ["low", "medium", "high"]
+
+[fallbacks]
+issue = "reliability"
+request = "support"
+default = "general_feedback"

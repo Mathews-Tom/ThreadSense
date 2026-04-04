@@ -1,0 +1,22 @@
+[meta]
+domain = "financial_markets"
+version = "1.0"
+
+[themes]
+macro = ["inflation", "fed", "rates", "macro", "cpi", "recession"]
+equities = ["stock", "equity", "shares", "earnings", "valuation", "guidance"]
+trading = ["trade", "position", "entry", "exit", "volume", "liquidity"]
+risk = ["risk", "drawdown", "hedge", "volatility", "exposure", "loss"]
+crypto = ["bitcoin", "btc", "eth", "token", "wallet", "defi"]
+
+[markers]
+issue = ["dump", "crash", "loss", "rug", "liquidation", "default", "fraud"]
+request = ["thesis", "outlook", "should i", "buy", "sell", "hold"]
+
+[severity]
+levels = ["low", "medium", "high"]
+
+[fallbacks]
+issue = "risk"
+request = "trading"
+default = "general_feedback"
