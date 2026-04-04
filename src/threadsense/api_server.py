@@ -17,6 +17,7 @@ from threadsense.workflows import (
     RedditConnectorFactory,
     analyze_normalized_thread,
     fetch_reddit_thread,
+    infer_analysis,
     report_analysis,
 )
 from threadsense.workflows import normalize_reddit_thread as normalize_reddit_workflow
@@ -158,8 +159,6 @@ def build_handler(dependencies: ServerDependencies) -> type[BaseHTTPRequestHandl
                     registry=dependencies.registry,
                 )
             if self.path == "/v1/infer/analysis":
-                from threadsense.workflows import infer_analysis
-
                 return infer_analysis(
                     config=dependencies.config,
                     logger=dependencies.logger,

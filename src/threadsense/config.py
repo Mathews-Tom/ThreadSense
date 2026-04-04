@@ -8,6 +8,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, TypeVar
 
+from threadsense import __version__
 from threadsense.errors import ConfigurationError
 
 
@@ -20,6 +21,9 @@ class PrivacyMode(StrEnum):
 
 
 DEFAULT_CONFIG_PATH = Path("threadsense.toml")
+DEFAULT_REDDIT_USER_AGENT = (
+    f"threadsense/{__version__} (https://github.com/Mathews-Tom/ThreadSense)"
+)
 EnumT = TypeVar("EnumT", bound=StrEnum)
 
 
@@ -200,6 +204,337 @@ def _parse_bool(value: str, env_key: str) -> bool:
     )
 
 
+def _read_section(raw_config: Mapping[str, Any], section_name: str) -> Mapping[str, Any]:
+    section = raw_config.get(section_name, {})
+    if not isinstance(section, dict):
+        raise ConfigurationError("config sections must be TOML tables")
+    return section
+
+
+def _read_section_str(
+    env: Mapping[str, str],
+    env_key: str,
+    section: Mapping[str, Any],
+    field: str,
+    default: str,
+) -> str:
+    return _read_str(env, env_key, str(section.get(field, default)))
+
+
+def _load_app_settings(
+    resolved_env: Mapping[str, str],
+    app_section: Mapping[str, Any],
+) -> tuple[InferenceBackend, PrivacyMode]:
+    return (
+        _parse_enum(
+            InferenceBackend,
+            _read_section_str(
+                resolved_env,
+                "THREADSENSE_INFERENCE_BACKEND",
+                app_section,
+                "inference_backend",
+                InferenceBackend.LOCAL_OPENAI_COMPATIBLE.value,
+            ),
+            "THREADSENSE_INFERENCE_BACKEND",
+        ),
+        _parse_enum(
+            PrivacyMode,
+            _read_section_str(
+                resolved_env,
+                "THREADSENSE_PRIVACY_MODE",
+                app_section,
+                "privacy_mode",
+                PrivacyMode.LOCAL_ONLY.value,
+            ),
+            "THREADSENSE_PRIVACY_MODE",
+        ),
+    )
+
+
+def _load_runtime_config(
+    resolved_env: Mapping[str, str],
+    runtime_section: Mapping[str, Any],
+) -> RuntimeConfig:
+    return RuntimeConfig(
+        enabled=_parse_bool(
+            _read_section_str(
+                resolved_env,
+                "THREADSENSE_RUNTIME_ENABLED",
+                runtime_section,
+                "enabled",
+                "true",
+            ),
+            "THREADSENSE_RUNTIME_ENABLED",
+        ),
+        base_url=_read_section_str(
+            resolved_env,
+            "THREADSENSE_RUNTIME_BASE_URL",
+            runtime_section,
+            "base_url",
+            "http://127.0.0.1:8080",
+        ),
+        chat_path=_read_section_str(
+            resolved_env,
+            "THREADSENSE_RUNTIME_CHAT_PATH",
+            runtime_section,
+            "chat_path",
+            "/v1/chat/completions",
+        ),
+        model=_read_section_str(
+            resolved_env,
+            "THREADSENSE_RUNTIME_MODEL",
+            runtime_section,
+            "model",
+            "local-model",
+        ),
+        timeout_seconds=_parse_float(
+            _read_section_str(
+                resolved_env,
+                "THREADSENSE_RUNTIME_TIMEOUT_SECONDS",
+                runtime_section,
+                "timeout_seconds",
+                "90",
+            ),
+            "THREADSENSE_RUNTIME_TIMEOUT_SECONDS",
+        ),
+        repair_retries=_parse_int(
+            _read_section_str(
+                resolved_env,
+                "THREADSENSE_RUNTIME_REPAIR_RETRIES",
+                runtime_section,
+                "repair_retries",
+                "1",
+            ),
+            "THREADSENSE_RUNTIME_REPAIR_RETRIES",
+        ),
+    )
+
+
+def _load_source_policy(
+    resolved_env: Mapping[str, str],
+    source_section: Mapping[str, Any],
+) -> SourcePolicyConfig:
+    return SourcePolicyConfig(
+        enabled_sources=_parse_sources(
+            _read_section_str(
+                resolved_env,
+                "THREADSENSE_ENABLED_SOURCES",
+                source_section,
+                "enabled",
+                "reddit",
+            )
+        )
+    )
+
+
+def _load_reddit_config(
+    resolved_env: Mapping[str, str],
+    reddit_section: Mapping[str, Any],
+) -> RedditConfig:
+    return RedditConfig(
+        user_agent=_read_section_str(
+            resolved_env,
+            "THREADSENSE_REDDIT_USER_AGENT",
+            reddit_section,
+            "user_agent",
+            DEFAULT_REDDIT_USER_AGENT,
+        ),
+        timeout_seconds=_parse_float(
+            _read_section_str(
+                resolved_env,
+                "THREADSENSE_REDDIT_TIMEOUT",
+                reddit_section,
+                "timeout_seconds",
+                "15",
+            ),
+            "THREADSENSE_REDDIT_TIMEOUT",
+        ),
+        max_retries=_parse_int(
+            _read_section_str(
+                resolved_env,
+                "THREADSENSE_REDDIT_MAX_RETRIES",
+                reddit_section,
+                "max_retries",
+                "2",
+            ),
+            "THREADSENSE_REDDIT_MAX_RETRIES",
+        ),
+        backoff_seconds=_parse_float(
+            _read_section_str(
+                resolved_env,
+                "THREADSENSE_REDDIT_BACKOFF",
+                reddit_section,
+                "backoff_seconds",
+                "0.5",
+            ),
+            "THREADSENSE_REDDIT_BACKOFF",
+        ),
+        request_delay_seconds=_parse_float(
+            _read_section_str(
+                resolved_env,
+                "THREADSENSE_REDDIT_REQUEST_DELAY",
+                reddit_section,
+                "request_delay_seconds",
+                "0.6",
+            ),
+            "THREADSENSE_REDDIT_REQUEST_DELAY",
+        ),
+        listing_limit=_parse_int(
+            _read_section_str(
+                resolved_env,
+                "THREADSENSE_REDDIT_LISTING_LIMIT",
+                reddit_section,
+                "listing_limit",
+                "500",
+            ),
+            "THREADSENSE_REDDIT_LISTING_LIMIT",
+        ),
+    )
+
+
+def _load_storage_config(
+    resolved_env: Mapping[str, str],
+    storage_section: Mapping[str, Any],
+) -> StorageConfig:
+    return StorageConfig(
+        root_dir=Path(
+            _read_section_str(
+                resolved_env,
+                "THREADSENSE_STORAGE_ROOT",
+                storage_section,
+                "root_dir",
+                ".threadsense",
+            )
+        ),
+        raw_dirname=_read_section_str(
+            resolved_env,
+            "THREADSENSE_STORAGE_RAW_DIR",
+            storage_section,
+            "raw_dirname",
+            "raw",
+        ),
+        normalized_dirname=_read_section_str(
+            resolved_env,
+            "THREADSENSE_STORAGE_NORMALIZED_DIR",
+            storage_section,
+            "normalized_dirname",
+            "normalized",
+        ),
+        analysis_dirname=_read_section_str(
+            resolved_env,
+            "THREADSENSE_STORAGE_ANALYSIS_DIR",
+            storage_section,
+            "analysis_dirname",
+            "analysis",
+        ),
+        report_dirname=_read_section_str(
+            resolved_env,
+            "THREADSENSE_STORAGE_REPORT_DIR",
+            storage_section,
+            "report_dirname",
+            "reports",
+        ),
+        batch_dirname=_read_section_str(
+            resolved_env,
+            "THREADSENSE_STORAGE_BATCH_DIR",
+            storage_section,
+            "batch_dirname",
+            "batches",
+        ),
+    )
+
+
+def _load_batch_config(
+    resolved_env: Mapping[str, str],
+    batch_section: Mapping[str, Any],
+) -> BatchConfig:
+    return BatchConfig(
+        max_workers=_parse_positive_int(
+            _read_section_str(
+                resolved_env,
+                "THREADSENSE_BATCH_MAX_WORKERS",
+                batch_section,
+                "max_workers",
+                "2",
+            ),
+            "THREADSENSE_BATCH_MAX_WORKERS",
+        ),
+        max_jobs=_parse_positive_int(
+            _read_section_str(
+                resolved_env,
+                "THREADSENSE_BATCH_MAX_JOBS",
+                batch_section,
+                "max_jobs",
+                "25",
+            ),
+            "THREADSENSE_BATCH_MAX_JOBS",
+        ),
+        fail_fast=_parse_bool(
+            _read_section_str(
+                resolved_env,
+                "THREADSENSE_BATCH_FAIL_FAST",
+                batch_section,
+                "fail_fast",
+                "false",
+            ),
+            "THREADSENSE_BATCH_FAIL_FAST",
+        ),
+    )
+
+
+def _load_api_config(
+    resolved_env: Mapping[str, str],
+    api_section: Mapping[str, Any],
+) -> ApiConfig:
+    return ApiConfig(
+        host=_read_section_str(
+            resolved_env,
+            "THREADSENSE_API_HOST",
+            api_section,
+            "host",
+            "127.0.0.1",
+        ),
+        port=_parse_int(
+            _read_section_str(
+                resolved_env,
+                "THREADSENSE_API_PORT",
+                api_section,
+                "port",
+                "8090",
+            ),
+            "THREADSENSE_API_PORT",
+        ),
+        max_request_bytes=_parse_positive_int(
+            _read_section_str(
+                resolved_env,
+                "THREADSENSE_API_MAX_REQUEST_BYTES",
+                api_section,
+                "max_request_bytes",
+                "1048576",
+            ),
+            "THREADSENSE_API_MAX_REQUEST_BYTES",
+        ),
+    )
+
+
+def _load_limits_config(
+    resolved_env: Mapping[str, str],
+    limits_section: Mapping[str, Any],
+) -> LimitsConfig:
+    return LimitsConfig(
+        runtime_concurrency=_parse_positive_int(
+            _read_section_str(
+                resolved_env,
+                "THREADSENSE_RUNTIME_CONCURRENCY",
+                limits_section,
+                "runtime_concurrency",
+                "1",
+            ),
+            "THREADSENSE_RUNTIME_CONCURRENCY",
+        )
+    )
+
+
 def load_config(
     config_path: Path | None = None,
     env: Mapping[str, str] | None = None,
@@ -209,244 +544,22 @@ def load_config(
         config_path if config_path is not None else _default_config_path(resolved_env)
     )
 
-    app_section = raw_config.get("app", {})
-    runtime_section = raw_config.get("runtime", {})
-    source_section = raw_config.get("sources", {})
-    reddit_section = raw_config.get("reddit", {})
-    storage_section = raw_config.get("storage", {})
-    batch_section = raw_config.get("batch", {})
-    api_section = raw_config.get("api", {})
-    limits_section = raw_config.get("limits", {})
-    if (
-        not isinstance(app_section, dict)
-        or not isinstance(runtime_section, dict)
-        or not isinstance(source_section, dict)
-        or not isinstance(reddit_section, dict)
-        or not isinstance(storage_section, dict)
-        or not isinstance(batch_section, dict)
-        or not isinstance(api_section, dict)
-        or not isinstance(limits_section, dict)
-    ):
-        raise ConfigurationError("config sections must be TOML tables")
-
-    backend = _parse_enum(
-        InferenceBackend,
-        _read_str(
-            resolved_env,
-            "THREADSENSE_INFERENCE_BACKEND",
-            str(
-                app_section.get(
-                    "inference_backend",
-                    InferenceBackend.LOCAL_OPENAI_COMPATIBLE.value,
-                )
-            ),
-        ),
-        "THREADSENSE_INFERENCE_BACKEND",
-    )
-    privacy_mode = _parse_enum(
-        PrivacyMode,
-        _read_str(
-            resolved_env,
-            "THREADSENSE_PRIVACY_MODE",
-            str(app_section.get("privacy_mode", PrivacyMode.LOCAL_ONLY.value)),
-        ),
-        "THREADSENSE_PRIVACY_MODE",
-    )
-    runtime = RuntimeConfig(
-        enabled=_parse_bool(
-            _read_str(
-                resolved_env,
-                "THREADSENSE_RUNTIME_ENABLED",
-                str(runtime_section.get("enabled", "true")),
-            ),
-            "THREADSENSE_RUNTIME_ENABLED",
-        ),
-        base_url=_read_str(
-            resolved_env,
-            "THREADSENSE_RUNTIME_BASE_URL",
-            str(runtime_section.get("base_url", "http://127.0.0.1:8080")),
-        ),
-        chat_path=_read_str(
-            resolved_env,
-            "THREADSENSE_RUNTIME_CHAT_PATH",
-            str(runtime_section.get("chat_path", "/v1/chat/completions")),
-        ),
-        model=_read_str(
-            resolved_env,
-            "THREADSENSE_RUNTIME_MODEL",
-            str(runtime_section.get("model", "local-model")),
-        ),
-        timeout_seconds=_parse_float(
-            _read_str(
-                resolved_env,
-                "THREADSENSE_RUNTIME_TIMEOUT_SECONDS",
-                str(runtime_section.get("timeout_seconds", "90")),
-            ),
-            "THREADSENSE_RUNTIME_TIMEOUT_SECONDS",
-        ),
-        repair_retries=_parse_int(
-            _read_str(
-                resolved_env,
-                "THREADSENSE_RUNTIME_REPAIR_RETRIES",
-                str(runtime_section.get("repair_retries", "1")),
-            ),
-            "THREADSENSE_RUNTIME_REPAIR_RETRIES",
-        ),
-    )
-    source_policy = SourcePolicyConfig(
-        enabled_sources=_parse_sources(
-            _read_str(
-                resolved_env,
-                "THREADSENSE_ENABLED_SOURCES",
-                str(source_section.get("enabled", "reddit")),
-            ),
-        ),
-    )
-    reddit = RedditConfig(
-        user_agent=_read_str(
-            resolved_env,
-            "THREADSENSE_REDDIT_USER_AGENT",
-            str(
-                reddit_section.get(
-                    "user_agent",
-                    "threadsense/0.1.0 (https://github.com/Mathews-Tom/ThreadSense)",
-                )
-            ),
-        ),
-        timeout_seconds=_parse_float(
-            _read_str(
-                resolved_env,
-                "THREADSENSE_REDDIT_TIMEOUT",
-                str(reddit_section.get("timeout_seconds", "15")),
-            ),
-            "THREADSENSE_REDDIT_TIMEOUT",
-        ),
-        max_retries=_parse_int(
-            _read_str(
-                resolved_env,
-                "THREADSENSE_REDDIT_MAX_RETRIES",
-                str(reddit_section.get("max_retries", "2")),
-            ),
-            "THREADSENSE_REDDIT_MAX_RETRIES",
-        ),
-        backoff_seconds=_parse_float(
-            _read_str(
-                resolved_env,
-                "THREADSENSE_REDDIT_BACKOFF",
-                str(reddit_section.get("backoff_seconds", "0.5")),
-            ),
-            "THREADSENSE_REDDIT_BACKOFF",
-        ),
-        request_delay_seconds=_parse_float(
-            _read_str(
-                resolved_env,
-                "THREADSENSE_REDDIT_REQUEST_DELAY",
-                str(reddit_section.get("request_delay_seconds", "0.6")),
-            ),
-            "THREADSENSE_REDDIT_REQUEST_DELAY",
-        ),
-        listing_limit=_parse_int(
-            _read_str(
-                resolved_env,
-                "THREADSENSE_REDDIT_LISTING_LIMIT",
-                str(reddit_section.get("listing_limit", "500")),
-            ),
-            "THREADSENSE_REDDIT_LISTING_LIMIT",
-        ),
-    )
-    storage = StorageConfig(
-        root_dir=Path(
-            _read_str(
-                resolved_env,
-                "THREADSENSE_STORAGE_ROOT",
-                str(storage_section.get("root_dir", ".threadsense")),
-            )
-        ),
-        raw_dirname=_read_str(
-            resolved_env,
-            "THREADSENSE_STORAGE_RAW_DIR",
-            str(storage_section.get("raw_dirname", "raw")),
-        ),
-        normalized_dirname=_read_str(
-            resolved_env,
-            "THREADSENSE_STORAGE_NORMALIZED_DIR",
-            str(storage_section.get("normalized_dirname", "normalized")),
-        ),
-        analysis_dirname=_read_str(
-            resolved_env,
-            "THREADSENSE_STORAGE_ANALYSIS_DIR",
-            str(storage_section.get("analysis_dirname", "analysis")),
-        ),
-        report_dirname=_read_str(
-            resolved_env,
-            "THREADSENSE_STORAGE_REPORT_DIR",
-            str(storage_section.get("report_dirname", "reports")),
-        ),
-        batch_dirname=_read_str(
-            resolved_env,
-            "THREADSENSE_STORAGE_BATCH_DIR",
-            str(storage_section.get("batch_dirname", "batches")),
-        ),
-    )
-    batch = BatchConfig(
-        max_workers=_parse_positive_int(
-            _read_str(
-                resolved_env,
-                "THREADSENSE_BATCH_MAX_WORKERS",
-                str(batch_section.get("max_workers", "2")),
-            ),
-            "THREADSENSE_BATCH_MAX_WORKERS",
-        ),
-        max_jobs=_parse_positive_int(
-            _read_str(
-                resolved_env,
-                "THREADSENSE_BATCH_MAX_JOBS",
-                str(batch_section.get("max_jobs", "25")),
-            ),
-            "THREADSENSE_BATCH_MAX_JOBS",
-        ),
-        fail_fast=_parse_bool(
-            _read_str(
-                resolved_env,
-                "THREADSENSE_BATCH_FAIL_FAST",
-                str(batch_section.get("fail_fast", "false")),
-            ),
-            "THREADSENSE_BATCH_FAIL_FAST",
-        ),
-    )
-    api = ApiConfig(
-        host=_read_str(
-            resolved_env,
-            "THREADSENSE_API_HOST",
-            str(api_section.get("host", "127.0.0.1")),
-        ),
-        port=_parse_int(
-            _read_str(
-                resolved_env,
-                "THREADSENSE_API_PORT",
-                str(api_section.get("port", "8090")),
-            ),
-            "THREADSENSE_API_PORT",
-        ),
-        max_request_bytes=_parse_positive_int(
-            _read_str(
-                resolved_env,
-                "THREADSENSE_API_MAX_REQUEST_BYTES",
-                str(api_section.get("max_request_bytes", "1048576")),
-            ),
-            "THREADSENSE_API_MAX_REQUEST_BYTES",
-        ),
-    )
-    limits = LimitsConfig(
-        runtime_concurrency=_parse_positive_int(
-            _read_str(
-                resolved_env,
-                "THREADSENSE_RUNTIME_CONCURRENCY",
-                str(limits_section.get("runtime_concurrency", "1")),
-            ),
-            "THREADSENSE_RUNTIME_CONCURRENCY",
-        ),
-    )
+    app_section = _read_section(raw_config, "app")
+    runtime_section = _read_section(raw_config, "runtime")
+    source_section = _read_section(raw_config, "sources")
+    reddit_section = _read_section(raw_config, "reddit")
+    storage_section = _read_section(raw_config, "storage")
+    batch_section = _read_section(raw_config, "batch")
+    api_section = _read_section(raw_config, "api")
+    limits_section = _read_section(raw_config, "limits")
+    backend, privacy_mode = _load_app_settings(resolved_env, app_section)
+    runtime = _load_runtime_config(resolved_env, runtime_section)
+    source_policy = _load_source_policy(resolved_env, source_section)
+    reddit = _load_reddit_config(resolved_env, reddit_section)
+    storage = _load_storage_config(resolved_env, storage_section)
+    batch = _load_batch_config(resolved_env, batch_section)
+    api = _load_api_config(resolved_env, api_section)
+    limits = _load_limits_config(resolved_env, limits_section)
     return AppConfig(
         inference_backend=backend,
         privacy_mode=privacy_mode,

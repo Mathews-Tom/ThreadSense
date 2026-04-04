@@ -12,6 +12,7 @@ from threadsense.connectors.reddit import (
     RedditConnector,
     RedditThreadRequest,
     collect_more_ids,
+    flatten,
     normalize_url,
     parse_comment,
     should_retry_error,
@@ -57,6 +58,22 @@ def test_parse_comment_skips_deleted_and_removed_bodies() -> None:
 
     assert parse_comment(deleted_payload[1]["data"]["children"][0]) is None
     assert parse_comment(removed_payload[1]["data"]["children"][0]) is None
+
+
+def test_flatten_preserves_depth_first_comment_order() -> None:
+    payload = load_fixture("normal_thread.json")
+    assert isinstance(payload, list)
+
+    first_comment = parse_comment(payload[1]["data"]["children"][0])
+    second_comment = parse_comment(payload[1]["data"]["children"][1])
+
+    assert first_comment is not None
+    assert second_comment is not None
+    assert [comment.id for comment in flatten([first_comment, second_comment])] == [
+        "c1",
+        "c1a",
+        "c2",
+    ]
 
 
 def test_collect_more_ids_extracts_deferred_comment_ids() -> None:

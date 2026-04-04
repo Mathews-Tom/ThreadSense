@@ -14,7 +14,7 @@ repair_retries = 1
 enabled = "reddit"
 
 [reddit]
-user_agent = "threadsense/0.1.0 (https://github.com/Mathews-Tom/ThreadSense)"
+user_agent = "threadsense/0.1.0a0 (https://github.com/Mathews-Tom/ThreadSense)"
 timeout_seconds = 15
 max_retries = 2
 backoff_seconds = 0.5

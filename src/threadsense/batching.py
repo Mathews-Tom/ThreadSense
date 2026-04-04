@@ -221,23 +221,12 @@ def resolve_job_result(job: BatchJob, future: Future[dict[str, Any]]) -> BatchJo
     try:
         outputs = future.result()
     except Exception as error:
-        if isinstance(error, (BatchBoundaryError, ResourceLimitError, SchemaBoundaryError)):
-            error_payload = error.to_dict()
-        elif hasattr(error, "to_dict"):
-            error_payload = error.to_dict()
-        else:
-            error_payload = {
-                "type": error.__class__.__name__,
-                "code": "unhandled_error",
-                "message": str(error),
-                "details": {},
-            }
         return BatchJobResult(
             job_id=job.job_id,
             source_name=job.source_name,
             thread_url=job.thread_url,
             status="error",
-            error=error_payload,
+            error=job_error_payload(error),
             outputs=None,
         )
     return BatchJobResult(
@@ -248,6 +237,22 @@ def resolve_job_result(job: BatchJob, future: Future[dict[str, Any]]) -> BatchJo
         error=None,
         outputs=outputs,
     )
+
+
+def job_error_payload(error: Exception) -> dict[str, Any]:
+    if isinstance(error, (BatchBoundaryError, ResourceLimitError, SchemaBoundaryError)):
+        return error.to_dict()
+    to_dict = getattr(error, "to_dict", None)
+    if callable(to_dict):
+        payload = to_dict()
+        if isinstance(payload, dict):
+            return payload
+    return {
+        "type": error.__class__.__name__,
+        "code": "unhandled_error",
+        "message": str(error),
+        "details": {},
+    }
 
 
 def job_from_dict(payload: Mapping[str, Any]) -> BatchJob:

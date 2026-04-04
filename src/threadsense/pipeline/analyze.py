@@ -237,11 +237,7 @@ def count_distinct_comments(
     duplicate_index: dict[str, str],
 ) -> int:
     distinct_ids = {
-        duplicate_index.get(
-            signal.comment.comment_id,
-            signal.comment.comment_id,
-        )
-        for signal in signals
+        representative_comment_id(signal.comment.comment_id, duplicate_index) for signal in signals
     }
     return len(distinct_ids)
 
@@ -305,10 +301,7 @@ def dedupe_signals(
 ) -> list[CommentSignal]:
     by_representative: dict[str, CommentSignal] = {}
     for signal in signals:
-        representative_id = duplicate_index.get(
-            signal.comment.comment_id,
-            signal.comment.comment_id,
-        )
+        representative_id = representative_comment_id(signal.comment.comment_id, duplicate_index)
         existing = by_representative.get(representative_id)
         if existing is None or rank_comment_signal(signal) > rank_comment_signal(existing):
             by_representative[representative_id] = signal
@@ -346,19 +339,20 @@ def rank_comment_signal(signal: CommentSignal) -> tuple[int, int, int, str]:
     )
 
 
+def representative_comment_id(comment_id: str, duplicate_index: dict[str, str]) -> str:
+    return duplicate_index.get(comment_id, comment_id)
+
+
+def representative_quote_sort_key(signal: CommentSignal) -> tuple[int, int, int, str]:
+    weighted_score, text_length, negative_depth, comment_id = rank_comment_signal(signal)
+    return (-weighted_score, -text_length, negative_depth, comment_id)
+
+
 def select_representative_quotes(
     signals: list[CommentSignal],
     limit: int,
 ) -> list[RepresentativeQuote]:
-    ranked = sorted(
-        signals,
-        key=lambda signal: (
-            -rank_comment_signal(signal)[0],
-            -rank_comment_signal(signal)[1],
-            rank_comment_signal(signal)[2],
-            signal.comment.comment_id,
-        ),
-    )
+    ranked = sorted(signals, key=representative_quote_sort_key)
     return [to_quote(signal) for signal in ranked[:limit]]
 
 
