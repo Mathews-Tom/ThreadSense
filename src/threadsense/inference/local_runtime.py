@@ -66,7 +66,7 @@ class LocalRuntimeClient:
         messages: list[InferenceMessage],
         temperature: float,
     ) -> JsonObject:
-        return {
+        payload: JsonObject = {
             "model": self._config.model,
             "messages": [
                 {"role": message.role, "content": message.content} for message in messages
@@ -74,6 +74,9 @@ class LocalRuntimeClient:
             "stream": False,
             "temperature": temperature,
         }
+        if self._config.json_mode:
+            payload["response_format"] = {"type": "json_object"}
+        return payload
 
     def probe(self, opener: JsonRequest | None = None) -> RuntimeProbeResult:
         request_fn = opener or send_json_request
@@ -123,7 +126,8 @@ class LocalRuntimeClient:
     ) -> InferenceResponse:
         request_fn = opener or send_json_request
         messages = list(inference_request.messages)
-        for attempt in range(inference_request.repair_retries + 1):
+        effective_retries = 0 if self._config.json_mode else inference_request.repair_retries
+        for attempt in range(effective_retries + 1):
             payload = self.build_chat_payload(messages=messages, temperature=0)
             _status_code, response_body = request_fn(
                 self._config.chat_endpoint,

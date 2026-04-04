@@ -342,6 +342,7 @@ def render_preflight_report(config: AppConfig, probe: RuntimeProbeResult | None)
             "model": config.runtime.model,
             "timeout_seconds": config.runtime.timeout_seconds,
             "repair_retries": config.runtime.repair_retries,
+            "json_mode": config.runtime.json_mode,
         },
     }
     if probe is not None:

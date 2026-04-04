@@ -35,6 +35,7 @@ class RuntimeConfig:
     model: str
     timeout_seconds: float
     repair_retries: int
+    json_mode: bool
 
     @property
     def chat_endpoint(self) -> str:
@@ -313,6 +314,16 @@ def _load_runtime_config(
                 "1",
             ),
             "THREADSENSE_RUNTIME_REPAIR_RETRIES",
+        ),
+        json_mode=_parse_bool(
+            _read_section_str(
+                resolved_env,
+                "THREADSENSE_RUNTIME_JSON_MODE",
+                runtime_section,
+                "json_mode",
+                "false",
+            ),
+            "THREADSENSE_RUNTIME_JSON_MODE",
         ),
     )
 
