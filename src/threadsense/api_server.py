@@ -127,7 +127,7 @@ def build_handler(dependencies: ServerDependencies) -> type[BaseHTTPRequestHandl
                     flat=optional_bool(payload, "flat", False),
                     connector_factory=dependencies.connector_factory,
                     registry=dependencies.registry,
-                )
+                ).to_dict()
             if self.path == "/v1/normalize/reddit":
                 return normalize_reddit_workflow(
                     config=dependencies.config,
@@ -136,7 +136,7 @@ def build_handler(dependencies: ServerDependencies) -> type[BaseHTTPRequestHandl
                     input_path=required_path(payload, "input_path"),
                     output_path=optional_path(payload, "output_path"),
                     registry=dependencies.registry,
-                )
+                ).to_dict()
             if self.path == "/v1/analyze/normalized":
                 return analyze_normalized_thread(
                     config=dependencies.config,
@@ -145,7 +145,7 @@ def build_handler(dependencies: ServerDependencies) -> type[BaseHTTPRequestHandl
                     input_path=required_path(payload, "input_path"),
                     output_path=optional_path(payload, "output_path"),
                     registry=dependencies.registry,
-                )
+                ).to_dict()
             if self.path == "/v1/report/analysis":
                 return report_analysis(
                     config=dependencies.config,
@@ -157,7 +157,7 @@ def build_handler(dependencies: ServerDependencies) -> type[BaseHTTPRequestHandl
                     with_summary=optional_bool(payload, "with_summary", False),
                     summary_required=optional_bool(payload, "summary_required", False),
                     registry=dependencies.registry,
-                )
+                ).to_dict()
             if self.path == "/v1/infer/analysis":
                 return infer_analysis(
                     config=dependencies.config,
@@ -167,7 +167,7 @@ def build_handler(dependencies: ServerDependencies) -> type[BaseHTTPRequestHandl
                     task=InferenceTask(optional_str(payload, "task", "analysis_summary")),
                     required=optional_bool(payload, "required", False),
                     registry=dependencies.registry,
-                )
+                ).to_dict()
             raise ApiInputError("API route does not exist", details={"path": self.path})
 
         def _read_json_body(self, max_request_bytes: int) -> dict[str, Any]:

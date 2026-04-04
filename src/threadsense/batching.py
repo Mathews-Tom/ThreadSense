@@ -10,11 +10,15 @@ from typing import Any
 
 from threadsense.config import AppConfig
 from threadsense.errors import BatchBoundaryError, ResourceLimitError, SchemaBoundaryError
+from threadsense.models.results import PipelineResult
 from threadsense.observability import DEFAULT_METRICS, MetricsRegistry, TraceContext
 from threadsense.pipeline.storage import read_json, write_json
+from threadsense.schema_utils import SchemaReader
 from threadsense.workflows import RedditConnectorFactory, run_reddit_pipeline
 
 BATCH_MANIFEST_VERSION = 1
+
+_schema = SchemaReader(SchemaBoundaryError, "batch manifest")
 
 
 @dataclass(frozen=True)
@@ -82,9 +86,9 @@ def load_batch_manifest(path: Path) -> BatchManifest:
     jobs = [job_from_dict(item) for item in jobs_data]
     ensure_unique_job_ids(jobs)
     return BatchManifest(
-        run_name=required_str(payload, "run_name"),
+        run_name=_schema.required_str(payload, "run_name"),
         jobs=jobs,
-        created_at_utc=required_float(payload, "created_at_utc"),
+        created_at_utc=_schema.required_float(payload, "created_at_utc"),
         manifest_version=manifest_version,
     )
 
@@ -175,7 +179,7 @@ def run_batch_job(
     run_name: str,
     connector_factory: RedditConnectorFactory,
     registry: MetricsRegistry,
-) -> dict[str, Any]:
+) -> PipelineResult:
     if job.source_name != "reddit":
         raise BatchBoundaryError(
             "batch job source is unsupported",
@@ -217,7 +221,7 @@ def validate_manifest_limits(manifest: BatchManifest, max_jobs: int) -> None:
         )
 
 
-def resolve_job_result(job: BatchJob, future: Future[dict[str, Any]]) -> BatchJobResult:
+def resolve_job_result(job: BatchJob, future: Future[PipelineResult]) -> BatchJobResult:
     try:
         outputs = future.result()
     except Exception as error:
@@ -235,7 +239,7 @@ def resolve_job_result(job: BatchJob, future: Future[dict[str, Any]]) -> BatchJo
         thread_url=job.thread_url,
         status="ready",
         error=None,
-        outputs=outputs,
+        outputs=outputs.to_dict(),
     )
 
 
@@ -257,14 +261,14 @@ def job_error_payload(error: Exception) -> dict[str, Any]:
 
 def job_from_dict(payload: Mapping[str, Any]) -> BatchJob:
     return BatchJob(
-        job_id=required_str(payload, "job_id"),
-        source_name=required_str(payload, "source_name"),
-        thread_url=required_str(payload, "thread_url"),
-        expand_more=required_bool(payload, "expand_more"),
-        flat=required_bool(payload, "flat"),
-        report_format=required_str(payload, "report_format"),
-        with_summary=required_bool(payload, "with_summary"),
-        summary_required=required_bool(payload, "summary_required"),
+        job_id=_schema.required_str(payload, "job_id"),
+        source_name=_schema.required_str(payload, "source_name"),
+        thread_url=_schema.required_str(payload, "thread_url"),
+        expand_more=_schema.required_bool(payload, "expand_more"),
+        flat=_schema.required_bool(payload, "flat"),
+        report_format=_schema.required_str(payload, "report_format"),
+        with_summary=_schema.required_bool(payload, "with_summary"),
+        summary_required=_schema.required_bool(payload, "summary_required"),
     )
 
 
@@ -272,35 +276,3 @@ def ensure_unique_job_ids(jobs: list[BatchJob]) -> None:
     job_ids = [job.job_id for job in jobs]
     if len(set(job_ids)) != len(job_ids):
         raise SchemaBoundaryError("batch manifest contains duplicate job_id values")
-
-
-def required_str(payload: Mapping[str, Any], key: str) -> str:
-    value = payload.get(key)
-    if not isinstance(value, str) or not value:
-        raise SchemaBoundaryError(
-            "batch manifest string field is invalid",
-            details={"key": key},
-        )
-    return value
-
-
-def required_float(payload: Mapping[str, Any], key: str) -> float:
-    value = payload.get(key)
-    if isinstance(value, int):
-        return float(value)
-    if not isinstance(value, float):
-        raise SchemaBoundaryError(
-            "batch manifest float field is invalid",
-            details={"key": key},
-        )
-    return value
-
-
-def required_bool(payload: Mapping[str, Any], key: str) -> bool:
-    value = payload.get(key)
-    if not isinstance(value, bool):
-        raise SchemaBoundaryError(
-            "batch manifest boolean field is invalid",
-            details={"key": key},
-        )
-    return value

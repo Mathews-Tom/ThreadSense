@@ -390,7 +390,7 @@ def run_reddit_fetch(
         flat=flat,
         connector_factory=build_reddit_connector,
     )
-    emit_payload(payload)
+    emit_payload(payload.to_dict())
     return 0
 
 
@@ -407,7 +407,7 @@ def run_reddit_normalize(
         input_path=input_path,
         output_path=output_path,
     )
-    emit_payload(payload)
+    emit_payload(payload.to_dict())
     return 0
 
 
@@ -424,7 +424,7 @@ def run_normalized_analyze(
         input_path=input_path,
         output_path=output_path,
     )
-    emit_payload(payload)
+    emit_payload(payload.to_dict())
     return 0
 
 
@@ -502,8 +502,8 @@ def run_analysis_infer(
         task=InferenceTask(task_name),
         required=required,
     )
-    emit_payload(payload)
-    return 0 if payload["status"] != "degraded" or not required else 1
+    emit_payload(payload.to_dict())
+    return 0 if payload.status != "degraded" or not required else 1
 
 
 def run_analysis_report(
@@ -525,7 +525,7 @@ def run_analysis_report(
         with_summary=with_summary,
         summary_required=summary_required,
     )
-    emit_payload(payload)
+    emit_payload(payload.to_dict())
     return 0
 
 
@@ -623,7 +623,7 @@ def run_reddit_end_to_end(
             summary_required=summary_required,
             connector_factory=build_reddit_connector,
         )
-    emit_payload(payload)
+    emit_payload(payload.to_dict())
     return 0
 
 
