@@ -5,6 +5,7 @@ import re
 from collections import Counter, deque
 from dataclasses import dataclass
 
+from threadsense.contracts import AbstractionLevel, AnalysisContract, ObjectiveType
 from threadsense.domains import DomainVocabulary, load_domain_vocabulary
 from threadsense.models.analysis import (
     AnalysisFinding,
@@ -79,7 +80,7 @@ class KeywordHeuristicStrategy:
         self._duplicate_threshold = duplicate_threshold
         self._vocabulary = vocabulary
 
-    def analyze(self, thread: Thread) -> AnalysisResult:
+    def analyze(self, thread: Thread, contract: AnalysisContract) -> AnalysisResult:
         signals = [
             signal
             for signal in (
@@ -98,12 +99,19 @@ class KeywordHeuristicStrategy:
         findings = build_findings(
             signals,
             duplicate_index,
+            contract=contract,
             severity_levels=self._vocabulary.severity_levels,
             issue_fallback_theme=self._vocabulary.issue_fallback_theme,
             request_fallback_theme=self._vocabulary.request_fallback_theme,
             default_theme=self._vocabulary.default_theme,
         )
-        top_quotes = select_representative_quotes(signals, limit=5)
+        findings = route_findings_by_abstraction(findings, contract)
+        top_quotes = select_representative_quotes(
+            signals,
+            limit=quote_limit_for_contract(contract),
+        )
+        if contract.abstraction_level is AbstractionLevel.STRATEGIC:
+            top_quotes = [quote for quote in top_quotes if quote.score >= 0][:3]
         return AnalysisResult(
             filtered_comment_count=thread.comment_count - len(signals),
             distinct_comment_count=count_distinct_comments(signals, duplicate_index),
@@ -400,6 +408,7 @@ def build_findings(
     signals: list[CommentSignal],
     duplicate_index: dict[str, str],
     *,
+    contract: AnalysisContract,
     severity_levels: tuple[str, ...] = DEFAULT_DOMAIN_VOCABULARY.severity_levels,
     issue_fallback_theme: str = DEFAULT_DOMAIN_VOCABULARY.issue_fallback_theme,
     request_fallback_theme: str = DEFAULT_DOMAIN_VOCABULARY.request_fallback_theme,
@@ -430,6 +439,7 @@ def build_findings(
                     evidence,
                     issue_marker_count,
                     request_marker_count,
+                    contract=contract,
                     severity_levels=severity_levels,
                 ),
                 comment_count=len(evidence),
@@ -491,6 +501,7 @@ def score_severity(
     issue_marker_count: int,
     request_marker_count: int,
     *,
+    contract: AnalysisContract,
     severity_levels: tuple[str, ...] = DEFAULT_DOMAIN_VOCABULARY.severity_levels,
 ) -> str:
     weighted_score = (
@@ -498,11 +509,94 @@ def score_severity(
         + request_marker_count
         + sum(max(signal.comment.score, 0) for signal in signals)
     )
-    if weighted_score >= 15:
+    high_threshold = 15
+    medium_threshold = 6
+    if contract.objective is ObjectiveType.FEATURE_DEMAND:
+        high_threshold += 2
+    if contract.abstraction_level is AbstractionLevel.STRATEGIC:
+        high_threshold += 6
+        medium_threshold += 4
+    elif contract.abstraction_level is AbstractionLevel.ARCHITECTURAL:
+        high_threshold += 2
+        medium_threshold += 2
+    if weighted_score >= high_threshold:
         return severity_levels[2]
-    if weighted_score >= 6:
+    if weighted_score >= medium_threshold:
         return severity_levels[1]
     return severity_levels[0]
+
+
+def quote_limit_for_contract(contract: AnalysisContract) -> int:
+    if contract.abstraction_level is AbstractionLevel.STRATEGIC:
+        return 3
+    if contract.abstraction_level is AbstractionLevel.ARCHITECTURAL:
+        return 4
+    return 5
+
+
+def route_findings_by_abstraction(
+    findings: list[AnalysisFinding],
+    contract: AnalysisContract,
+) -> list[AnalysisFinding]:
+    if contract.abstraction_level is AbstractionLevel.OPERATIONAL:
+        return findings
+    if contract.abstraction_level is AbstractionLevel.ARCHITECTURAL:
+        return merge_architectural_findings(findings)
+    return [finding for finding in findings if finding.severity == "high"][:3]
+
+
+def merge_architectural_findings(findings: list[AnalysisFinding]) -> list[AnalysisFinding]:
+    if not findings:
+        return []
+    merged_groups: dict[str, list[AnalysisFinding]] = {}
+    for finding in findings:
+        merged_groups.setdefault(_architectural_group(finding.theme_key), []).append(finding)
+
+    merged: list[AnalysisFinding] = []
+    for theme_key, group in merged_groups.items():
+        comment_count = sum(finding.comment_count for finding in group)
+        issue_count = sum(finding.issue_marker_count for finding in group)
+        request_count = sum(finding.request_marker_count for finding in group)
+        quotes = sorted(
+            [quote for finding in group for quote in finding.quotes],
+            key=lambda quote: (-quote.score, quote.comment_id),
+        )[:3]
+        key_phrases = list(
+            dict.fromkeys(phrase for finding in group for phrase in finding.key_phrases)
+        )[:5]
+        evidence_ids = sorted(
+            set(comment_id for finding in group for comment_id in finding.evidence_comment_ids)
+        )
+        severity = "high" if any(f.severity == "high" for f in group) else "medium"
+        merged.append(
+            AnalysisFinding(
+                theme_key=theme_key,
+                theme_label=theme_key.replace("_", " "),
+                severity=severity,
+                comment_count=comment_count,
+                issue_marker_count=issue_count,
+                request_marker_count=request_count,
+                key_phrases=key_phrases,
+                evidence_comment_ids=evidence_ids,
+                quotes=quotes,
+            )
+        )
+    return sorted(
+        merged,
+        key=lambda finding: (
+            -finding.comment_count,
+            -finding.issue_marker_count,
+            finding.theme_key,
+        ),
+    )
+
+
+def _architectural_group(theme_key: str) -> str:
+    if theme_key in {"performance", "reliability"}:
+        return "system_health"
+    if theme_key in {"documentation", "workflow", "usability"}:
+        return "experience_design"
+    return theme_key
 
 
 def rank_comment_signal(signal: CommentSignal) -> tuple[int, int, int, str]:

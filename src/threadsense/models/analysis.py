@@ -6,6 +6,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from threadsense.contracts import (
+    ANALYSIS_CONTRACT_SCHEMA_VERSION,
+    AnalysisContract,
+    default_contract,
+)
 from threadsense.errors import AnalysisBoundaryError
 from threadsense.schema_utils import SchemaReader
 
@@ -74,6 +79,8 @@ class AnalysisProvenance:
     analyzed_at_utc: float
     schema_version: int
     analysis_version: str
+    contract: dict[str, str | float]
+    contract_schema_version: str
 
 
 @dataclass(frozen=True)
@@ -131,6 +138,12 @@ def load_analysis_artifact_file(path: Path) -> ThreadAnalysis:
             analyzed_at_utc=_schema.required_float(provenance_data, "analyzed_at_utc"),
             schema_version=_schema.required_int(provenance_data, "schema_version"),
             analysis_version=_schema.required_str(provenance_data, "analysis_version"),
+            contract=contract_payload_from_dict(provenance_data),
+            contract_schema_version=required_str_with_default(
+                provenance_data,
+                "contract_schema_version",
+                ANALYSIS_CONTRACT_SCHEMA_VERSION,
+            ),
         ),
     )
 
@@ -239,11 +252,37 @@ def read_json_file(path: Path) -> dict[str, Any]:
     return payload
 
 
+def contract_payload_from_dict(payload: Mapping[str, Any]) -> dict[str, str | float]:
+    contract_payload = payload.get("contract")
+    if contract_payload is None:
+        return default_contract().to_dict()
+    if not isinstance(contract_payload, dict):
+        raise AnalysisBoundaryError(
+            "analysis contract payload is invalid",
+            details={"key": "contract"},
+        )
+    return AnalysisContract.from_dict(contract_payload).to_dict()
+
+
 def required_str_list(payload: Mapping[str, Any], key: str) -> list[str]:
     value = payload.get(key)
     if not isinstance(value, list) or any(not isinstance(item, str) or not item for item in value):
         raise AnalysisBoundaryError(
             "analysis string list field is invalid",
+            details={"key": key},
+        )
+    return value
+
+
+def required_str_with_default(
+    payload: Mapping[str, Any],
+    key: str,
+    default: str,
+) -> str:
+    value = payload.get(key, default)
+    if not isinstance(value, str) or not value:
+        raise AnalysisBoundaryError(
+            "analysis string field is invalid",
             details={"key": key},
         )
     return value

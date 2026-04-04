@@ -50,6 +50,7 @@ def test_build_thread_report_uses_local_summary_and_quality_checks(tmp_path: Pat
     assert report.findings
     assert report.conversation_structure.max_depth == 0
     assert report.conversation_structure.top_level_count == 7
+    assert report.provenance.analysis_artifact_path == str(analysis_path)
     assert any(check.code == "coverage_gap" for check in report.quality_checks)
 
 

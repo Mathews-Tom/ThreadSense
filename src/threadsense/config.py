@@ -10,6 +10,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from threadsense import __version__
+from threadsense.contracts import AbstractionLevel, DomainType, ObjectiveType
 from threadsense.errors import ConfigurationError
 
 
@@ -48,7 +49,7 @@ class RuntimeConfig(BaseModel):
 class SourcePolicyConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    enabled_sources: tuple[str, ...] = ("reddit",)
+    enabled_sources: tuple[str, ...] = ("reddit", "hackernews")
 
     @field_validator("enabled_sources", mode="before")
     @classmethod
@@ -72,6 +73,14 @@ class RedditConfig(BaseModel):
     backoff_seconds: float = 0.5
     request_delay_seconds: float = 0.6
     listing_limit: int = 500
+
+
+class HackerNewsConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    base_url: str = "https://hacker-news.firebaseio.com/v0"
+    timeout_seconds: float = 15
+    request_delay_seconds: float = 1.0
 
 
 class StorageConfig(BaseModel):
@@ -111,16 +120,15 @@ class AnalysisConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     strategy: str = "keyword_heuristic"
-    domain: str = "developer_tools"
+    domain: DomainType = DomainType.DEVELOPER_TOOLS
+    objective: ObjectiveType = ObjectiveType.GENERAL_SURVEY
+    abstraction_level: AbstractionLevel = AbstractionLevel.OPERATIONAL
     duplicate_threshold: float = 0.88
 
     @field_validator("domain")
     @classmethod
-    def validate_domain(cls, v: str) -> str:
-        value = v.strip()
-        if not value:
-            raise ValueError("domain must not be empty")
-        return value
+    def validate_domain(cls, v: DomainType) -> DomainType:
+        return v
 
     @field_validator("duplicate_threshold")
     @classmethod
@@ -138,6 +146,7 @@ class AppConfig(BaseModel):
     runtime: RuntimeConfig = RuntimeConfig()
     source_policy: SourcePolicyConfig = SourcePolicyConfig()
     reddit: RedditConfig = RedditConfig()
+    hackernews: HackerNewsConfig = HackerNewsConfig()
     storage: StorageConfig = StorageConfig()
     batch: BatchConfig = BatchConfig()
     api: ApiConfig = ApiConfig()
@@ -163,6 +172,9 @@ _ENV_MAP: dict[str, tuple[str, ...]] = {
     "THREADSENSE_REDDIT_BACKOFF": ("reddit", "backoff_seconds"),
     "THREADSENSE_REDDIT_REQUEST_DELAY": ("reddit", "request_delay_seconds"),
     "THREADSENSE_REDDIT_LISTING_LIMIT": ("reddit", "listing_limit"),
+    "THREADSENSE_HN_BASE_URL": ("hackernews", "base_url"),
+    "THREADSENSE_HN_TIMEOUT": ("hackernews", "timeout_seconds"),
+    "THREADSENSE_HN_REQUEST_DELAY": ("hackernews", "request_delay_seconds"),
     "THREADSENSE_STORAGE_ROOT": ("storage", "root_dir"),
     "THREADSENSE_STORAGE_RAW_DIR": ("storage", "raw_dirname"),
     "THREADSENSE_STORAGE_NORMALIZED_DIR": ("storage", "normalized_dirname"),
@@ -178,6 +190,8 @@ _ENV_MAP: dict[str, tuple[str, ...]] = {
     "THREADSENSE_RUNTIME_CONCURRENCY": ("limits", "runtime_concurrency"),
     "THREADSENSE_ANALYSIS_STRATEGY": ("analysis", "strategy"),
     "THREADSENSE_ANALYSIS_DOMAIN": ("analysis", "domain"),
+    "THREADSENSE_ANALYSIS_OBJECTIVE": ("analysis", "objective"),
+    "THREADSENSE_ANALYSIS_LEVEL": ("analysis", "abstraction_level"),
     "THREADSENSE_ANALYSIS_DUPLICATE_THRESHOLD": ("analysis", "duplicate_threshold"),
 }
 
@@ -186,6 +200,7 @@ _TOML_SECTION_MAP: dict[str, str] = {
     "runtime": "runtime",
     "sources": "source_policy",
     "reddit": "reddit",
+    "hackernews": "hackernews",
     "storage": "storage",
     "batch": "batch",
     "api": "api",

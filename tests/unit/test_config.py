@@ -6,6 +6,7 @@ import pytest
 
 from threadsense import __version__
 from threadsense.config import InferenceBackend, PrivacyMode, load_config
+from threadsense.contracts import AbstractionLevel, DomainType, ObjectiveType
 from threadsense.errors import ConfigurationError
 
 
@@ -19,9 +20,11 @@ def test_load_config_uses_defaults_when_no_file_exists(monkeypatch: pytest.Monke
     assert config.runtime.chat_endpoint == "http://127.0.0.1:8080/v1/chat/completions"
     assert config.runtime.timeout_seconds == 90.0
     assert config.runtime.repair_retries == 1
-    assert config.source_policy.enabled_sources == ("reddit",)
+    assert config.source_policy.enabled_sources == ("reddit", "hackernews")
     assert config.reddit.listing_limit == 500
     assert config.reddit.timeout_seconds == 15.0
+    assert config.hackernews.base_url == "https://hacker-news.firebaseio.com/v0"
+    assert config.hackernews.request_delay_seconds == 1.0
     assert (
         config.reddit.user_agent
         == f"threadsense/{__version__} (https://github.com/Mathews-Tom/ThreadSense)"
@@ -39,7 +42,9 @@ def test_load_config_uses_defaults_when_no_file_exists(monkeypatch: pytest.Monke
     assert config.api.max_request_bytes == 1048576
     assert config.limits.runtime_concurrency == 1
     assert config.analysis.strategy == "keyword_heuristic"
-    assert config.analysis.domain == "developer_tools"
+    assert config.analysis.domain is DomainType.DEVELOPER_TOOLS
+    assert config.analysis.objective is ObjectiveType.GENERAL_SURVEY
+    assert config.analysis.abstraction_level is AbstractionLevel.OPERATIONAL
     assert config.analysis.duplicate_threshold == 0.88
 
 
@@ -74,6 +79,11 @@ def test_load_config_reads_toml_and_env_overrides(
                 "request_delay_seconds = 0.6",
                 "listing_limit = 100",
                 "",
+                "[hackernews]",
+                'base_url = "https://example.com/v0"',
+                "timeout_seconds = 22",
+                "request_delay_seconds = 1.5",
+                "",
                 "[storage]",
                 'root_dir = ".artifacts"',
                 'raw_dirname = "raw-store"',
@@ -97,6 +107,8 @@ def test_load_config_reads_toml_and_env_overrides(
                 "",
                 "[analysis]",
                 'domain = "product_feedback"',
+                'objective = "feature_demand"',
+                'abstraction_level = "architectural"',
             ]
         ),
         encoding="utf-8",
@@ -109,6 +121,8 @@ def test_load_config_reads_toml_and_env_overrides(
     monkeypatch.setenv("THREADSENSE_BATCH_MAX_WORKERS", "4")
     monkeypatch.setenv("THREADSENSE_RUNTIME_CONCURRENCY", "3")
     monkeypatch.setenv("THREADSENSE_ANALYSIS_DOMAIN", "hiring_careers")
+    monkeypatch.setenv("THREADSENSE_ANALYSIS_OBJECTIVE", "competitive_intelligence")
+    monkeypatch.setenv("THREADSENSE_ANALYSIS_LEVEL", "strategic")
 
     config = load_config(config_path=config_path)
 
@@ -121,6 +135,9 @@ def test_load_config_reads_toml_and_env_overrides(
     assert config.reddit.timeout_seconds == 25.0
     assert config.reddit.request_delay_seconds == 0.75
     assert config.reddit.listing_limit == 100
+    assert config.hackernews.base_url == "https://example.com/v0"
+    assert config.hackernews.timeout_seconds == 22.0
+    assert config.hackernews.request_delay_seconds == 1.5
     assert config.storage.root_dir == Path(".runtime-store")
     assert config.storage.raw_dirname == "raw-store"
     assert config.storage.normalized_dirname == "canonical-store"
@@ -134,7 +151,9 @@ def test_load_config_reads_toml_and_env_overrides(
     assert config.api.port == 9001
     assert config.api.max_request_bytes == 2048
     assert config.limits.runtime_concurrency == 3
-    assert config.analysis.domain == "hiring_careers"
+    assert config.analysis.domain is DomainType.HIRING_CAREERS
+    assert config.analysis.objective is ObjectiveType.COMPETITIVE_INTELLIGENCE
+    assert config.analysis.abstraction_level is AbstractionLevel.STRATEGIC
 
 
 def test_load_config_rejects_invalid_privacy_mode(tmp_path: Path) -> None:

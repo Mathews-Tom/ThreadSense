@@ -12,7 +12,7 @@ repair_retries = 1
 json_mode = false
 
 [sources]
-enabled = "reddit"
+enabled = "reddit,hackernews"
 
 [reddit]
 user_agent = "threadsense/0.1.0a0 (https://github.com/Mathews-Tom/ThreadSense)"
@@ -21,6 +21,11 @@ max_retries = 2
 backoff_seconds = 0.5
 request_delay_seconds = 0.6
 listing_limit = 500
+
+[hackernews]
+base_url = "https://hacker-news.firebaseio.com/v0"
+timeout_seconds = 15
+request_delay_seconds = 1.0
 
 [storage]
 root_dir = ".threadsense"
@@ -46,4 +51,6 @@ runtime_concurrency = 1
 [analysis]
 strategy = "keyword_heuristic"
 domain = "developer_tools"
+objective = "general_survey"
+abstraction_level = "operational"
 duplicate_threshold = 0.88

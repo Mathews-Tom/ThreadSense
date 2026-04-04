@@ -4,6 +4,12 @@ from pathlib import Path
 from time import time
 
 from threadsense.config import AnalysisConfig
+from threadsense.contracts import (
+    ANALYSIS_CONTRACT_SCHEMA_VERSION,
+    AnalysisContract,
+    contract_from_config,
+    default_contract,
+)
 from threadsense.domains import load_domain_vocabulary
 from threadsense.errors import AnalysisBoundaryError
 from threadsense.models.analysis import (
@@ -30,7 +36,7 @@ STRATEGY_REGISTRY: dict[str, type[KeywordHeuristicStrategy]] = {
 }
 
 
-def resolve_strategy(config: AnalysisConfig) -> AnalysisStrategy:
+def resolve_strategy(config: AnalysisConfig, contract: AnalysisContract) -> AnalysisStrategy:
     strategy_cls = STRATEGY_REGISTRY.get(config.strategy)
     if strategy_cls is None:
         raise AnalysisBoundaryError(
@@ -39,35 +45,46 @@ def resolve_strategy(config: AnalysisConfig) -> AnalysisStrategy:
         )
     return strategy_cls(
         duplicate_threshold=config.duplicate_threshold,
-        vocabulary=load_domain_vocabulary(config.domain),
+        vocabulary=load_domain_vocabulary(contract.domain.value),
     )
 
 
 def analyze_thread_file(
     normalized_artifact_path: Path,
     config: AnalysisConfig | None = None,
+    contract: AnalysisContract | None = None,
 ) -> ThreadAnalysis:
     thread = load_normalized_artifact(normalized_artifact_path)
-    return analyze_thread(thread, normalized_artifact_path, config)
+    return analyze_thread(thread, normalized_artifact_path, config, contract)
 
 
 def analyze_thread(
     thread: Thread,
     normalized_artifact_path: Path,
     config: AnalysisConfig | None = None,
+    contract: AnalysisContract | None = None,
 ) -> ThreadAnalysis:
+    resolved_contract = resolve_analysis_contract(config, contract)
     if config is not None:
-        strategy = resolve_strategy(config)
+        strategy = resolve_strategy(config, resolved_contract)
     else:
-        strategy = KeywordHeuristicStrategy()
-    analysis_result = strategy.analyze(thread)
-    return assemble_thread_analysis(thread, analysis_result, normalized_artifact_path)
+        strategy = KeywordHeuristicStrategy(
+            vocabulary=load_domain_vocabulary(resolved_contract.domain.value)
+        )
+    analysis_result = strategy.analyze(thread, resolved_contract)
+    return assemble_thread_analysis(
+        thread,
+        analysis_result,
+        normalized_artifact_path,
+        resolved_contract,
+    )
 
 
 def assemble_thread_analysis(
     thread: Thread,
     result: AnalysisResult,
     normalized_artifact_path: Path,
+    contract: AnalysisContract,
 ) -> ThreadAnalysis:
     return ThreadAnalysis(
         thread_id=thread.thread_id,
@@ -89,8 +106,21 @@ def assemble_thread_analysis(
             analyzed_at_utc=time(),
             schema_version=ANALYSIS_SCHEMA_VERSION,
             analysis_version=ANALYSIS_ENGINE_VERSION,
+            contract=contract.to_dict(),
+            contract_schema_version=ANALYSIS_CONTRACT_SCHEMA_VERSION,
         ),
     )
+
+
+def resolve_analysis_contract(
+    config: AnalysisConfig | None,
+    contract: AnalysisContract | None,
+) -> AnalysisContract:
+    if contract is not None:
+        return contract
+    if config is not None:
+        return contract_from_config(config)
+    return default_contract()
 
 
 def build_conversation_structure(thread: Thread) -> ConversationStructure:
