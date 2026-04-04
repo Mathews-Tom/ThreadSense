@@ -7,7 +7,9 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from time import sleep, time
 from typing import Any
-from urllib import error, parse, request
+from urllib import parse
+
+import httpx
 
 from threadsense.config import RedditConfig
 from threadsense.errors import (
@@ -214,32 +216,35 @@ def fetch_json(
     params: QueryParams,
     timeout_seconds: float,
 ) -> Any:
-    query_string = parse.urlencode({key: str(value) for key, value in params.items()})
-    resolved_url = f"{url}?{query_string}" if query_string else url
-    http_request = request.Request(resolved_url, headers=dict(headers), method="GET")
+    resolved_params = {key: str(value) for key, value in params.items()}
     try:
-        with request.urlopen(http_request, timeout=timeout_seconds) as response:
-            raw_body = response.read().decode("utf-8")
-            return json.loads(raw_body)
-    except error.HTTPError as http_error:
-        response_body = http_error.read().decode("utf-8", errors="replace")
+        with httpx.Client(timeout=timeout_seconds) as client:
+            response = client.get(url, headers=dict(headers), params=resolved_params)
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPStatusError as http_error:
         raise RedditRequestError(
             "reddit request failed",
             details={
-                "url": resolved_url,
-                "status_code": http_error.code,
-                "response_body": response_body,
+                "url": str(http_error.request.url),
+                "status_code": http_error.response.status_code,
+                "response_body": http_error.response.text,
             },
         ) from http_error
-    except error.URLError as url_error:
+    except httpx.ConnectError as connect_error:
         raise NetworkBoundaryError(
             "reddit endpoint is unreachable",
-            details={"url": resolved_url, "reason": str(url_error.reason)},
-        ) from url_error
+            details={"url": url, "reason": str(connect_error)},
+        ) from connect_error
+    except httpx.TimeoutException as timeout_error:
+        raise NetworkBoundaryError(
+            "reddit request timed out",
+            details={"url": url, "timeout_seconds": timeout_seconds},
+        ) from timeout_error
     except json.JSONDecodeError as decode_error:
         raise RedditResponseError(
             "reddit response body is not valid JSON",
-            details={"url": resolved_url},
+            details={"url": url},
         ) from decode_error
 
 

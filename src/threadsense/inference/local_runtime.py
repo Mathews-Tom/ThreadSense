@@ -5,7 +5,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from time import perf_counter
 from typing import TYPE_CHECKING, Any
-from urllib import error, request
+
+import httpx
 
 from threadsense.config import RuntimeConfig
 from threadsense.errors import InferenceBoundaryError, NetworkBoundaryError, SchemaBoundaryError
@@ -176,36 +177,33 @@ def send_json_request(
     payload: JsonObject,
     timeout_seconds: float,
 ) -> tuple[int, JsonObject]:
-    body = json.dumps(payload).encode("utf-8")
-    http_request = request.Request(
-        url,
-        data=body,
-        method="POST",
-        headers={"Content-Type": "application/json"},
-    )
     try:
-        with request.urlopen(http_request, timeout=timeout_seconds) as response:
-            raw_body = response.read().decode("utf-8")
-            parsed = json.loads(raw_body)
+        with httpx.Client(timeout=timeout_seconds) as client:
+            response = client.post(
+                url,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            response.raise_for_status()
+            parsed = response.json()
             if not isinstance(parsed, dict):
                 raise SchemaBoundaryError("runtime response must be a JSON object")
-            return response.status, parsed
-    except error.HTTPError as http_error:
-        response_body = http_error.read().decode("utf-8", errors="replace")
+            return response.status_code, parsed
+    except httpx.HTTPStatusError as http_error:
         raise InferenceBoundaryError(
             "runtime rejected chat completion request",
             details={
-                "status_code": http_error.code,
+                "status_code": http_error.response.status_code,
                 "url": url,
-                "response_body": response_body,
+                "response_body": http_error.response.text,
             },
         ) from http_error
-    except error.URLError as url_error:
+    except httpx.ConnectError as connect_error:
         raise NetworkBoundaryError(
             "runtime endpoint is unreachable",
-            details={"url": url, "reason": str(url_error.reason)},
-        ) from url_error
-    except TimeoutError as timeout_error:
+            details={"url": url, "reason": str(connect_error)},
+        ) from connect_error
+    except httpx.TimeoutException as timeout_error:
         raise NetworkBoundaryError(
             "runtime request timed out",
             details={"url": url, "timeout_seconds": timeout_seconds},

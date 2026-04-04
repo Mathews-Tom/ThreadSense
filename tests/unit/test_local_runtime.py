@@ -121,10 +121,12 @@ def test_extract_message_content_reads_chat_message() -> None:
 def test_send_json_request_translates_timeout_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def raise_timeout(*args: object, **kwargs: object) -> object:
-        raise TimeoutError("timed out")
+    import httpx
 
-    monkeypatch.setattr("threadsense.inference.local_runtime.request.urlopen", raise_timeout)
+    def raise_timeout(*args: object, **kwargs: object) -> object:
+        raise httpx.ReadTimeout("timed out")
+
+    monkeypatch.setattr(httpx.Client, "post", raise_timeout)
 
     with pytest.raises(NetworkBoundaryError) as raised:
         send_json_request(

@@ -4,7 +4,8 @@ import os
 import shutil
 import sys
 from dataclasses import dataclass
-from urllib import error, request
+
+import httpx
 
 from threadsense.config import AppConfig
 
@@ -68,24 +69,20 @@ def check_storage_directory(config: AppConfig) -> DiagnosticCheck:
 def check_reddit_reachability() -> DiagnosticCheck:
     url = "https://www.reddit.com/r/test.json"
     try:
-        http_request = request.Request(
-            url,
-            method="HEAD",
-            headers={"User-Agent": "threadsense/preflight"},
-        )
-        with request.urlopen(http_request, timeout=10) as response:
-            if response.status < 400:
+        with httpx.Client(timeout=10) as client:
+            response = client.head(url, headers={"User-Agent": "threadsense/preflight"})
+            if response.status_code < 400:
                 return DiagnosticCheck(
                     "reddit_reachable",
                     "pass",
-                    f"reddit.com reachable (HTTP {response.status})",
+                    f"reddit.com reachable (HTTP {response.status_code})",
                 )
             return DiagnosticCheck(
                 "reddit_reachable",
                 "warn",
-                f"reddit.com returned HTTP {response.status}",
+                f"reddit.com returned HTTP {response.status_code}",
             )
-    except (error.URLError, error.HTTPError, TimeoutError) as err:
+    except (httpx.ConnectError, httpx.TimeoutException) as err:
         return DiagnosticCheck(
             "reddit_reachable",
             "warn",
