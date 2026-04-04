@@ -28,6 +28,7 @@ from threadsense.pipeline.strategies.keyword_heuristic import (
     build_comment_signal,
     canonicalize_text,
     clean_text,
+    decompose_catch_all,
     extract_top_phrases,
     score_severity,
     select_representative_quotes,
@@ -440,3 +441,61 @@ def test_severity_density_normalization_preserves_focused_findings() -> None:
     # raw_score = 6*3 + 0 + 15 = 33, density = 33/3 = 11, weighted = 11 * 3 = 33
     severity = score_severity(focused_signals, 6, 0, contract=contract)
     assert severity == "high"
+
+
+# ---------------------------------------------------------------------------
+# Sub-clustering: decompose_catch_all
+# ---------------------------------------------------------------------------
+
+
+def test_decompose_catch_all_skips_when_below_ratio() -> None:
+    signals = [_make_signal(f"c{i}", f"generic comment about things {i}", 1) for i in range(3)]
+    result = decompose_catch_all(signals, total_signal_count=10, default_theme="general_feedback")
+
+    assert len(result) == 1
+    assert result[0][0] == "general_feedback"
+    assert len(result[0][1]) == 3
+
+
+def test_decompose_catch_all_creates_sub_clusters_when_dominant() -> None:
+    cluster_a = [
+        _make_signal(f"a{i}", f"obsidian vault embedding vector notes topic {i}", 3)
+        for i in range(4)
+    ]
+    cluster_b = [
+        _make_signal(f"b{i}", f"performance slow latency memory gpu speed issue {i}", 3)
+        for i in range(4)
+    ]
+    outlier = _make_signal("out1", "random unrelated standalone comment here", 1)
+    all_signals = cluster_a + cluster_b + [outlier]
+
+    result = decompose_catch_all(
+        all_signals,
+        total_signal_count=len(all_signals),
+        default_theme="general_feedback",
+    )
+
+    sub_keys = [key for key, _ in result]
+    assert any(key.startswith("general_feedback.") for key in sub_keys)
+    total_assigned = sum(len(sigs) for _, sigs in result)
+    assert total_assigned == len(all_signals)
+
+
+def test_decompose_catch_all_preserves_remainder_in_default() -> None:
+    clustered = [
+        _make_signal(f"c{i}", f"obsidian vault notes embedding knowledge {i}", 3) for i in range(4)
+    ]
+    loners = [
+        _make_signal("lone0", "the weather is nice today outside", 1),
+        _make_signal("lone1", "basketball playoffs happening soon", 1),
+    ]
+    all_signals = clustered + loners
+
+    result = decompose_catch_all(
+        all_signals,
+        total_signal_count=len(all_signals),
+        default_theme="general_feedback",
+    )
+
+    has_remainder = any(key == "general_feedback" for key, _ in result)
+    assert has_remainder
