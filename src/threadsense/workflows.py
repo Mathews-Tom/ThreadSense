@@ -19,6 +19,7 @@ from threadsense.connectors.reddit import (
 )
 from threadsense.connectors.registry import SourceRegistry
 from threadsense.contracts import AnalysisContract, DomainType
+from threadsense.domains import DomainVocabulary, load_domain_vocabulary, merge_vocabulary_expansion
 from threadsense.evaluation import compare_strategies, load_golden_dataset
 from threadsense.inference import InferenceResponse, InferenceRouter, InferenceTask
 from threadsense.models.canonical import load_canonical_thread
@@ -265,10 +266,12 @@ def analyze_normalized_thread(
             contract=contract,
             auto_domain=auto_domain,
         )
+        expanded_vocabulary = _try_vocabulary_expansion(config, input_path, resolved_contract)
         analysis = analyze_thread_file(
             input_path,
             config=config.analysis,
             contract=resolved_contract,
+            vocabulary=expanded_vocabulary,
         )
         storage_paths = build_storage_paths(
             config.storage,
@@ -804,6 +807,23 @@ def build_fetch_cache(config: AppConfig) -> FetchCache | None:
     if not config.cache.enabled:
         return None
     return FetchCache(config.cache.cache_dir, config.cache.ttl_seconds)
+
+
+def _try_vocabulary_expansion(
+    config: AppConfig,
+    input_path: Path,
+    contract: AnalysisContract | None,
+) -> DomainVocabulary | None:
+    """Run LLM vocabulary expansion if runtime is enabled. Returns None on skip/failure."""
+    if not config.runtime.enabled:
+        return None
+    resolved_domain = (contract.domain if contract else config.analysis.domain).value
+    base_vocabulary = load_domain_vocabulary(resolved_domain)
+    thread = load_normalized_artifact(input_path)
+    response = InferenceRouter(config).run_vocabulary_expansion(thread, base_vocabulary)
+    if response.degraded or not response.output:
+        return None
+    return merge_vocabulary_expansion(base_vocabulary, response.output)
 
 
 def resolve_analysis_contract_for_thread(

@@ -8,12 +8,21 @@ import pytest
 
 from threadsense.config import load_config
 from threadsense.contracts import DomainType
+from threadsense.domains import load_domain_vocabulary, merge_vocabulary_expansion
 from threadsense.errors import InferenceBoundaryError
 from threadsense.inference import InferenceRouter, InferenceTask
 from threadsense.inference.contracts import validate_task_output
+from threadsense.inference.prompts import render_analysis_payload
 from threadsense.inference.router import InferenceClient
 from threadsense.models.analysis import load_analysis_artifact_file
-from threadsense.models.canonical import load_canonical_thread
+from threadsense.models.canonical import (
+    AuthorRef,
+    Comment,
+    ProvenanceMetadata,
+    SourceRef,
+    Thread,
+    load_canonical_thread,
+)
 from threadsense.models.corpus import TrendPeriod
 from threadsense.pipeline.analyze import analyze_thread
 from threadsense.pipeline.corpus import build_corpus_analysis, build_corpus_manifest
@@ -230,3 +239,123 @@ def test_router_returns_corpus_fallback_when_runtime_is_disabled(tmp_path: Path)
 
     assert response.used_fallback is True
     assert response.output["headline"]
+
+
+# ---------------------------------------------------------------------------
+# Vocabulary expansion
+# ---------------------------------------------------------------------------
+
+
+def test_vocabulary_expansion_fallback_when_runtime_disabled() -> None:
+    config = load_config(env={"THREADSENSE_RUNTIME_ENABLED": "false"})
+    vocabulary = load_domain_vocabulary("developer_tools")
+    thread = load_canonical_thread(Path("tests/fixtures/analysis/canonical_feedback_thread.json"))
+
+    response = InferenceRouter(config).run_vocabulary_expansion(thread, vocabulary)
+
+    assert response.used_fallback is True
+    assert response.output == {"existing_themes": {}, "new_themes": {}}
+
+
+def test_validate_vocabulary_expansion_output_normalizes_keywords() -> None:
+    payload = validate_task_output(
+        InferenceTask.VOCABULARY_EXPANSION,
+        {
+            "existing_themes": {
+                "performance": ["memory", "GPU", "  cpu  "],
+            },
+            "new_themes": {
+                "tooling": ["Obsidian", "Notion"],
+                "infra": ["docker", "kubernetes"],
+            },
+        },
+    )
+
+    assert payload["existing_themes"]["performance"] == ["memory", "gpu", "cpu"]
+    assert payload["new_themes"]["tooling"] == ["obsidian", "notion"]
+
+
+def test_merge_vocabulary_expansion_adds_keywords_to_existing_themes() -> None:
+    base = load_domain_vocabulary("developer_tools")
+    expansion = {
+        "existing_themes": {"performance": ["vram", "throughput"]},
+        "new_themes": {"knowledge_management": ["zettelkasten", "pkm"]},
+    }
+
+    merged = merge_vocabulary_expansion(base, expansion)
+
+    assert "vram" in merged.theme_rules["performance"]
+    assert "throughput" in merged.theme_rules["performance"]
+    assert "knowledge_management" in merged.theme_rules
+    assert merged.theme_rules["knowledge_management"] == ("zettelkasten", "pkm")
+    assert merged.version.endswith("+expanded")
+
+
+def test_merge_vocabulary_expansion_skips_default_theme_as_new() -> None:
+    base = load_domain_vocabulary("developer_tools")
+    expansion = {
+        "existing_themes": {},
+        "new_themes": {"general_feedback": ["misc", "other"]},
+    }
+
+    merged = merge_vocabulary_expansion(base, expansion)
+
+    assert "general_feedback" not in merged.theme_rules
+
+
+# ---------------------------------------------------------------------------
+# Summary prompt enrichment
+# ---------------------------------------------------------------------------
+
+
+def _make_thread_with_comments() -> Thread:
+    return Thread(
+        thread_id="reddit:enrichment",
+        source=SourceRef(
+            source_name="reddit",
+            community="test",
+            source_thread_id="enrichment",
+            thread_url="https://example.com",
+        ),
+        title="Test enrichment thread",
+        permalink="https://example.com",
+        author=AuthorRef(username="op", source_author_id=None),
+        comments=[
+            Comment(
+                thread_id="reddit:enrichment",
+                comment_id=f"reddit:e{i}",
+                parent_comment_id=None,
+                author=AuthorRef(username=f"user{i}", source_author_id=None),
+                body=f"Top-level comment number {i} about performance and docs",
+                score=10 - i,
+                created_utc=float(i),
+                depth=0,
+                permalink=f"https://example.com/e{i}",
+            )
+            for i in range(5)
+        ],
+        comment_count=5,
+        provenance=ProvenanceMetadata(
+            raw_artifact_path="/tmp/raw.json",
+            raw_sha256="sha",
+            retrieved_at_utc=1.0,
+            normalized_at_utc=2.0,
+            schema_version=1,
+            normalization_version="reddit-to-canonical-v1",
+        ),
+    )
+
+
+def test_render_analysis_payload_includes_thread_context(tmp_path: Path) -> None:
+    canonical_path = Path("tests/fixtures/analysis/canonical_feedback_thread.json")
+    thread = _make_thread_with_comments()
+    analysis = analyze_thread(thread, canonical_path)
+
+    payload_without = json.loads(render_analysis_payload(analysis))
+    payload_with = json.loads(render_analysis_payload(analysis, thread=thread))
+
+    assert "top_comments" not in payload_without
+    assert "top_comments" in payload_with
+    assert len(payload_with["top_comments"]) <= 3
+    assert "conversation_structure" in payload_with
+    assert payload_with["conversation_structure"]["total_comments"] == 5

@@ -4,11 +4,13 @@ from collections.abc import Callable
 from typing import Any, Protocol
 
 from threadsense.config import AppConfig
+from threadsense.domains import DomainVocabulary
 from threadsense.errors import InferenceBoundaryError, NetworkBoundaryError, SchemaBoundaryError
 from threadsense.inference.contracts import InferenceRequest, InferenceResponse, InferenceTask
 from threadsense.inference.local_runtime import LocalRuntimeClient
-from threadsense.inference.prompts import build_task_request
+from threadsense.inference.prompts import build_task_request, build_vocabulary_expansion_request
 from threadsense.models.analysis import ThreadAnalysis
+from threadsense.models.canonical import Thread
 from threadsense.models.corpus import CorpusAnalysis
 
 
@@ -66,6 +68,25 @@ class InferenceRouter:
             if required:
                 raise
             return fallback_response(analysis, task, str(error))
+
+    def run_vocabulary_expansion(
+        self,
+        thread: Thread,
+        vocabulary: DomainVocabulary,
+    ) -> InferenceResponse:
+        if not self._config.runtime.enabled:
+            return _empty_vocabulary_expansion("runtime_disabled")
+
+        request = build_vocabulary_expansion_request(
+            thread=thread,
+            theme_rules=vocabulary.theme_rules,
+            required=False,
+            repair_retries=self._config.runtime.repair_retries,
+        )
+        try:
+            return self._client_factory(self._config).complete(request)
+        except (InferenceBoundaryError, NetworkBoundaryError, SchemaBoundaryError) as error:
+            return _empty_vocabulary_expansion(str(error))
 
     def run_corpus_task(
         self,
@@ -156,6 +177,19 @@ def fallback_response(
         model=None,
         finish_reason=None,
         output=output,
+        used_fallback=True,
+        degraded=True,
+        failure_reason=failure_reason,
+    )
+
+
+def _empty_vocabulary_expansion(failure_reason: str) -> InferenceResponse:
+    return InferenceResponse(
+        task=InferenceTask.VOCABULARY_EXPANSION,
+        provider="deterministic_fallback",
+        model=None,
+        finish_reason=None,
+        output={"existing_themes": {}, "new_themes": {}},
         used_fallback=True,
         degraded=True,
         failure_reason=failure_reason,

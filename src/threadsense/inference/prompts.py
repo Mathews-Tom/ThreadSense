@@ -4,6 +4,7 @@ import json
 
 from threadsense.inference.contracts import InferenceMessage, InferenceRequest, InferenceTask
 from threadsense.models.analysis import ThreadAnalysis
+from threadsense.models.canonical import Thread
 from threadsense.models.corpus import CorpusAnalysis
 
 
@@ -184,8 +185,11 @@ def build_corpus_synthesis_request(
     )
 
 
-def render_analysis_payload(analysis: ThreadAnalysis) -> str:
-    payload = {
+def render_analysis_payload(
+    analysis: ThreadAnalysis,
+    thread: Thread | None = None,
+) -> str:
+    payload: dict[str, object] = {
         "thread_id": analysis.thread_id,
         "title": analysis.title,
         "top_phrases": analysis.top_phrases[:8],
@@ -202,7 +206,72 @@ def render_analysis_payload(analysis: ThreadAnalysis) -> str:
             for finding in analysis.findings[:5]
         ],
     }
+    if thread is not None:
+        top_level = [c for c in thread.comments if c.parent_comment_id is None]
+        top_comments = sorted(top_level, key=lambda c: c.score, reverse=True)[:3]
+        payload["top_comments"] = [
+            {"author": c.author.username, "body": c.body[:300], "score": c.score}
+            for c in top_comments
+        ]
+        payload["conversation_structure"] = {
+            "total_comments": analysis.total_comments,
+            "max_depth": analysis.conversation_structure.max_depth,
+            "top_level_count": analysis.conversation_structure.top_level_count,
+            "consensus_count": analysis.conversation_structure.consensus_count,
+            "controversy_count": analysis.conversation_structure.controversy_count,
+        }
     return json.dumps(payload, indent=2)
+
+
+def build_vocabulary_expansion_request(
+    thread: Thread,
+    theme_rules: dict[str, tuple[str, ...]],
+    *,
+    sample_limit: int = 5,
+    required: bool = False,
+    repair_retries: int = 1,
+) -> InferenceRequest:
+    top_level = [c for c in thread.comments if c.parent_comment_id is None]
+    sampled = sorted(top_level, key=lambda c: c.score, reverse=True)[:sample_limit]
+    sample_text = "\n---\n".join(f"[score={c.score}] {c.body[:300]}" for c in sampled)
+    existing_themes = json.dumps(
+        {key: list(keywords) for key, keywords in theme_rules.items()},
+        indent=2,
+    )
+    return InferenceRequest(
+        task=InferenceTask.VOCABULARY_EXPANSION,
+        messages=[
+            InferenceMessage(
+                role="system",
+                content=(
+                    "You analyze discussion threads and propose thematic keywords. "
+                    "Return only valid JSON with keys existing_themes and new_themes. "
+                    "existing_themes maps existing theme names to lists of additional keywords. "
+                    "new_themes maps new theme names to lists of keywords. "
+                    "Max 10 keywords per theme, max 3 new themes. "
+                    "Keywords must be single lowercase words or short phrases. "
+                    "Do not repeat keywords already in the vocabulary. "
+                    "Do not include markdown fences."
+                ),
+            ),
+            InferenceMessage(
+                role="user",
+                content=(
+                    f"Thread title: {thread.title}\n\n"
+                    f"Existing vocabulary themes:\n{existing_themes}\n\n"
+                    f"Top comments by score:\n{sample_text}\n\n"
+                    "Propose additional keywords for existing themes and up to 3 new themes "
+                    "that would help classify these comments."
+                ),
+            ),
+        ],
+        required=required,
+        repair_retries=repair_retries,
+        repair_instruction=(
+            "Return only valid JSON with keys existing_themes and new_themes. "
+            "Both must be objects mapping theme names to arrays of keyword strings."
+        ),
+    )
 
 
 def render_corpus_payload(corpus: CorpusAnalysis) -> str:
