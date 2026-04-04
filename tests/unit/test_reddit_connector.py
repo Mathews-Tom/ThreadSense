@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from threadsense.config import RedditConfig
+from threadsense.connectors import SourceConnector
 from threadsense.connectors.reddit import (
     RedditConnector,
     RedditThreadRequest,
@@ -142,6 +143,7 @@ def test_connector_expands_morechildren_from_fixture() -> None:
         transport=fake_transport,
         sleeper=lambda value: None,
     )
+    assert isinstance(connector, SourceConnector)
 
     result = connector.fetch_thread(
         RedditThreadRequest(

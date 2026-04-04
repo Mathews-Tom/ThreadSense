@@ -65,6 +65,7 @@ def test_full_pipeline_produces_report_from_fixture(tmp_path: Path) -> None:
         report_format="json",
         with_summary=False,
         summary_required=False,
+        contract=None,
         connector_factory=build_fixture_connector,
     )
 
@@ -125,6 +126,7 @@ def test_full_pipeline_produces_markdown_report(tmp_path: Path) -> None:
         report_format="markdown",
         with_summary=False,
         summary_required=False,
+        contract=None,
         connector_factory=build_fixture_connector,
     )
 

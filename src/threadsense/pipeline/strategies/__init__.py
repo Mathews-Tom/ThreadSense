@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from threadsense.contracts import AnalysisContract
 from threadsense.models.analysis import (
     AnalysisFinding,
     DuplicateGroup,
@@ -23,4 +24,4 @@ class AnalysisResult:
 
 
 class AnalysisStrategy(Protocol):
-    def analyze(self, thread: Thread) -> AnalysisResult: ...
+    def analyze(self, thread: Thread, contract: AnalysisContract) -> AnalysisResult: ...

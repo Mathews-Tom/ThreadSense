@@ -7,27 +7,34 @@ import pytest
 from threadsense import cli
 
 
-def test_build_parser_parses_run_reddit_summary_flags() -> None:
+def test_build_parser_parses_run_summary_and_contract_flags() -> None:
     parser = cli.build_parser()
 
     args = parser.parse_args(
         [
             "run",
-            "reddit",
             "https://example.com/thread",
             "--format",
             "json",
             "--with-summary",
             "--summary-required",
+            "--domain",
+            "financial_markets",
+            "--objective",
+            "competitive_intelligence",
+            "--level",
+            "strategic",
         ]
     )
 
     assert args.command == "run"
-    assert args.source == "reddit"
-    assert args.url == "https://example.com/thread"
+    assert args.target == ["https://example.com/thread"]
     assert args.format == "json"
     assert args.with_summary is True
     assert args.summary_required is True
+    assert args.domain == "financial_markets"
+    assert args.objective == "competitive_intelligence"
+    assert args.abstraction_level == "strategic"
 
 
 def test_main_dispatches_fetch_reddit(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -166,3 +173,11 @@ def test_main_dispatches_batch_run(monkeypatch: pytest.MonkeyPatch) -> None:
         "manifest_path": Path("manifest.json"),
         "output_path": Path("batch.json"),
     }
+
+
+def test_build_parser_parses_replay_command() -> None:
+    parser = cli.build_parser()
+    args = parser.parse_args(["replay", "--analysis-artifact", "analysis.json"])
+
+    assert args.command == "replay"
+    assert args.analysis_artifact == Path("analysis.json")

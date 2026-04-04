@@ -4,10 +4,11 @@ import json
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from threadsense.config import AnalysisConfig
+from threadsense.contracts import AbstractionLevel
 from threadsense.domains import load_domain_vocabulary
-from threadsense.errors import AnalysisBoundaryError
 from threadsense.models.analysis import load_analysis_artifact_file
 from threadsense.models.canonical import (
     AuthorRef,
@@ -85,6 +86,8 @@ def test_analyze_thread_groups_findings_and_duplicates(tmp_path: Path) -> None:
     assert analysis.findings[0].theme_key == "performance"
     assert analysis.conversation_structure.max_depth == 0
     assert analysis.conversation_structure.top_level_count == 7
+    assert analysis.provenance.contract["domain"] == "developer_tools"
+    assert analysis.provenance.contract["objective"] == "general_survey"
     assert reloaded.findings[0].quotes
 
 
@@ -221,11 +224,36 @@ def test_analyze_thread_uses_requested_domain_vocabulary() -> None:
 def test_analyze_thread_rejects_unknown_domain() -> None:
     thread = load_canonical_thread(load_canonical_fixture())
 
-    with pytest.raises(AnalysisBoundaryError) as exc_info:
+    with pytest.raises(ValidationError) as exc_info:
         analyze_thread(
             thread,
             load_canonical_fixture(),
             config=AnalysisConfig(domain="missing_domain"),
         )
 
-    assert "domain vocabulary definition does not exist" in str(exc_info.value)
+    assert "Input should be" in str(exc_info.value)
+
+
+def test_abstraction_level_changes_finding_granularity() -> None:
+    thread = load_canonical_thread(load_canonical_fixture())
+    fixture_path = load_canonical_fixture()
+
+    operational = analyze_thread(
+        thread,
+        fixture_path,
+        config=AnalysisConfig(abstraction_level=AbstractionLevel.OPERATIONAL),
+    )
+    architectural = analyze_thread(
+        thread,
+        fixture_path,
+        config=AnalysisConfig(abstraction_level=AbstractionLevel.ARCHITECTURAL),
+    )
+    strategic = analyze_thread(
+        thread,
+        fixture_path,
+        config=AnalysisConfig(abstraction_level=AbstractionLevel.STRATEGIC),
+    )
+
+    assert len(operational.findings) >= len(architectural.findings)
+    assert len(architectural.findings) >= len(strategic.findings)
+    assert all(finding.severity == "high" for finding in strategic.findings)

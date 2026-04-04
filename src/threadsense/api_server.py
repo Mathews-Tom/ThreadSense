@@ -10,15 +10,20 @@ from pathlib import Path
 from typing import Any
 
 from threadsense.config import AppConfig
+from threadsense.contracts import AbstractionLevel, DomainType, ObjectiveType, contract_from_config
 from threadsense.errors import ApiInputError, ThreadSenseError
 from threadsense.inference import InferenceTask
 from threadsense.observability import DEFAULT_METRICS, MetricsRegistry, TraceContext, observe_stage
 from threadsense.workflows import (
     RedditConnectorFactory,
     analyze_normalized_thread,
+    build_source_registry,
     fetch_reddit_thread,
+    fetch_source_thread,
     infer_analysis,
+    normalize_source_thread,
     report_analysis,
+    run_source_pipeline,
 )
 from threadsense.workflows import normalize_reddit_thread as normalize_reddit_workflow
 
@@ -128,6 +133,17 @@ def build_handler(dependencies: ServerDependencies) -> type[BaseHTTPRequestHandl
                     connector_factory=dependencies.connector_factory,
                     registry=dependencies.registry,
                 ).to_dict()
+            if self.path in {"/v1/fetch/hackernews", "/v1/fetch/hn"}:
+                return fetch_source_thread(
+                    config=dependencies.config,
+                    logger=dependencies.logger,
+                    trace=trace,
+                    url=required_str(payload, "url"),
+                    output_path=optional_path(payload, "output_path"),
+                    source_name="hackernews",
+                    registry_factory=build_source_registry,
+                    registry=dependencies.registry,
+                ).to_dict()
             if self.path == "/v1/normalize/reddit":
                 return normalize_reddit_workflow(
                     config=dependencies.config,
@@ -137,6 +153,16 @@ def build_handler(dependencies: ServerDependencies) -> type[BaseHTTPRequestHandl
                     output_path=optional_path(payload, "output_path"),
                     registry=dependencies.registry,
                 ).to_dict()
+            if self.path in {"/v1/normalize/hackernews", "/v1/normalize/hn"}:
+                return normalize_source_thread(
+                    config=dependencies.config,
+                    logger=dependencies.logger,
+                    trace=trace,
+                    input_path=required_path(payload, "input_path"),
+                    output_path=optional_path(payload, "output_path"),
+                    registry_factory=build_source_registry,
+                    registry=dependencies.registry,
+                ).to_dict()
             if self.path == "/v1/analyze/normalized":
                 return analyze_normalized_thread(
                     config=dependencies.config,
@@ -144,6 +170,7 @@ def build_handler(dependencies: ServerDependencies) -> type[BaseHTTPRequestHandl
                     trace=trace,
                     input_path=required_path(payload, "input_path"),
                     output_path=optional_path(payload, "output_path"),
+                    contract=optional_contract(dependencies.config, payload),
                     registry=dependencies.registry,
                 ).to_dict()
             if self.path == "/v1/report/analysis":
@@ -166,6 +193,20 @@ def build_handler(dependencies: ServerDependencies) -> type[BaseHTTPRequestHandl
                     input_path=required_path(payload, "input_path"),
                     task=InferenceTask(optional_str(payload, "task", "analysis_summary")),
                     required=optional_bool(payload, "required", False),
+                    registry=dependencies.registry,
+                ).to_dict()
+            if self.path == "/v1/run":
+                return run_source_pipeline(
+                    config=dependencies.config,
+                    logger=dependencies.logger,
+                    trace=trace,
+                    url=required_str(payload, "url"),
+                    source_name=optional_source(payload),
+                    report_format=optional_str(payload, "format", "markdown"),
+                    with_summary=optional_bool(payload, "with_summary", False),
+                    summary_required=optional_bool(payload, "summary_required", False),
+                    contract=optional_contract(dependencies.config, payload),
+                    registry_factory=build_source_registry,
                     registry=dependencies.registry,
                 ).to_dict()
             raise ApiInputError("API route does not exist", details={"path": self.path})
@@ -244,3 +285,38 @@ def optional_path(payload: dict[str, Any], key: str) -> Path | None:
     if not isinstance(value, str) or not value:
         raise ApiInputError("request field is invalid", details={"key": key})
     return Path(value)
+
+
+def optional_source(payload: dict[str, Any]) -> str | None:
+    value = payload.get("source")
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise ApiInputError("request field is invalid", details={"key": "source"})
+    if value == "hn":
+        return "hackernews"
+    return value
+
+
+def optional_contract(config: AppConfig, payload: dict[str, Any]) -> Any:
+    domain = payload.get("domain")
+    objective = payload.get("objective")
+    abstraction_level = payload.get("abstraction_level", payload.get("level"))
+    if domain is None and objective is None and abstraction_level is None:
+        return None
+    analysis_config = config.analysis.model_copy(
+        update={
+            "domain": DomainType(str(domain)) if domain is not None else config.analysis.domain,
+            "objective": (
+                ObjectiveType(str(objective))
+                if objective is not None
+                else config.analysis.objective
+            ),
+            "abstraction_level": (
+                AbstractionLevel(str(abstraction_level))
+                if abstraction_level is not None
+                else config.analysis.abstraction_level
+            ),
+        }
+    )
+    return contract_from_config(analysis_config)
