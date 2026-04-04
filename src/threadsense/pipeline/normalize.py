@@ -105,7 +105,7 @@ def flatten_reddit_comments(comments: list[RedditComment]) -> list[RedditComment
     while queue:
         comment = queue.pop(0)
         flattened.append(comment)
-        queue = comment.replies + queue
+        queue = list(comment.replies) + queue
     return flattened
 
 

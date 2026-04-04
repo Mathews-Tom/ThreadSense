@@ -36,7 +36,7 @@ class RedditComment:
     depth: int
     parent_id: str
     permalink: str
-    replies: list[RedditComment] = field(default_factory=list)
+    replies: tuple[RedditComment, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
@@ -329,7 +329,7 @@ def parse_comment(raw_comment: JsonObject, depth: int = 0) -> RedditComment | No
         depth=depth,
         parent_id=optional_str(data, "parent_id", default=""),
         permalink=f"https://reddit.com{optional_str(data, 'permalink', default='')}",
-        replies=parsed_replies,
+        replies=tuple(parsed_replies),
     )
 
 
