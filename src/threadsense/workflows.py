@@ -13,6 +13,14 @@ from threadsense.connectors.reddit import (
     RedditThreadRequest,
 )
 from threadsense.inference import InferenceResponse, InferenceRouter, InferenceTask
+from threadsense.models.results import (
+    AnalyzeResult,
+    FetchResult,
+    InferResult,
+    NormalizeResult,
+    PipelineResult,
+    ReportResult,
+)
 from threadsense.observability import (
     DEFAULT_METRICS,
     MetricsRegistry,
@@ -46,7 +54,7 @@ def fetch_reddit_thread(
     flat: bool,
     connector_factory: RedditConnectorFactory,
     registry: MetricsRegistry = DEFAULT_METRICS,
-) -> dict[str, Any]:
+) -> FetchResult:
     with observe_stage(
         registry=registry,
         logger=logger,
@@ -64,18 +72,18 @@ def fetch_reddit_thread(
         storage_paths = build_storage_paths(config.storage, "reddit", result.post.id)
         resolved_output_path = output_path or storage_paths.raw_path
         persist_raw_artifact(resolved_output_path, result)
-        return {
-            "status": "ready",
-            "source": "reddit",
-            "output_path": str(resolved_output_path),
-            "default_store_path": str(storage_paths.raw_path),
-            "normalized_url": result.normalized_url,
-            "post_id": result.post.id,
-            "post_title": result.post.title,
-            "total_comment_count": result.total_comment_count,
-            "expanded_more_count": result.expanded_more_count,
-            "flat": flat,
-        }
+        return FetchResult(
+            status="ready",
+            source="reddit",
+            output_path=resolved_output_path,
+            default_store_path=storage_paths.raw_path,
+            normalized_url=result.normalized_url,
+            post_id=result.post.id,
+            post_title=result.post.title,
+            total_comment_count=result.total_comment_count,
+            expanded_more_count=result.expanded_more_count,
+            flat=flat,
+        )
 
 
 def normalize_reddit_thread(
@@ -86,7 +94,7 @@ def normalize_reddit_thread(
     input_path: Path,
     output_path: Path | None,
     registry: MetricsRegistry = DEFAULT_METRICS,
-) -> dict[str, Any]:
+) -> NormalizeResult:
     with observe_stage(
         registry=registry,
         logger=logger,
@@ -101,16 +109,16 @@ def normalize_reddit_thread(
         )
         resolved_output_path = output_path or storage_paths.normalized_path
         persist_normalized_artifact(resolved_output_path, thread)
-        return {
-            "status": "ready",
-            "artifact_type": "normalized",
-            "input_path": str(input_path),
-            "output_path": str(resolved_output_path),
-            "default_store_path": str(storage_paths.normalized_path),
-            "thread_id": thread.thread_id,
-            "comment_count": thread.comment_count,
-            "schema_version": thread.provenance.schema_version,
-        }
+        return NormalizeResult(
+            status="ready",
+            artifact_type="normalized",
+            input_path=input_path,
+            output_path=resolved_output_path,
+            default_store_path=storage_paths.normalized_path,
+            thread_id=thread.thread_id,
+            comment_count=thread.comment_count,
+            schema_version=thread.provenance.schema_version,
+        )
 
 
 def analyze_normalized_thread(
@@ -121,7 +129,7 @@ def analyze_normalized_thread(
     input_path: Path,
     output_path: Path | None,
     registry: MetricsRegistry = DEFAULT_METRICS,
-) -> dict[str, Any]:
+) -> AnalyzeResult:
     with observe_stage(
         registry=registry,
         logger=logger,
@@ -136,17 +144,17 @@ def analyze_normalized_thread(
         )
         resolved_output_path = output_path or storage_paths.analysis_path
         persist_analysis_artifact(resolved_output_path, analysis)
-        return {
-            "status": "ready",
-            "artifact_type": "analysis",
-            "input_path": str(input_path),
-            "output_path": str(resolved_output_path),
-            "default_store_path": str(storage_paths.analysis_path),
-            "thread_id": analysis.thread_id,
-            "finding_count": len(analysis.findings),
-            "duplicate_group_count": analysis.duplicate_group_count,
-            "top_phrases": analysis.top_phrases[:5],
-        }
+        return AnalyzeResult(
+            status="ready",
+            artifact_type="analysis",
+            input_path=input_path,
+            output_path=resolved_output_path,
+            default_store_path=storage_paths.analysis_path,
+            thread_id=analysis.thread_id,
+            finding_count=len(analysis.findings),
+            duplicate_group_count=analysis.duplicate_group_count,
+            top_phrases=analysis.top_phrases[:5],
+        )
 
 
 def infer_analysis(
@@ -158,7 +166,7 @@ def infer_analysis(
     task: InferenceTask,
     required: bool,
     registry: MetricsRegistry = DEFAULT_METRICS,
-) -> dict[str, Any]:
+) -> InferResult:
     with observe_stage(
         registry=registry,
         logger=logger,
@@ -174,18 +182,18 @@ def infer_analysis(
                 required=required,
             )
         record_runtime_completion(registry, response)
-        return {
-            "status": "ready" if not response.degraded else "degraded",
-            "artifact_type": "analysis",
-            "input_path": str(input_path),
-            "thread_id": analysis.thread_id,
-            "task": response.task.value,
-            "provider": response.provider,
-            "model": response.model,
-            "used_fallback": response.used_fallback,
-            "failure_reason": response.failure_reason,
-            "output": response.output,
-        }
+        return InferResult(
+            status="ready" if not response.degraded else "degraded",
+            artifact_type="analysis",
+            input_path=input_path,
+            thread_id=analysis.thread_id,
+            task=response.task.value,
+            provider=response.provider,
+            model=response.model,
+            used_fallback=response.used_fallback,
+            failure_reason=response.failure_reason,
+            output=response.output,
+        )
 
 
 def report_analysis(
@@ -199,7 +207,7 @@ def report_analysis(
     with_summary: bool,
     summary_required: bool,
     registry: MetricsRegistry = DEFAULT_METRICS,
-) -> dict[str, Any]:
+) -> ReportResult:
     with observe_stage(
         registry=registry,
         logger=logger,
@@ -238,18 +246,18 @@ def report_analysis(
             persist_report_artifact(resolved_output_path, report)
         else:
             write_text(resolved_output_path, render_report_markdown(report))
-        return {
-            "status": "ready",
-            "artifact_type": "report",
-            "input_path": str(input_path),
-            "output_path": str(resolved_output_path),
-            "default_store_path": str(default_output_path),
-            "format": report_format,
-            "thread_id": report.thread_id,
-            "summary_provider": report.provenance.summary_provider,
-            "degraded_summary": report.executive_summary.degraded,
-            "quality_check_count": len(report.quality_checks),
-        }
+        return ReportResult(
+            status="ready",
+            artifact_type="report",
+            input_path=input_path,
+            output_path=resolved_output_path,
+            default_store_path=default_output_path,
+            report_format=report_format,
+            thread_id=report.thread_id,
+            summary_provider=report.provenance.summary_provider,
+            degraded_summary=report.executive_summary.degraded,
+            quality_check_count=len(report.quality_checks),
+        )
 
 
 def run_reddit_pipeline(
@@ -265,7 +273,7 @@ def run_reddit_pipeline(
     summary_required: bool,
     connector_factory: RedditConnectorFactory,
     registry: MetricsRegistry = DEFAULT_METRICS,
-) -> dict[str, Any]:
+) -> PipelineResult:
     fetch_result = fetch_reddit_thread(
         config=config,
         logger=logger,
@@ -281,7 +289,7 @@ def run_reddit_pipeline(
         config=config,
         logger=logger,
         trace=trace,
-        input_path=Path(fetch_result["output_path"]),
+        input_path=fetch_result.output_path,
         output_path=None,
         registry=registry,
     )
@@ -289,7 +297,7 @@ def run_reddit_pipeline(
         config=config,
         logger=logger,
         trace=trace,
-        input_path=Path(normalize_result["output_path"]),
+        input_path=normalize_result.output_path,
         output_path=None,
         registry=registry,
     )
@@ -297,22 +305,22 @@ def run_reddit_pipeline(
         config=config,
         logger=logger,
         trace=trace,
-        input_path=Path(analyze_result["output_path"]),
+        input_path=analyze_result.output_path,
         output_path=None,
         report_format=report_format,
         with_summary=with_summary,
         summary_required=summary_required,
         registry=registry,
     )
-    return {
-        "status": "ready",
-        "source": "reddit",
-        "thread_url": url,
-        "fetch": fetch_result,
-        "normalize": normalize_result,
-        "analyze": analyze_result,
-        "report": report_result,
-    }
+    return PipelineResult(
+        status="ready",
+        source="reddit",
+        thread_url=url,
+        fetch=fetch_result,
+        normalize=normalize_result,
+        analyze=analyze_result,
+        report=report_result,
+    )
 
 
 def record_runtime_completion(

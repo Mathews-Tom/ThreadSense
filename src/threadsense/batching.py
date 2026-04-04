@@ -10,6 +10,7 @@ from typing import Any
 
 from threadsense.config import AppConfig
 from threadsense.errors import BatchBoundaryError, ResourceLimitError, SchemaBoundaryError
+from threadsense.models.results import PipelineResult
 from threadsense.observability import DEFAULT_METRICS, MetricsRegistry, TraceContext
 from threadsense.pipeline.storage import read_json, write_json
 from threadsense.schema_utils import SchemaReader
@@ -178,7 +179,7 @@ def run_batch_job(
     run_name: str,
     connector_factory: RedditConnectorFactory,
     registry: MetricsRegistry,
-) -> dict[str, Any]:
+) -> PipelineResult:
     if job.source_name != "reddit":
         raise BatchBoundaryError(
             "batch job source is unsupported",
@@ -220,7 +221,7 @@ def validate_manifest_limits(manifest: BatchManifest, max_jobs: int) -> None:
         )
 
 
-def resolve_job_result(job: BatchJob, future: Future[dict[str, Any]]) -> BatchJobResult:
+def resolve_job_result(job: BatchJob, future: Future[PipelineResult]) -> BatchJobResult:
     try:
         outputs = future.result()
     except Exception as error:
@@ -238,7 +239,7 @@ def resolve_job_result(job: BatchJob, future: Future[dict[str, Any]]) -> BatchJo
         thread_url=job.thread_url,
         status="ready",
         error=None,
-        outputs=outputs,
+        outputs=outputs.to_dict(),
     )
 
 
