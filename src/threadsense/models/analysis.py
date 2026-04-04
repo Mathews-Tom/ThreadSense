@@ -33,6 +33,27 @@ class DuplicateGroup:
 
 
 @dataclass(frozen=True)
+class EngagementSubtree:
+    root_comment_id: str
+    root_author: str
+    subtree_size: int
+    max_depth_below: int
+    engagement_score: float
+
+
+@dataclass(frozen=True)
+class ConversationStructure:
+    max_depth: int
+    top_level_count: int
+    reply_chain_count: int
+    longest_chain_length: int
+    controversy_count: int
+    consensus_count: int
+    monologue_count: int
+    top_engagement_subtrees: list[EngagementSubtree]
+
+
+@dataclass(frozen=True)
 class AnalysisFinding:
     theme_key: str
     theme_label: str
@@ -61,9 +82,11 @@ class ThreadAnalysis:
     source_name: str
     title: str
     total_comments: int
+    filtered_comment_count: int
     distinct_comment_count: int
     duplicate_group_count: int
     top_phrases: list[str]
+    conversation_structure: ConversationStructure
     findings: list[AnalysisFinding]
     duplicate_groups: list[DuplicateGroup]
     top_quotes: list[RepresentativeQuote]
@@ -85,14 +108,17 @@ def load_analysis_artifact_file(path: Path) -> ThreadAnalysis:
     duplicates_data = _schema.nested_list(analysis_data, "duplicate_groups")
     top_quotes_data = _schema.nested_list(analysis_data, "top_quotes")
     provenance_data = _schema.nested_object(analysis_data, "provenance")
+    conversation_data = optional_nested_object(analysis_data, "conversation_structure")
     return ThreadAnalysis(
         thread_id=_schema.required_str(analysis_data, "thread_id"),
         source_name=_schema.required_str(analysis_data, "source_name"),
         title=_schema.required_str(analysis_data, "title"),
         total_comments=_schema.required_int(analysis_data, "total_comments"),
+        filtered_comment_count=required_int_with_default(analysis_data, "filtered_comment_count"),
         distinct_comment_count=_schema.required_int(analysis_data, "distinct_comment_count"),
         duplicate_group_count=_schema.required_int(analysis_data, "duplicate_group_count"),
         top_phrases=required_str_list(analysis_data, "top_phrases"),
+        conversation_structure=conversation_structure_from_dict(conversation_data),
         findings=[finding_from_dict(item) for item in findings_data],
         duplicate_groups=[duplicate_group_from_dict(item) for item in duplicates_data],
         top_quotes=[quote_from_dict(item) for item in top_quotes_data],
@@ -158,6 +184,48 @@ def quote_from_dict(payload: Mapping[str, Any]) -> RepresentativeQuote:
     )
 
 
+def conversation_structure_from_dict(payload: Mapping[str, Any] | None) -> ConversationStructure:
+    if payload is None:
+        return ConversationStructure(
+            max_depth=0,
+            top_level_count=0,
+            reply_chain_count=0,
+            longest_chain_length=0,
+            controversy_count=0,
+            consensus_count=0,
+            monologue_count=0,
+            top_engagement_subtrees=[],
+        )
+
+    top_subtrees_data = payload.get("top_engagement_subtrees", [])
+    if not isinstance(top_subtrees_data, list):
+        raise AnalysisBoundaryError(
+            "analysis conversation structure list field is invalid",
+            details={"key": "top_engagement_subtrees"},
+        )
+
+    return ConversationStructure(
+        max_depth=required_int_with_default(payload, "max_depth"),
+        top_level_count=required_int_with_default(payload, "top_level_count"),
+        reply_chain_count=required_int_with_default(payload, "reply_chain_count"),
+        longest_chain_length=required_int_with_default(payload, "longest_chain_length"),
+        controversy_count=required_int_with_default(payload, "controversy_count"),
+        consensus_count=required_int_with_default(payload, "consensus_count"),
+        monologue_count=required_int_with_default(payload, "monologue_count"),
+        top_engagement_subtrees=[engagement_subtree_from_dict(item) for item in top_subtrees_data],
+    )
+
+
+def engagement_subtree_from_dict(payload: Mapping[str, Any]) -> EngagementSubtree:
+    return EngagementSubtree(
+        root_comment_id=_schema.required_str(payload, "root_comment_id"),
+        root_author=_schema.required_str(payload, "root_author"),
+        subtree_size=_schema.required_int(payload, "subtree_size"),
+        max_depth_below=_schema.required_int(payload, "max_depth_below"),
+        engagement_score=_schema.required_float(payload, "engagement_score"),
+    )
+
+
 def read_json_file(path: Path) -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -176,6 +244,28 @@ def required_str_list(payload: Mapping[str, Any], key: str) -> list[str]:
     if not isinstance(value, list) or any(not isinstance(item, str) or not item for item in value):
         raise AnalysisBoundaryError(
             "analysis string list field is invalid",
+            details={"key": key},
+        )
+    return value
+
+
+def required_int_with_default(payload: Mapping[str, Any], key: str, default: int = 0) -> int:
+    value = payload.get(key, default)
+    if not isinstance(value, int):
+        raise AnalysisBoundaryError(
+            "analysis integer field is invalid",
+            details={"key": key},
+        )
+    return value
+
+
+def optional_nested_object(payload: Mapping[str, Any], key: str) -> dict[str, Any] | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise AnalysisBoundaryError(
+            "analysis object field is invalid",
             details={"key": key},
         )
     return value

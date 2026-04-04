@@ -29,6 +29,7 @@ def build_thread_report(
         title=analysis.title,
         top_phrases=analysis.top_phrases[:8],
         executive_summary=summary,
+        conversation_structure=analysis.conversation_structure,
         findings=[
             ReportFinding(
                 theme_key=finding.theme_key,
@@ -59,6 +60,7 @@ def build_thread_report(
         title=report.title,
         top_phrases=report.top_phrases,
         executive_summary=report.executive_summary,
+        conversation_structure=report.conversation_structure,
         findings=report.findings,
         caveats=report.caveats,
         quality_checks=quality_checks,

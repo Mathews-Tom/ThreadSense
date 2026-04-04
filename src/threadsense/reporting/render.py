@@ -23,6 +23,28 @@ def render_report_markdown(report: ThreadReport) -> str:
     ]
     for step in report.executive_summary.next_steps:
         lines.append(f"- {step}")
+    lines.extend(["", "## Conversation Structure", ""])
+    lines.append(f"- Max Depth: `{report.conversation_structure.max_depth}`")
+    lines.append(f"- Top-Level Comments: `{report.conversation_structure.top_level_count}`")
+    lines.append(
+        f"- Reply Chains (3+ comments): `{report.conversation_structure.reply_chain_count}`"
+    )
+    lines.append(f"- Longest Chain Length: `{report.conversation_structure.longest_chain_length}`")
+    lines.append(f"- Controversy Count: `{report.conversation_structure.controversy_count}`")
+    lines.append(f"- Consensus Count: `{report.conversation_structure.consensus_count}`")
+    lines.append(f"- Monologue Count: `{report.conversation_structure.monologue_count}`")
+    lines.extend(["", "### Top Engagement Subtrees"])
+    if report.conversation_structure.top_engagement_subtrees:
+        for subtree in report.conversation_structure.top_engagement_subtrees:
+            lines.append(
+                "- "
+                f"`{subtree.root_comment_id}` by `{subtree.root_author}`: "
+                f"`{subtree.subtree_size}` comments, "
+                f"depth `{subtree.max_depth_below}`, "
+                f"engagement `{subtree.engagement_score}`"
+            )
+    else:
+        lines.append("- None.")
     lines.extend(["", "## Findings", ""])
     for finding in report.findings:
         key_phrases = ", ".join(finding.key_phrases) if finding.key_phrases else "None"
