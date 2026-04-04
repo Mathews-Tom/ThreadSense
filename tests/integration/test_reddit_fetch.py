@@ -71,7 +71,7 @@ def test_cli_fetch_reddit_writes_artifact(
     output_path = tmp_path / "thread.json"
 
     class FixtureConnector:
-        def __init__(self, config: object) -> None:
+        def __init__(self, config: object, cache: object | None = None) -> None:
             self._connector = RedditConnector(
                 config=RedditConfig(
                     user_agent="threadsense/test",

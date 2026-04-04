@@ -14,6 +14,7 @@ import httpx
 
 from threadsense.config import HackerNewsConfig
 from threadsense.connectors import FetchRequest, RawArtifact
+from threadsense.connectors.cache import FetchCache
 from threadsense.errors import NetworkBoundaryError, RedditInputError, RedditRequestError
 
 JsonObject = dict[str, Any]
@@ -51,6 +52,7 @@ class HackerNewsThreadResult:
     story: HackerNewsStory
     comments: list[HackerNewsComment]
     total_comment_count: int
+    cache_status: str
     raw_item_payloads: dict[str, JsonObject]
 
     @property
@@ -82,6 +84,7 @@ class HackerNewsThreadResult:
             },
             "comments": [comment_to_dict(comment) for comment in self.comments],
             "total_comment_count": self.total_comment_count,
+            "cache_status": self.cache_status,
             "raw_item_payloads": self.raw_item_payloads,
         }
 
@@ -92,17 +95,19 @@ class HackerNewsConnector:
     def __init__(
         self,
         config: HackerNewsConfig,
+        cache: FetchCache | None = None,
         transport: HackerNewsTransport | None = None,
         sleeper: Callable[[float], None] | None = None,
     ) -> None:
         self._config = config
+        self._cache = cache
         self._transport = transport or fetch_json
         self._sleep = sleeper or sleep
 
     def fetch(self, request: FetchRequest) -> RawArtifact:
         normalized_url, story_id = normalize_url(request.url)
         item_cache: dict[int, JsonObject] = {}
-        story_payload = self._get_item(story_id, item_cache)
+        story_payload, cache_status = self._get_item_with_status(story_id, item_cache)
         story = HackerNewsStory(
             id=story_id,
             title=str(story_payload.get("title", "")),
@@ -124,6 +129,7 @@ class HackerNewsConnector:
             story=story,
             comments=comments,
             total_comment_count=len(flatten_comments(comments)),
+            cache_status=cache_status,
             raw_item_payloads={str(key): value for key, value in item_cache.items()},
         )
 
@@ -180,13 +186,19 @@ class HackerNewsConnector:
         return comments
 
     def _get_item(self, item_id: int, item_cache: dict[int, JsonObject]) -> JsonObject:
+        payload, _ = self._get_item_with_status(item_id, item_cache)
+        return payload
+
+    def _get_item_with_status(
+        self,
+        item_id: int,
+        item_cache: dict[int, JsonObject],
+    ) -> tuple[JsonObject, str]:
         cached = item_cache.get(item_id)
         if cached is not None:
-            return cached
-        payload = self._transport(
-            f"{self._config.base_url.rstrip('/')}/item/{item_id}.json",
-            self._config.timeout_seconds,
-        )
+            return cached, "memory"
+        url = f"{self._config.base_url.rstrip('/')}/item/{item_id}.json"
+        payload, cache_status = self._get_cached_item(url)
         if not isinstance(payload, dict):
             raise RedditRequestError(
                 "hackernews item payload is invalid",
@@ -194,7 +206,18 @@ class HackerNewsConnector:
             )
         item_cache[item_id] = payload
         self._sleep(self._config.request_delay_seconds)
-        return payload
+        return payload, cache_status
+
+    def _get_cached_item(self, url: str) -> tuple[Any, str]:
+        if self._cache is not None:
+            cached = self._cache.get(url)
+            if cached is not None:
+                return cached, "hit"
+        payload = self._transport(url, self._config.timeout_seconds)
+        if self._cache is not None and isinstance(payload, dict):
+            self._cache.put(url, payload)
+            return payload, "miss"
+        return payload, "disabled"
 
 
 def normalize_url(url: str) -> tuple[str, int]:

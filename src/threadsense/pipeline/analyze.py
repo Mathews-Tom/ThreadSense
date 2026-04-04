@@ -21,6 +21,7 @@ from threadsense.models.analysis import (
     ThreadAnalysis,
 )
 from threadsense.models.canonical import Thread
+from threadsense.pipeline.alignment import check_domain_alignment
 from threadsense.pipeline.storage import calculate_sha256, load_normalized_artifact
 from threadsense.pipeline.strategies import AnalysisResult, AnalysisStrategy
 from threadsense.pipeline.strategies.keyword_heuristic import KeywordHeuristicStrategy
@@ -86,7 +87,7 @@ def assemble_thread_analysis(
     normalized_artifact_path: Path,
     contract: AnalysisContract,
 ) -> ThreadAnalysis:
-    return ThreadAnalysis(
+    partial = ThreadAnalysis(
         thread_id=thread.thread_id,
         source_name=thread.source.source_name,
         title=thread.title,
@@ -99,6 +100,7 @@ def assemble_thread_analysis(
         findings=result.findings,
         duplicate_groups=result.duplicate_groups,
         top_quotes=result.top_quotes,
+        alignment_check=None,
         provenance=AnalysisProvenance(
             normalized_artifact_path=str(normalized_artifact_path),
             normalized_sha256=calculate_sha256(normalized_artifact_path),
@@ -109,6 +111,23 @@ def assemble_thread_analysis(
             contract=contract.to_dict(),
             contract_schema_version=ANALYSIS_CONTRACT_SCHEMA_VERSION,
         ),
+    )
+    alignment_check = check_domain_alignment(thread, partial, contract)
+    return ThreadAnalysis(
+        thread_id=partial.thread_id,
+        source_name=partial.source_name,
+        title=partial.title,
+        total_comments=partial.total_comments,
+        filtered_comment_count=partial.filtered_comment_count,
+        distinct_comment_count=partial.distinct_comment_count,
+        duplicate_group_count=partial.duplicate_group_count,
+        top_phrases=partial.top_phrases,
+        conversation_structure=partial.conversation_structure,
+        findings=partial.findings,
+        duplicate_groups=partial.duplicate_groups,
+        top_quotes=partial.top_quotes,
+        alignment_check=alignment_check,
+        provenance=partial.provenance,
     )
 
 

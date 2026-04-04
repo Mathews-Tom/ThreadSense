@@ -59,6 +59,15 @@ class ConversationStructure:
 
 
 @dataclass(frozen=True)
+class AlignmentCheck:
+    domain: str
+    domain_fit_score: float
+    general_feedback_ratio: float
+    suggested_domain: str | None
+    warning: str | None
+
+
+@dataclass(frozen=True)
 class AnalysisFinding:
     theme_key: str
     theme_label: str
@@ -97,6 +106,7 @@ class ThreadAnalysis:
     findings: list[AnalysisFinding]
     duplicate_groups: list[DuplicateGroup]
     top_quotes: list[RepresentativeQuote]
+    alignment_check: AlignmentCheck | None
     provenance: AnalysisProvenance
 
     def to_dict(self) -> dict[str, Any]:
@@ -129,6 +139,7 @@ def load_analysis_artifact_file(path: Path) -> ThreadAnalysis:
         findings=[finding_from_dict(item) for item in findings_data],
         duplicate_groups=[duplicate_group_from_dict(item) for item in duplicates_data],
         top_quotes=[quote_from_dict(item) for item in top_quotes_data],
+        alignment_check=alignment_check_from_dict(analysis_data.get("alignment_check")),
         provenance=AnalysisProvenance(
             normalized_artifact_path=_schema.required_str(
                 provenance_data, "normalized_artifact_path"
@@ -262,6 +273,20 @@ def contract_payload_from_dict(payload: Mapping[str, Any]) -> dict[str, str | fl
             details={"key": "contract"},
         )
     return AnalysisContract.from_dict(contract_payload).to_dict()
+
+
+def alignment_check_from_dict(payload: Any) -> AlignmentCheck | None:
+    if payload is None:
+        return None
+    if not isinstance(payload, dict):
+        raise AnalysisBoundaryError("analysis alignment field is invalid")
+    return AlignmentCheck(
+        domain=_schema.required_str(payload, "domain"),
+        domain_fit_score=_schema.required_float(payload, "domain_fit_score"),
+        general_feedback_ratio=_schema.required_float(payload, "general_feedback_ratio"),
+        suggested_domain=_schema.optional_nullable_str(payload, "suggested_domain"),
+        warning=_schema.optional_nullable_str(payload, "warning"),
+    )
 
 
 def required_str_list(payload: Mapping[str, Any], key: str) -> list[str]:

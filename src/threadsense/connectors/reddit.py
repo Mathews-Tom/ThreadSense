@@ -13,6 +13,7 @@ import httpx
 
 from threadsense.config import RedditConfig
 from threadsense.connectors import FetchRequest, RawArtifact
+from threadsense.connectors.cache import FetchCache
 from threadsense.errors import (
     NetworkBoundaryError,
     RedditInputError,
@@ -72,6 +73,7 @@ class RedditThreadResult:
     comments: list[RedditComment]
     total_comment_count: int
     expanded_more_count: int
+    cache_status: str
     raw_thread_payload: list[JsonObject]
     raw_morechildren_payloads: list[JsonObject]
 
@@ -98,6 +100,7 @@ class RedditThreadResult:
             "comments": [asdict(comment) for comment in self.comments],
             "total_comment_count": self.total_comment_count,
             "expanded_more_count": self.expanded_more_count,
+            "cache_status": self.cache_status,
             "raw_thread_payload": self.raw_thread_payload,
             "raw_morechildren_payloads": self.raw_morechildren_payloads,
         }
@@ -109,16 +112,18 @@ class RedditConnector:
     def __init__(
         self,
         config: RedditConfig,
+        cache: FetchCache | None = None,
         transport: RedditTransport | None = None,
         sleeper: Callable[[float], None] | None = None,
     ) -> None:
         self._config = config
+        self._cache = cache
         self._transport = transport or fetch_json
         self._sleep = sleeper or sleep
 
     def fetch_thread(self, scrape_request: RedditThreadRequest) -> RedditThreadResult:
         normalized_url = normalize_url(scrape_request.post_url)
-        raw_thread_payload = self._get_json(
+        raw_thread_payload, cache_status = self._get_cached_json_with_status(
             normalized_url,
             params={"limit": self._config.listing_limit},
         )
@@ -150,6 +155,7 @@ class RedditConnector:
             comments=output_comments,
             total_comment_count=total_comment_count,
             expanded_more_count=len(expanded_comments),
+            cache_status=cache_status,
             raw_thread_payload=payload_list,
             raw_morechildren_payloads=raw_morechildren_payloads,
         )
@@ -182,7 +188,7 @@ class RedditConnector:
     ) -> tuple[list[RedditComment], JsonObject]:
         if not more_ids:
             return [], {}
-        payload = self._get_json(
+        payload = self._get_cached_json(
             MORECHILDREN_URL,
             params={
                 "link_id": link_id,
@@ -221,6 +227,24 @@ class RedditConnector:
         if last_error is not None:
             raise last_error
         raise RedditRequestError("reddit transport failed without an error")
+
+    def _get_cached_json(self, url: str, params: QueryParams) -> Any:
+        payload, _ = self._get_cached_json_with_status(url, params)
+        return payload
+
+    def _get_cached_json_with_status(self, url: str, params: QueryParams) -> tuple[Any, str]:
+        cache_key = build_cache_key(url, params)
+        if self._cache is not None:
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                payload = cached["payload"] if "payload" in cached else cached
+                return payload, "hit"
+        payload = self._get_json(url, params)
+        if self._cache is not None:
+            stored_payload = payload if isinstance(payload, dict) else {"payload": payload}
+            self._cache.put(cache_key, stored_payload)
+            return payload, "miss"
+        return payload, "disabled"
 
 
 def normalize_url(url: str) -> str:
@@ -286,6 +310,11 @@ def fetch_json(
 def should_retry_error(fetch_error: RedditRequestError) -> bool:
     status_code = fetch_error.details.get("status_code")
     return isinstance(status_code, int) and status_code in RETRYABLE_STATUS_CODES
+
+
+def build_cache_key(url: str, params: QueryParams) -> str:
+    serialized_params = "&".join(f"{key}={value}" for key, value in sorted(params.items()))
+    return f"{url}?{serialized_params}"
 
 
 def validate_thread_payload(payload: Any) -> list[JsonObject]:

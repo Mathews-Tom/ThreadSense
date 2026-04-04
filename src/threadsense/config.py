@@ -84,6 +84,34 @@ class HackerNewsConfig(BaseModel):
     request_delay_seconds: float = 1.0
 
 
+class GitHubConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    base_url: str = "https://api.github.com/graphql"
+    token: str = ""
+    timeout_seconds: float = 20
+
+    @field_validator("token")
+    @classmethod
+    def validate_token(cls, v: str) -> str:
+        return v.strip()
+
+
+class CacheConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    enabled: bool = True
+    ttl_seconds: int = 3600
+    cache_dir: Path = Path(".threadsense/cache")
+
+    @field_validator("ttl_seconds")
+    @classmethod
+    def validate_ttl(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("ttl_seconds must be greater than zero")
+        return v
+
+
 class StorageConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -94,6 +122,8 @@ class StorageConfig(BaseModel):
     report_dirname: str = "reports"
     batch_dirname: str = "batches"
     corpus_dirname: str = "corpora"
+    index_dirname: str = "index"
+    versioning_enabled: bool = False
 
 
 class BatchConfig(BaseModel):
@@ -163,6 +193,8 @@ class AppConfig(BaseModel):
     source_policy: SourcePolicyConfig = SourcePolicyConfig()
     reddit: RedditConfig = RedditConfig()
     hackernews: HackerNewsConfig = HackerNewsConfig()
+    github: GitHubConfig = GitHubConfig()
+    cache: CacheConfig = CacheConfig()
     storage: StorageConfig = StorageConfig()
     batch: BatchConfig = BatchConfig()
     api: ApiConfig = ApiConfig()
@@ -192,6 +224,12 @@ _ENV_MAP: dict[str, tuple[str, ...]] = {
     "THREADSENSE_HN_BASE_URL": ("hackernews", "base_url"),
     "THREADSENSE_HN_TIMEOUT": ("hackernews", "timeout_seconds"),
     "THREADSENSE_HN_REQUEST_DELAY": ("hackernews", "request_delay_seconds"),
+    "THREADSENSE_GITHUB_BASE_URL": ("github", "base_url"),
+    "THREADSENSE_GITHUB_TOKEN": ("github", "token"),
+    "THREADSENSE_GITHUB_TIMEOUT": ("github", "timeout_seconds"),
+    "THREADSENSE_CACHE_ENABLED": ("cache", "enabled"),
+    "THREADSENSE_CACHE_TTL_SECONDS": ("cache", "ttl_seconds"),
+    "THREADSENSE_CACHE_DIR": ("cache", "cache_dir"),
     "THREADSENSE_STORAGE_ROOT": ("storage", "root_dir"),
     "THREADSENSE_STORAGE_RAW_DIR": ("storage", "raw_dirname"),
     "THREADSENSE_STORAGE_NORMALIZED_DIR": ("storage", "normalized_dirname"),
@@ -199,6 +237,8 @@ _ENV_MAP: dict[str, tuple[str, ...]] = {
     "THREADSENSE_STORAGE_REPORT_DIR": ("storage", "report_dirname"),
     "THREADSENSE_STORAGE_BATCH_DIR": ("storage", "batch_dirname"),
     "THREADSENSE_STORAGE_CORPUS_DIR": ("storage", "corpus_dirname"),
+    "THREADSENSE_STORAGE_INDEX_DIR": ("storage", "index_dirname"),
+    "THREADSENSE_STORAGE_VERSIONING_ENABLED": ("storage", "versioning_enabled"),
     "THREADSENSE_BATCH_MAX_WORKERS": ("batch", "max_workers"),
     "THREADSENSE_BATCH_MAX_JOBS": ("batch", "max_jobs"),
     "THREADSENSE_BATCH_FAIL_FAST": ("batch", "fail_fast"),
@@ -221,6 +261,8 @@ _TOML_SECTION_MAP: dict[str, str] = {
     "sources": "source_policy",
     "reddit": "reddit",
     "hackernews": "hackernews",
+    "github": "github",
+    "cache": "cache",
     "storage": "storage",
     "batch": "batch",
     "api": "api",

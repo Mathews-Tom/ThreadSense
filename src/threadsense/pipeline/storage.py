@@ -17,6 +17,11 @@ from threadsense.models.corpus import (
     load_corpus_manifest_file,
 )
 from threadsense.models.report import ThreadReport, load_report_artifact_file
+from threadsense.pipeline.versioning import (
+    load_latest,
+    load_version,
+    save_versioned_artifact,
+)
 
 
 @dataclass(frozen=True)
@@ -26,6 +31,7 @@ class StoragePaths:
     analysis_path: Path
     report_json_path: Path
     report_markdown_path: Path
+    report_html_path: Path
 
 
 @dataclass(frozen=True)
@@ -33,6 +39,7 @@ class CorpusPaths:
     manifest_path: Path
     analysis_path: Path
     report_markdown_path: Path
+    index_path: Path
 
 
 def build_storage_paths(
@@ -50,6 +57,7 @@ def build_storage_paths(
         analysis_path=root / storage.analysis_dirname / source_dir / f"{source_thread_id}.json",
         report_json_path=root / storage.report_dirname / source_dir / f"{source_thread_id}.json",
         report_markdown_path=root / storage.report_dirname / source_dir / f"{source_thread_id}.md",
+        report_html_path=root / storage.report_dirname / source_dir / f"{source_thread_id}.html",
     )
 
 
@@ -59,6 +67,7 @@ def build_corpus_paths(storage: StorageConfig, corpus_id: str) -> CorpusPaths:
         manifest_path=root / "manifest.json",
         analysis_path=root / "analysis.json",
         report_markdown_path=root / "report.md",
+        index_path=storage.root_dir / storage.index_dirname / "corpora.json",
     )
 
 
@@ -72,6 +81,17 @@ def persist_normalized_artifact(path: Path, thread: Thread) -> None:
 
 def persist_analysis_artifact(path: Path, artifact: ThreadAnalysis) -> None:
     write_json(path, artifact.to_dict())
+
+
+def persist_analysis_artifact_with_config(
+    storage: StorageConfig,
+    path: Path,
+    artifact: ThreadAnalysis,
+) -> Path:
+    if storage.versioning_enabled:
+        return save_versioned_artifact(path, artifact.to_dict()).latest_path
+    persist_analysis_artifact(path, artifact)
+    return path
 
 
 def persist_report_artifact(path: Path, artifact: ThreadReport) -> None:
@@ -103,7 +123,23 @@ def load_normalized_artifact(path: Path) -> Thread:
 
 
 def load_analysis_artifact(path: Path) -> ThreadAnalysis:
-    return load_analysis_artifact_file(path)
+    resolved_path = resolve_analysis_artifact_path(path)
+    return load_analysis_artifact_file(resolved_path)
+
+
+def load_analysis_artifact_version(path: Path, version_number: int) -> ThreadAnalysis:
+    return load_analysis_artifact_file(load_version(path, version_number))
+
+
+def resolve_analysis_artifact_path(path: Path) -> Path:
+    if path.suffix != ".json":
+        return load_latest(path)
+    if path.exists():
+        return path
+    version_dir = path.with_suffix("")
+    if version_dir.is_dir():
+        return load_latest(path)
+    return path
 
 
 def load_report_artifact(path: Path) -> ThreadReport:
