@@ -315,6 +315,13 @@ def _build_run_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPa
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="threadsense")
+    parser.add_argument(
+        "--output-format",
+        choices=["json", "human", "quiet"],
+        default=None,
+        dest="output_mode",
+        help="Output format: json (machine-readable), human (rich tables), quiet (status only).",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
     _build_preflight_parser(subparsers)
     _build_fetch_parser(subparsers)
@@ -709,6 +716,10 @@ def _dispatch_command(args: argparse.Namespace) -> int:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.output_mode is not None:
+        from threadsense.cli_display import OutputMode, set_output_mode
+
+        set_output_mode(OutputMode(args.output_mode))
     try:
         return _dispatch_command(args)
     except ThreadSenseError as error:

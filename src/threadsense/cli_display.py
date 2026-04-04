@@ -4,6 +4,7 @@ import json
 import logging
 import sys
 from contextlib import AbstractContextManager, nullcontext
+from enum import StrEnum
 from typing import Any
 
 from rich.console import Console
@@ -13,22 +14,47 @@ from rich.table import Table
 
 from threadsense.errors import ThreadSenseError
 
+
+class OutputMode(StrEnum):
+    JSON = "json"
+    HUMAN = "human"
+    QUIET = "quiet"
+
+
+_output_mode: OutputMode | None = None
+
 _CONSOLE = Console()
 _ERROR_CONSOLE = Console(stderr=True)
 
 
+def set_output_mode(mode: OutputMode | None) -> None:
+    global _output_mode  # noqa: PLW0603
+    _output_mode = mode
+
+
+def resolve_output_mode() -> OutputMode:
+    if _output_mode is not None:
+        return _output_mode
+    return OutputMode.HUMAN if sys.stdout.isatty() else OutputMode.JSON
+
+
 def cli_log_level() -> int:
-    return logging.WARNING if use_rich_output() else logging.INFO
+    return logging.WARNING if resolve_output_mode() is not OutputMode.JSON else logging.INFO
 
 
 def use_rich_output() -> bool:
-    return sys.stdout.isatty()
+    return resolve_output_mode() is OutputMode.HUMAN
 
 
 def emit_payload(payload: dict[str, Any]) -> None:
-    if not use_rich_output():
+    mode = resolve_output_mode()
+    if mode is OutputMode.JSON:
         print(json.dumps(payload, indent=2))
         return
+    if mode is OutputMode.QUIET:
+        _emit_quiet(payload)
+        return
+    # HUMAN mode
     if is_run_payload(payload):
         _CONSOLE.print(render_run_panel(payload))
         return
@@ -38,11 +64,30 @@ def emit_payload(payload: dict[str, Any]) -> None:
     _CONSOLE.print(JSON.from_data(payload))
 
 
+def _emit_quiet(payload: dict[str, Any]) -> None:
+    status_val = payload.get("status", "unknown")
+    if status_val == "error":
+        error_info = payload.get("error", {})
+        msg = (
+            error_info.get("message", "unknown error")
+            if isinstance(error_info, dict)
+            else str(error_info)
+        )
+        print(f"error: {msg}")
+    else:
+        print(status_val)
+
+
 def emit_error(error: ThreadSenseError) -> None:
+    mode = resolve_output_mode()
     payload = {"status": "error", "error": error.to_dict()}
-    if not use_rich_output():
+    if mode is OutputMode.JSON:
         print(json.dumps(payload, indent=2))
         return
+    if mode is OutputMode.QUIET:
+        print(f"error: {error.message}")
+        return
+    # HUMAN mode
     details = error.details
     body = f"[bold red]{error.code}[/bold red]\n{error.message}"
     if details:
