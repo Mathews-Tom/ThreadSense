@@ -5,7 +5,7 @@ import re
 from collections import Counter, deque
 from dataclasses import dataclass
 
-from threadsense.errors import AnalysisBoundaryError
+from threadsense.domains import DomainVocabulary, load_domain_vocabulary
 from threadsense.models.analysis import (
     AnalysisFinding,
     DuplicateGroup,
@@ -48,16 +48,7 @@ STOPWORDS = frozenset(
         "your",
     }
 )
-ISSUE_MARKERS = ("bug", "broken", "confusing", "crash", "error", "fail", "issue", "lag", "slow")
-REQUEST_MARKERS = ("can you", "could you", "please", "should", "would love", "need", "want")
-SEVERITY_LEVELS = ("low", "medium", "high")
-THEME_RULES = {
-    "documentation": ("doc", "docs", "guide", "guides", "onboarding", "quickstart", "tutorial"),
-    "performance": ("fast", "lag", "latency", "performance", "slow", "speed"),
-    "reliability": ("bug", "broken", "crash", "error", "fail", "failure", "retry"),
-    "workflow": ("automation", "batch", "dashboard", "export", "workflow"),
-    "usability": ("confusing", "discover", "discoverability", "hard", "ux", "ui"),
-}
+DEFAULT_DOMAIN_VOCABULARY = load_domain_vocabulary("developer_tools")
 
 
 @dataclass(frozen=True)
@@ -80,16 +71,41 @@ class DuplicateCluster:
 class KeywordHeuristicStrategy:
     """Deterministic keyword-matching heuristic baseline."""
 
-    def __init__(self, duplicate_threshold: float = 0.88) -> None:
+    def __init__(
+        self,
+        duplicate_threshold: float = 0.88,
+        vocabulary: DomainVocabulary = DEFAULT_DOMAIN_VOCABULARY,
+    ) -> None:
         self._duplicate_threshold = duplicate_threshold
+        self._vocabulary = vocabulary
 
     def analyze(self, thread: Thread) -> AnalysisResult:
-        signals = [build_comment_signal(comment) for comment in thread.comments]
+        signals = [
+            signal
+            for signal in (
+                build_comment_signal(
+                    comment,
+                    theme_rules=self._vocabulary.theme_rules,
+                    issue_markers=self._vocabulary.issue_markers,
+                    request_markers=self._vocabulary.request_markers,
+                )
+                for comment in thread.comments
+            )
+            if signal is not None
+        ]
         duplicate_clusters = detect_duplicate_clusters(signals, self._duplicate_threshold)
         duplicate_index = build_duplicate_index(duplicate_clusters)
-        findings = build_findings(signals, duplicate_index)
+        findings = build_findings(
+            signals,
+            duplicate_index,
+            severity_levels=self._vocabulary.severity_levels,
+            issue_fallback_theme=self._vocabulary.issue_fallback_theme,
+            request_fallback_theme=self._vocabulary.request_fallback_theme,
+            default_theme=self._vocabulary.default_theme,
+        )
         top_quotes = select_representative_quotes(signals, limit=5)
         return AnalysisResult(
+            filtered_comment_count=thread.comment_count - len(signals),
             distinct_comment_count=count_distinct_comments(signals, duplicate_index),
             duplicate_group_count=len(duplicate_clusters),
             top_phrases=extract_top_phrases(signals, limit=8),
@@ -106,26 +122,29 @@ class KeywordHeuristicStrategy:
         )
 
 
-def build_comment_signal(comment: Comment) -> CommentSignal:
+def build_comment_signal(
+    comment: Comment,
+    *,
+    theme_rules: dict[str, tuple[str, ...]] = DEFAULT_DOMAIN_VOCABULARY.theme_rules,
+    issue_markers: tuple[str, ...] = DEFAULT_DOMAIN_VOCABULARY.issue_markers,
+    request_markers: tuple[str, ...] = DEFAULT_DOMAIN_VOCABULARY.request_markers,
+) -> CommentSignal | None:
     cleaned_text = clean_text(comment.body)
     canonical_text = canonicalize_text(cleaned_text)
     if not canonical_text:
-        raise AnalysisBoundaryError(
-            "comment body cannot be reduced to empty analysis text",
-            details={"comment_id": comment.comment_id},
-        )
+        return None
     tokens = tokenize_text(cleaned_text)
     theme_hits = {
         theme: sum(1 for token in tokens if token in keywords)
-        for theme, keywords in THEME_RULES.items()
+        for theme, keywords in theme_rules.items()
     }
     return CommentSignal(
         comment=comment,
         cleaned_text=cleaned_text,
         canonical_text=canonical_text,
         tokens=tokens,
-        issue_marker_count=count_markers(canonical_text, ISSUE_MARKERS),
-        request_marker_count=count_markers(canonical_text, REQUEST_MARKERS),
+        issue_marker_count=count_markers(canonical_text, issue_markers),
+        request_marker_count=count_markers(canonical_text, request_markers),
         theme_hits=theme_hits,
     )
 
@@ -380,10 +399,23 @@ def count_distinct_comments(
 def build_findings(
     signals: list[CommentSignal],
     duplicate_index: dict[str, str],
+    *,
+    severity_levels: tuple[str, ...] = DEFAULT_DOMAIN_VOCABULARY.severity_levels,
+    issue_fallback_theme: str = DEFAULT_DOMAIN_VOCABULARY.issue_fallback_theme,
+    request_fallback_theme: str = DEFAULT_DOMAIN_VOCABULARY.request_fallback_theme,
+    default_theme: str = DEFAULT_DOMAIN_VOCABULARY.default_theme,
 ) -> list[AnalysisFinding]:
     grouped: dict[str, list[CommentSignal]] = {}
     for signal in signals:
-        grouped.setdefault(classify_theme(signal), []).append(signal)
+        grouped.setdefault(
+            classify_theme(
+                signal,
+                issue_fallback_theme=issue_fallback_theme,
+                request_fallback_theme=request_fallback_theme,
+                default_theme=default_theme,
+            ),
+            [],
+        ).append(signal)
 
     findings: list[AnalysisFinding] = []
     for theme_key, theme_signals in grouped.items():
@@ -394,7 +426,12 @@ def build_findings(
             AnalysisFinding(
                 theme_key=theme_key,
                 theme_label=theme_key.replace("_", " "),
-                severity=score_severity(evidence, issue_marker_count, request_marker_count),
+                severity=score_severity(
+                    evidence,
+                    issue_marker_count,
+                    request_marker_count,
+                    severity_levels=severity_levels,
+                ),
                 comment_count=len(evidence),
                 issue_marker_count=issue_marker_count,
                 request_marker_count=request_marker_count,
@@ -407,7 +444,7 @@ def build_findings(
     return sorted(
         findings,
         key=lambda finding: (
-            -SEVERITY_LEVELS.index(finding.severity),
+            -severity_levels.index(finding.severity),
             -finding.issue_marker_count,
             -finding.request_marker_count,
             -finding.comment_count,
@@ -416,7 +453,13 @@ def build_findings(
     )
 
 
-def classify_theme(signal: CommentSignal) -> str:
+def classify_theme(
+    signal: CommentSignal,
+    *,
+    issue_fallback_theme: str = DEFAULT_DOMAIN_VOCABULARY.issue_fallback_theme,
+    request_fallback_theme: str = DEFAULT_DOMAIN_VOCABULARY.request_fallback_theme,
+    default_theme: str = DEFAULT_DOMAIN_VOCABULARY.default_theme,
+) -> str:
     ranked_theme = max(
         signal.theme_hits.items(),
         key=lambda item: (item[1], item[0]),
@@ -424,10 +467,10 @@ def classify_theme(signal: CommentSignal) -> str:
     if ranked_theme[1] > 0:
         return ranked_theme[0]
     if signal.issue_marker_count > 0:
-        return "reliability"
+        return issue_fallback_theme
     if signal.request_marker_count > 0:
-        return "workflow"
-    return "general_feedback"
+        return request_fallback_theme
+    return default_theme
 
 
 def dedupe_signals(
@@ -447,6 +490,8 @@ def score_severity(
     signals: list[CommentSignal],
     issue_marker_count: int,
     request_marker_count: int,
+    *,
+    severity_levels: tuple[str, ...] = DEFAULT_DOMAIN_VOCABULARY.severity_levels,
 ) -> str:
     weighted_score = (
         issue_marker_count * 3
@@ -454,10 +499,10 @@ def score_severity(
         + sum(max(signal.comment.score, 0) for signal in signals)
     )
     if weighted_score >= 15:
-        return "high"
+        return severity_levels[2]
     if weighted_score >= 6:
-        return "medium"
-    return "low"
+        return severity_levels[1]
+    return severity_levels[0]
 
 
 def rank_comment_signal(signal: CommentSignal) -> tuple[int, int, int, str]:

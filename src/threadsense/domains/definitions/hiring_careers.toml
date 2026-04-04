@@ -1,0 +1,22 @@
+[meta]
+domain = "hiring_careers"
+version = "1.0"
+
+[themes]
+compensation = ["salary", "pay", "compensation", "equity", "stock", "bonus", "tc", "total comp"]
+interview = ["interview", "leetcode", "coding challenge", "whiteboard", "system design", "take home"]
+culture = ["culture", "wlb", "work life", "remote", "hybrid", "rto", "return to office", "toxic"]
+growth = ["promotion", "career", "growth", "learning", "mentorship", "senior", "staff", "principal"]
+process = ["recruiter", "ghosted", "rejection", "offer", "negotiation", "counter", "lowball"]
+
+[markers]
+issue = ["toxic", "underpaid", "ghosted", "lowball", "rejection", "overworked", "burnout"]
+request = ["looking for", "recommend", "advice", "should i", "worth it", "how to"]
+
+[severity]
+levels = ["low", "medium", "high"]
+
+[fallbacks]
+issue = "process"
+request = "process"
+default = "general_feedback"

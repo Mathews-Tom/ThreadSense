@@ -1,0 +1,22 @@
+[meta]
+domain = "research_academic"
+version = "1.0"
+
+[themes]
+methodology = ["methodology", "study", "experiment", "sample", "control", "bias"]
+evidence = ["evidence", "data", "result", "finding", "statistical", "significant"]
+theory = ["theory", "hypothesis", "framework", "model", "mechanism", "assumption"]
+writing = ["paper", "draft", "abstract", "review", "citation", "revision"]
+career = ["advisor", "phd", "postdoc", "tenure", "grant", "lab"]
+
+[markers]
+issue = ["flawed", "biased", "underpowered", "unclear", "rejected", "confounded"]
+request = ["feedback", "advice", "suggest", "how to", "should i", "looking for"]
+
+[severity]
+levels = ["low", "medium", "high"]
+
+[fallbacks]
+issue = "methodology"
+request = "writing"
+default = "general_feedback"

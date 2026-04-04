@@ -1,0 +1,22 @@
+[meta]
+domain = "developer_tools"
+version = "1.0"
+
+[themes]
+documentation = ["doc", "docs", "guide", "guides", "onboarding", "quickstart", "tutorial"]
+performance = ["fast", "lag", "latency", "performance", "slow", "speed"]
+reliability = ["bug", "broken", "crash", "error", "fail", "failure", "retry"]
+workflow = ["automation", "batch", "dashboard", "export", "workflow"]
+usability = ["confusing", "discover", "discoverability", "hard", "ux", "ui"]
+
+[markers]
+issue = ["bug", "broken", "confusing", "crash", "error", "fail", "issue", "lag", "slow"]
+request = ["can you", "could you", "please", "should", "would love", "need", "want"]
+
+[severity]
+levels = ["low", "medium", "high"]
+
+[fallbacks]
+issue = "reliability"
+request = "workflow"
+default = "general_feedback"

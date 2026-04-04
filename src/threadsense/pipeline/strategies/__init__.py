@@ -13,6 +13,7 @@ from threadsense.models.canonical import Thread
 
 @dataclass(frozen=True)
 class AnalysisResult:
+    filtered_comment_count: int
     distinct_comment_count: int
     duplicate_group_count: int
     top_phrases: list[str]

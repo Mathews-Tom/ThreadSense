@@ -111,7 +111,16 @@ class AnalysisConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     strategy: str = "keyword_heuristic"
+    domain: str = "developer_tools"
     duplicate_threshold: float = 0.88
+
+    @field_validator("domain")
+    @classmethod
+    def validate_domain(cls, v: str) -> str:
+        value = v.strip()
+        if not value:
+            raise ValueError("domain must not be empty")
+        return value
 
     @field_validator("duplicate_threshold")
     @classmethod
@@ -168,6 +177,7 @@ _ENV_MAP: dict[str, tuple[str, ...]] = {
     "THREADSENSE_API_MAX_REQUEST_BYTES": ("api", "max_request_bytes"),
     "THREADSENSE_RUNTIME_CONCURRENCY": ("limits", "runtime_concurrency"),
     "THREADSENSE_ANALYSIS_STRATEGY": ("analysis", "strategy"),
+    "THREADSENSE_ANALYSIS_DOMAIN": ("analysis", "domain"),
     "THREADSENSE_ANALYSIS_DUPLICATE_THRESHOLD": ("analysis", "duplicate_threshold"),
 }
 

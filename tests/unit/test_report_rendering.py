@@ -48,6 +48,8 @@ def test_build_thread_report_uses_local_summary_and_quality_checks(tmp_path: Pat
 
     assert report.executive_summary.provider == "local_openai_compatible"
     assert report.findings
+    assert report.conversation_structure.max_depth == 0
+    assert report.conversation_structure.top_level_count == 7
     assert any(check.code == "coverage_gap" for check in report.quality_checks)
 
 
@@ -63,6 +65,7 @@ def test_render_report_markdown_contains_permalinks_and_sections(tmp_path: Path)
     markdown = render_report_markdown(report)
 
     assert "# Deterministic analysis fixture thread" in markdown
+    assert "## Conversation Structure" in markdown
     assert "## Findings" in markdown
     assert "https://reddit.com/comments/analysis123/c3" in markdown
 
@@ -82,3 +85,4 @@ def test_render_report_json_round_trips_report_artifact(tmp_path: Path) -> None:
 
     assert loaded.thread_id == report.thread_id
     assert loaded.executive_summary.headline == report.executive_summary.headline
+    assert loaded.conversation_structure.max_depth == report.conversation_structure.max_depth

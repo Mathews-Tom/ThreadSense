@@ -6,7 +6,12 @@ from pathlib import Path
 from typing import Any
 
 from threadsense.errors import SchemaBoundaryError
-from threadsense.models.analysis import RepresentativeQuote, quote_from_dict
+from threadsense.models.analysis import (
+    ConversationStructure,
+    RepresentativeQuote,
+    conversation_structure_from_dict,
+    quote_from_dict,
+)
 
 REPORT_SCHEMA_VERSION = 1
 REPORT_ENGINE_VERSION = "report-v1"
@@ -59,6 +64,7 @@ class ThreadReport:
     title: str
     top_phrases: list[str]
     executive_summary: ReportExecutiveSummary
+    conversation_structure: ConversationStructure
     findings: list[ReportFinding]
     caveats: list[str]
     quality_checks: list[ReportQualityCheck]
@@ -80,6 +86,7 @@ def load_report_artifact_file(path: Path) -> ThreadReport:
     findings_data = nested_list(report_data, "findings")
     quality_data = nested_list(report_data, "quality_checks")
     provenance_data = nested_object(report_data, "provenance")
+    conversation_data = optional_nested_object(report_data, "conversation_structure")
     return ThreadReport(
         thread_id=required_str(report_data, "thread_id"),
         source_name=required_str(report_data, "source_name"),
@@ -94,6 +101,7 @@ def load_report_artifact_file(path: Path) -> ThreadReport:
             provider=required_str(summary_data, "provider"),
             degraded=required_bool(summary_data, "degraded"),
         ),
+        conversation_structure=conversation_structure_from_dict(conversation_data),
         findings=[finding_from_dict(item) for item in findings_data],
         caveats=required_str_list(report_data, "caveats"),
         quality_checks=[quality_check_from_dict(item) for item in quality_data],
@@ -171,6 +179,15 @@ def nested_list(payload: Mapping[str, Any], key: str) -> list[Any]:
     value = payload.get(key)
     if not isinstance(value, list):
         raise SchemaBoundaryError("report list field is invalid", details={"key": key})
+    return value
+
+
+def optional_nested_object(payload: Mapping[str, Any], key: str) -> dict[str, Any] | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise SchemaBoundaryError("report object field is invalid", details={"key": key})
     return value
 
 

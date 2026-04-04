@@ -4,17 +4,26 @@ from pathlib import Path
 from time import time
 
 from threadsense.config import AnalysisConfig
+from threadsense.domains import load_domain_vocabulary
 from threadsense.errors import AnalysisBoundaryError
 from threadsense.models.analysis import (
     ANALYSIS_ENGINE_VERSION,
     ANALYSIS_SCHEMA_VERSION,
     AnalysisProvenance,
+    ConversationStructure,
+    EngagementSubtree,
     ThreadAnalysis,
 )
 from threadsense.models.canonical import Thread
 from threadsense.pipeline.storage import calculate_sha256, load_normalized_artifact
 from threadsense.pipeline.strategies import AnalysisResult, AnalysisStrategy
 from threadsense.pipeline.strategies.keyword_heuristic import KeywordHeuristicStrategy
+from threadsense.pipeline.tree import (
+    compute_tree_metrics,
+    detect_conversation_patterns,
+    extract_reply_chains,
+    score_subtrees,
+)
 
 STRATEGY_REGISTRY: dict[str, type[KeywordHeuristicStrategy]] = {
     "keyword_heuristic": KeywordHeuristicStrategy,
@@ -28,7 +37,10 @@ def resolve_strategy(config: AnalysisConfig) -> AnalysisStrategy:
             f"unknown analysis strategy: {config.strategy}",
             details={"strategy": config.strategy},
         )
-    return strategy_cls(duplicate_threshold=config.duplicate_threshold)
+    return strategy_cls(
+        duplicate_threshold=config.duplicate_threshold,
+        vocabulary=load_domain_vocabulary(config.domain),
+    )
 
 
 def analyze_thread_file(
@@ -62,9 +74,11 @@ def assemble_thread_analysis(
         source_name=thread.source.source_name,
         title=thread.title,
         total_comments=thread.comment_count,
+        filtered_comment_count=result.filtered_comment_count,
         distinct_comment_count=result.distinct_comment_count,
         duplicate_group_count=result.duplicate_group_count,
         top_phrases=result.top_phrases,
+        conversation_structure=build_conversation_structure(thread),
         findings=result.findings,
         duplicate_groups=result.duplicate_groups,
         top_quotes=result.top_quotes,
@@ -76,4 +90,36 @@ def assemble_thread_analysis(
             schema_version=ANALYSIS_SCHEMA_VERSION,
             analysis_version=ANALYSIS_ENGINE_VERSION,
         ),
+    )
+
+
+def build_conversation_structure(thread: Thread) -> ConversationStructure:
+    metrics = compute_tree_metrics(thread.comments)
+    reply_chains = extract_reply_chains(thread.comments, min_length=3)
+    patterns = detect_conversation_patterns(thread.comments, min_subtree_size=3)
+    scored_subtrees = score_subtrees(thread.comments, min_subtree_size=2)
+
+    pattern_counts = {"consensus": 0, "controversy": 0, "monologue": 0}
+    for pattern in patterns:
+        if pattern.pattern_type in pattern_counts:
+            pattern_counts[pattern.pattern_type] += 1
+
+    return ConversationStructure(
+        max_depth=metrics.max_depth,
+        top_level_count=metrics.top_level_count,
+        reply_chain_count=len(reply_chains),
+        longest_chain_length=reply_chains[0].length if reply_chains else 0,
+        controversy_count=pattern_counts["controversy"],
+        consensus_count=pattern_counts["consensus"],
+        monologue_count=pattern_counts["monologue"],
+        top_engagement_subtrees=[
+            EngagementSubtree(
+                root_comment_id=subtree.root_comment_id,
+                root_author=subtree.root_author,
+                subtree_size=subtree.subtree_size,
+                max_depth_below=subtree.max_depth_below,
+                engagement_score=subtree.engagement_score,
+            )
+            for subtree in scored_subtrees[:3]
+        ],
     )

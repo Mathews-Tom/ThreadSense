@@ -1,0 +1,22 @@
+[meta]
+domain = "gaming"
+version = "1.0"
+
+[themes]
+performance = ["fps", "lag", "latency", "stutter", "performance", "frame"]
+balance = ["nerf", "buff", "meta", "balance", "overpowered", "underpowered"]
+progression = ["grind", "xp", "progression", "unlock", "loot", "reward"]
+community = ["guild", "party", "matchmaking", "community", "friends", "clan"]
+monetization = ["battle pass", "microtransaction", "shop", "skin", "premium", "pay to win"]
+
+[markers]
+issue = ["bug", "lag", "crash", "pay to win", "toxic", "broken"]
+request = ["please", "add", "need", "want", "fix", "can you"]
+
+[severity]
+levels = ["low", "medium", "high"]
+
+[fallbacks]
+issue = "performance"
+request = "community"
+default = "general_feedback"
