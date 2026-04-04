@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
@@ -11,7 +10,6 @@ from threadsense.pipeline.strategies.keyword_heuristic import (
     clean_text,
     tokenize_text,
 )
-
 
 # ---------------------------------------------------------------------------
 # normalize_url: arbitrary strings must never crash with an unhandled exception
