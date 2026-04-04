@@ -9,6 +9,7 @@ chat_path = "/v1/chat/completions"
 model = "local-model"
 timeout_seconds = 90
 repair_retries = 1
+json_mode = false
 
 [sources]
 enabled = "reddit"

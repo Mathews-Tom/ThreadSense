@@ -3,9 +3,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from threadsense.errors import SchemaBoundaryError
+
+if TYPE_CHECKING:
+    from threadsense.models.analysis import ThreadAnalysis
 
 
 class InferenceTask(StrEnum):
@@ -56,22 +59,35 @@ class InferenceResponse:
 def validate_task_output(
     task: InferenceTask,
     payload: Mapping[str, Any],
+    analysis: ThreadAnalysis | None = None,
 ) -> dict[str, Any]:
     if task is InferenceTask.ANALYSIS_SUMMARY:
-        return validate_analysis_summary_output(payload)
+        return validate_analysis_summary_output(payload, analysis)
     if task is InferenceTask.FINDING_CLASSIFICATION:
         return validate_finding_classification_output(payload)
     if task is InferenceTask.REPORT_SUMMARY:
-        return validate_report_summary_output(payload)
+        return validate_report_summary_output(payload, analysis)
     raise SchemaBoundaryError("inference task validator is missing", details={"task": task.value})
 
 
-def validate_analysis_summary_output(payload: Mapping[str, Any]) -> dict[str, Any]:
+def validate_analysis_summary_output(
+    payload: Mapping[str, Any],
+    analysis: ThreadAnalysis | None = None,
+) -> dict[str, Any]:
     headline = required_str(payload, "headline")
     summary = required_str(payload, "summary")
     cited_theme_keys = required_str_list(payload, "cited_theme_keys")
     cited_comment_ids = required_str_list(payload, "cited_comment_ids")
     next_steps = required_str_list(payload, "next_steps")
+
+    if analysis is not None:
+        valid_theme_keys = {finding.theme_key for finding in analysis.findings}
+        valid_comment_ids: set[str] = set()
+        for finding in analysis.findings:
+            valid_comment_ids.update(finding.evidence_comment_ids)
+        cited_theme_keys = [k for k in cited_theme_keys if k in valid_theme_keys]
+        cited_comment_ids = [cid for cid in cited_comment_ids if cid in valid_comment_ids]
+
     return {
         "headline": headline,
         "summary": summary,
@@ -99,11 +115,22 @@ def validate_finding_classification_output(payload: Mapping[str, Any]) -> dict[s
     return {"classifications": normalized}
 
 
-def validate_report_summary_output(payload: Mapping[str, Any]) -> dict[str, Any]:
+def validate_report_summary_output(
+    payload: Mapping[str, Any],
+    analysis: ThreadAnalysis | None = None,
+) -> dict[str, Any]:
+    executive_summary = required_str(payload, "executive_summary")
+    caveats = required_str_list(payload, "caveats")
+    cited_theme_keys = required_str_list(payload, "cited_theme_keys")
+
+    if analysis is not None:
+        valid_theme_keys = {finding.theme_key for finding in analysis.findings}
+        cited_theme_keys = [k for k in cited_theme_keys if k in valid_theme_keys]
+
     return {
-        "executive_summary": required_str(payload, "executive_summary"),
-        "caveats": required_str_list(payload, "caveats"),
-        "cited_theme_keys": required_str_list(payload, "cited_theme_keys"),
+        "executive_summary": executive_summary,
+        "caveats": caveats,
+        "cited_theme_keys": cited_theme_keys,
     }
 
 

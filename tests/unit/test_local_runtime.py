@@ -30,6 +30,7 @@ def test_probe_payload_matches_fixture() -> None:
             model="local-model",
             timeout_seconds=10,
             repair_retries=1,
+            json_mode=False,
         )
     )
 
@@ -83,6 +84,7 @@ def test_complete_repairs_invalid_json_response() -> None:
             model="local-model",
             timeout_seconds=10,
             repair_retries=1,
+            json_mode=False,
         )
     )
     request = build_analysis_summary_request(
