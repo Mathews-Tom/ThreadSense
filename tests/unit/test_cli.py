@@ -77,6 +77,57 @@ def test_main_dispatches_fetch_reddit(monkeypatch: pytest.MonkeyPatch) -> None:
     }
 
 
+def test_build_parser_accepts_output_format_flag() -> None:
+    parser = cli.build_parser()
+    args = parser.parse_args(["--output-format", "quiet", "preflight"])
+    assert args.output_mode == "quiet"
+    assert args.command == "preflight"
+
+
+def test_build_parser_output_format_default_is_none() -> None:
+    parser = cli.build_parser()
+    args = parser.parse_args(["preflight"])
+    assert args.output_mode is None
+
+
+def test_output_format_does_not_collide_with_subcommand_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--output-format sets output_mode; subcommand --output sets the artifact path."""
+    captured: dict[str, object] = {}
+
+    def fake_run_reddit_fetch(
+        config_path: Path | None,
+        url: str,
+        output_path: Path | None,
+        expand_more: bool,
+        flat: bool,
+    ) -> int:
+        captured["output_path"] = output_path
+        return 0
+
+    monkeypatch.setattr(cli, "run_reddit_fetch", fake_run_reddit_fetch)
+
+    from threadsense import cli_display
+
+    monkeypatch.setattr(cli_display, "_output_mode", None)
+
+    result = cli.main(
+        [
+            "--output-format",
+            "json",
+            "fetch",
+            "reddit",
+            "https://example.com/thread",
+            "--output",
+            "artifact.json",
+        ]
+    )
+    assert result == 0
+    assert captured["output_path"] == Path("artifact.json")
+    assert cli_display.resolve_output_mode() == cli_display.OutputMode.JSON
+
+
 def test_main_dispatches_batch_run(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 

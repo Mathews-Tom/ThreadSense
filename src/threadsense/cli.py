@@ -23,6 +23,7 @@ from threadsense.pipeline.storage import (
     load_normalized_artifact,
     load_report_artifact,
 )
+from threadsense.preflight import DiagnosticCheck, run_diagnostic_checks
 from threadsense.workflows import (
     analyze_normalized_thread,
     fetch_reddit_thread,
@@ -315,6 +316,13 @@ def _build_run_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPa
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="threadsense")
+    parser.add_argument(
+        "--output-format",
+        choices=["json", "human", "quiet"],
+        default=None,
+        dest="output_mode",
+        help="Output format: json (machine-readable), human (rich tables), quiet (status only).",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
     _build_preflight_parser(subparsers)
     _build_fetch_parser(subparsers)
@@ -329,7 +337,11 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def render_preflight_report(config: AppConfig, probe: RuntimeProbeResult | None) -> str:
+def render_preflight_report(
+    config: AppConfig,
+    probe: RuntimeProbeResult | None,
+    diagnostics: list[DiagnosticCheck] | None = None,
+) -> str:
     report: dict[str, object] = {
         "status": "ready" if probe is None or probe.ok else "degraded",
         "backend": config.inference_backend.value,
@@ -347,6 +359,10 @@ def render_preflight_report(config: AppConfig, probe: RuntimeProbeResult | None)
     }
     if probe is not None:
         report["runtime_check"] = probe.to_dict()
+    if diagnostics is not None:
+        report["diagnostics"] = [c.to_dict() for c in diagnostics]
+        if any(c.status == "fail" for c in diagnostics):
+            report["status"] = "degraded"
     return json.dumps(report, indent=2)
 
 
@@ -365,8 +381,14 @@ def run_preflight(config_path: Path | None, skip_runtime: bool) -> int:
     if not skip_runtime:
         probe = LocalRuntimeClient(config.runtime).probe()
 
-    emit_payload(json.loads(render_preflight_report(config, probe)))
-    return 0 if probe is None or probe.ok else 1
+    diagnostics = run_diagnostic_checks(config, skip_network=skip_runtime)
+    emit_payload(
+        json.loads(render_preflight_report(config, probe, diagnostics)),
+    )
+
+    has_failures = any(c.status == "fail" for c in diagnostics)
+    runtime_degraded = probe is not None and not probe.ok
+    return 1 if has_failures or runtime_degraded else 0
 
 
 def build_reddit_connector(config: AppConfig) -> RedditConnector:
@@ -709,6 +731,10 @@ def _dispatch_command(args: argparse.Namespace) -> int:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.output_mode is not None:
+        from threadsense.cli_display import OutputMode, set_output_mode
+
+        set_output_mode(OutputMode(args.output_mode))
     try:
         return _dispatch_command(args)
     except ThreadSenseError as error:
