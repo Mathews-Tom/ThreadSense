@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -118,8 +119,9 @@ class RedditConnector:
             comments.extend(expanded_comments)
             raw_morechildren_payloads.append(more_payload)
 
-        output_comments = flatten(comments) if scrape_request.flat else comments
-        total_comment_count = len(flatten(comments))
+        flattened_comments = flatten(comments)
+        output_comments = flattened_comments if scrape_request.flat else comments
+        total_comment_count = len(flattened_comments)
         return RedditThreadResult(
             requested_url=scrape_request.post_url,
             normalized_url=normalized_url,
@@ -333,11 +335,11 @@ def parse_comment(raw_comment: JsonObject, depth: int = 0) -> RedditComment | No
 
 def flatten(comments: list[RedditComment]) -> list[RedditComment]:
     flattened: list[RedditComment] = []
-    queue = list(comments)
+    queue: deque[RedditComment] = deque(comments)
     while queue:
-        comment = queue.pop(0)
+        comment = queue.popleft()
         flattened.append(comment)
-        queue = comment.replies + queue
+        queue.extendleft(reversed(comment.replies))
     return flattened
 
 

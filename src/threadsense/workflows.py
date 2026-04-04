@@ -12,7 +12,7 @@ from threadsense.connectors.reddit import (
     RedditConnector,
     RedditThreadRequest,
 )
-from threadsense.inference import InferenceRouter, InferenceTask
+from threadsense.inference import InferenceResponse, InferenceRouter, InferenceTask
 from threadsense.observability import (
     DEFAULT_METRICS,
     MetricsRegistry,
@@ -176,15 +176,7 @@ def infer_analysis(
                 task=task,
                 required=required,
             )
-        registry.increment(
-            "threadsense_stage_total",
-            {
-                "stage": "runtime_completion",
-                "provider": response.provider,
-                "task": response.task.value,
-                "outcome": "degraded" if response.degraded else "ready",
-            },
-        )
+        record_runtime_completion(registry, response)
         return {
             "status": "ready" if not response.degraded else "degraded",
             "artifact_type": "analysis",
@@ -227,15 +219,7 @@ def report_analysis(
                     task=InferenceTask.ANALYSIS_SUMMARY,
                     required=summary_required,
                 )
-            registry.increment(
-                "threadsense_stage_total",
-                {
-                    "stage": "runtime_completion",
-                    "provider": summary_response.provider,
-                    "task": summary_response.task.value,
-                    "outcome": "degraded" if summary_response.degraded else "ready",
-                },
-            )
+            record_runtime_completion(registry, summary_response)
 
         report = build_thread_report(
             analysis=analysis,
@@ -332,6 +316,21 @@ def run_reddit_pipeline(
         "analyze": analyze_result,
         "report": report_result,
     }
+
+
+def record_runtime_completion(
+    registry: MetricsRegistry,
+    response: InferenceResponse,
+) -> None:
+    registry.increment(
+        "threadsense_stage_total",
+        {
+            "stage": "runtime_completion",
+            "provider": response.provider,
+            "task": response.task.value,
+            "outcome": "degraded" if response.degraded else "ready",
+        },
+    )
 
 
 @contextmanager

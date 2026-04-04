@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from threadsense import __version__
 from threadsense.config import InferenceBackend, PrivacyMode, load_config
 from threadsense.errors import ConfigurationError
 
@@ -21,6 +22,10 @@ def test_load_config_uses_defaults_when_no_file_exists(monkeypatch: pytest.Monke
     assert config.source_policy.enabled_sources == ("reddit",)
     assert config.reddit.listing_limit == 500
     assert config.reddit.timeout_seconds == 15.0
+    assert (
+        config.reddit.user_agent
+        == f"threadsense/{__version__} (https://github.com/Mathews-Tom/ThreadSense)"
+    )
     assert config.storage.root_dir == Path(".threadsense")
     assert config.storage.normalized_dirname == "normalized"
     assert config.storage.analysis_dirname == "analysis"

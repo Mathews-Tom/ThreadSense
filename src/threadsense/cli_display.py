@@ -78,10 +78,7 @@ def render_run_panel(payload: dict[str, Any]) -> Panel:
         )
     summary_provider = payload.get("report", {}).get("summary_provider", "n/a")
     title = f"ThreadSense Run: {payload.get('source', 'unknown')}"
-    subtitle = (
-        f"{payload.get('thread_url', '')}\n"
-        f"summary provider: {summary_provider}"
-    )
+    subtitle = f"{payload.get('thread_url', '')}\nsummary provider: {summary_provider}"
     return Panel(table, title=title, subtitle=subtitle, border_style="green")
 
 

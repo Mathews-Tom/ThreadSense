@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -32,25 +33,47 @@ from threadsense.workflows import (
 )
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="threadsense")
-    subparsers = parser.add_subparsers(dest="command", required=True)
+class _CommandDispatchError(Exception):
+    pass
 
-    preflight_parser = subparsers.add_parser(
-        "preflight",
-        help="Validate local configuration and runtime readiness.",
-    )
-    preflight_parser.add_argument(
+
+def _add_config_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
         "--config",
         type=Path,
         help="Optional path to a TOML config file.",
     )
+
+
+def _add_report_summary_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--with-summary",
+        action="store_true",
+        help="Use local inference to generate a bounded executive summary.",
+    )
+    parser.add_argument(
+        "--summary-required",
+        action="store_true",
+        help="Fail instead of falling back when local summary generation is unavailable.",
+    )
+
+
+def _build_preflight_parser(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    preflight_parser = subparsers.add_parser(
+        "preflight",
+        help="Validate local configuration and runtime readiness.",
+    )
+    _add_config_argument(preflight_parser)
     preflight_parser.add_argument(
         "--skip-runtime",
         action="store_true",
         help="Validate configuration without probing the runtime endpoint.",
     )
 
+
+def _build_fetch_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     fetch_parser = subparsers.add_parser(
         "fetch",
         help="Fetch source data and persist the raw thread artifact.",
@@ -67,11 +90,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Raw artifact output path. Defaults to the configured raw store path.",
     )
-    reddit_parser.add_argument(
-        "--config",
-        type=Path,
-        help="Optional path to a TOML config file.",
-    )
+    _add_config_argument(reddit_parser)
     reddit_parser.add_argument(
         "--expand-more",
         action="store_true",
@@ -83,6 +102,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Flatten nested comments in the persisted artifact.",
     )
 
+
+def _build_normalize_parser(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
     normalize_parser = subparsers.add_parser(
         "normalize",
         help="Normalize raw source artifacts into canonical thread artifacts.",
@@ -104,12 +127,10 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Normalized artifact output path. Defaults to the configured normalized store path.",
     )
-    normalize_reddit_parser.add_argument(
-        "--config",
-        type=Path,
-        help="Optional path to a TOML config file.",
-    )
+    _add_config_argument(normalize_reddit_parser)
 
+
+def _build_analyze_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     analyze_parser = subparsers.add_parser(
         "analyze",
         help="Run deterministic analysis over canonical thread artifacts.",
@@ -131,38 +152,30 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Analysis artifact output path. Defaults to the configured analysis store path.",
     )
-    analyze_normalized_parser.add_argument(
-        "--config",
-        type=Path,
-        help="Optional path to a TOML config file.",
-    )
+    _add_config_argument(analyze_normalized_parser)
 
+
+def _build_inspect_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     inspect_parser = subparsers.add_parser(
         "inspect",
         help="Inspect persisted thread artifacts.",
     )
     inspect_subparsers = inspect_parser.add_subparsers(dest="artifact_type", required=True)
-    normalized_parser = inspect_subparsers.add_parser(
-        "normalized",
-        help="Inspect one normalized thread artifact.",
-    )
-    normalized_parser.add_argument(
-        "--input",
-        type=Path,
-        required=True,
-        help="Normalized artifact path.",
-    )
-    analysis_parser = inspect_subparsers.add_parser(
-        "analysis",
-        help="Inspect one deterministic analysis artifact.",
-    )
-    analysis_parser.add_argument(
-        "--input",
-        type=Path,
-        required=True,
-        help="Analysis artifact path.",
-    )
+    for artifact_type, help_text in (
+        ("normalized", "Inspect one normalized thread artifact."),
+        ("analysis", "Inspect one deterministic analysis artifact."),
+        ("report", "Inspect one structured report artifact."),
+    ):
+        artifact_parser = inspect_subparsers.add_parser(artifact_type, help=help_text)
+        artifact_parser.add_argument(
+            "--input",
+            type=Path,
+            required=True,
+            help=f"{artifact_type.capitalize()} artifact path.",
+        )
 
+
+def _build_infer_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     infer_parser = subparsers.add_parser(
         "infer",
         help="Run local inference tasks against deterministic analysis artifacts.",
@@ -189,12 +202,10 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Fail instead of falling back when local inference is unavailable.",
     )
-    infer_analysis_parser.add_argument(
-        "--config",
-        type=Path,
-        help="Optional path to a TOML config file.",
-    )
+    _add_config_argument(infer_analysis_parser)
 
+
+def _build_report_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     report_parser = subparsers.add_parser(
         "report",
         help="Generate Markdown or JSON reports from analysis artifacts.",
@@ -225,33 +236,11 @@ def build_parser() -> argparse.ArgumentParser:
             "for the selected format."
         ),
     )
-    report_analysis_parser.add_argument(
-        "--with-summary",
-        action="store_true",
-        help="Use local inference to generate a bounded executive summary.",
-    )
-    report_analysis_parser.add_argument(
-        "--summary-required",
-        action="store_true",
-        help="Fail instead of falling back when local summary generation is unavailable.",
-    )
-    report_analysis_parser.add_argument(
-        "--config",
-        type=Path,
-        help="Optional path to a TOML config file.",
-    )
+    _add_report_summary_arguments(report_analysis_parser)
+    _add_config_argument(report_analysis_parser)
 
-    report_inspect_parser = inspect_subparsers.add_parser(
-        "report",
-        help="Inspect one structured report artifact.",
-    )
-    report_inspect_parser.add_argument(
-        "--input",
-        type=Path,
-        required=True,
-        help="Report artifact path.",
-    )
 
+def _build_batch_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     batch_parser = subparsers.add_parser(
         "batch",
         help="Run reproducible multi-thread workflows from a manifest.",
@@ -273,21 +262,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Batch run artifact output path. Defaults to the configured batch store path.",
     )
-    batch_run_parser.add_argument(
-        "--config",
-        type=Path,
-        help="Optional path to a TOML config file.",
-    )
+    _add_config_argument(batch_run_parser)
 
+
+def _build_serve_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     serve_parser = subparsers.add_parser(
         "serve",
         help="Run the local HTTP API surface for the pipeline.",
     )
-    serve_parser.add_argument(
-        "--config",
-        type=Path,
-        help="Optional path to a TOML config file.",
-    )
+    _add_config_argument(serve_parser)
     serve_parser.add_argument(
         "--host",
         help="Override the configured API host.",
@@ -298,6 +281,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override the configured API port.",
     )
 
+
+def _build_run_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     run_parser = subparsers.add_parser(
         "run",
         help="Execute the full workflow for one source input.",
@@ -308,11 +293,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Fetch, normalize, analyze, and report one Reddit thread.",
     )
     run_reddit_parser.add_argument("url", help="Full Reddit thread URL")
-    run_reddit_parser.add_argument(
-        "--config",
-        type=Path,
-        help="Optional path to a TOML config file.",
-    )
+    _add_config_argument(run_reddit_parser)
     run_reddit_parser.add_argument(
         "--expand-more",
         action="store_true",
@@ -329,16 +310,22 @@ def build_parser() -> argparse.ArgumentParser:
         default="markdown",
         help="Final report output format.",
     )
-    run_reddit_parser.add_argument(
-        "--with-summary",
-        action="store_true",
-        help="Use local inference to generate a bounded executive summary.",
-    )
-    run_reddit_parser.add_argument(
-        "--summary-required",
-        action="store_true",
-        help="Fail instead of falling back when local summary generation is unavailable.",
-    )
+    _add_report_summary_arguments(run_reddit_parser)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="threadsense")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    _build_preflight_parser(subparsers)
+    _build_fetch_parser(subparsers)
+    _build_normalize_parser(subparsers)
+    _build_analyze_parser(subparsers)
+    _build_inspect_parser(subparsers)
+    _build_infer_parser(subparsers)
+    _build_report_parser(subparsers)
+    _build_batch_parser(subparsers)
+    _build_serve_parser(subparsers)
+    _build_run_parser(subparsers)
     return parser
 
 
@@ -362,9 +349,17 @@ def render_preflight_report(config: AppConfig, probe: RuntimeProbeResult | None)
     return json.dumps(report, indent=2)
 
 
+def load_cli_context(config_path: Path | None) -> tuple[logging.Logger, AppConfig]:
+    logger = configure_logging(level=cli_log_level())
+    return logger, load_config(config_path)
+
+
+def cli_trace(run_id: str) -> TraceContext:
+    return TraceContext.create(run_id=run_id, source_name="reddit")
+
+
 def run_preflight(config_path: Path | None, skip_runtime: bool) -> int:
-    configure_logging(level=cli_log_level())
-    config = load_config(config_path)
+    _logger, config = load_cli_context(config_path)
     probe: RuntimeProbeResult | None = None
     if not skip_runtime:
         probe = LocalRuntimeClient(config.runtime).probe()
@@ -384,12 +379,11 @@ def run_reddit_fetch(
     expand_more: bool,
     flat: bool,
 ) -> int:
-    logger = configure_logging(level=cli_log_level())
-    config = load_config(config_path)
+    logger, config = load_cli_context(config_path)
     payload = fetch_reddit_thread(
         config=config,
         logger=logger,
-        trace=TraceContext.create(run_id="cli-fetch", source_name="reddit"),
+        trace=cli_trace("cli-fetch"),
         url=url,
         output_path=output_path,
         expand_more=expand_more,
@@ -405,12 +399,11 @@ def run_reddit_normalize(
     input_path: Path,
     output_path: Path | None,
 ) -> int:
-    logger = configure_logging(level=cli_log_level())
-    config = load_config(config_path)
+    logger, config = load_cli_context(config_path)
     payload = normalize_reddit_thread(
         config=config,
         logger=logger,
-        trace=TraceContext.create(run_id="cli-normalize", source_name="reddit"),
+        trace=cli_trace("cli-normalize"),
         input_path=input_path,
         output_path=output_path,
     )
@@ -423,12 +416,11 @@ def run_normalized_analyze(
     input_path: Path,
     output_path: Path | None,
 ) -> int:
-    logger = configure_logging(level=cli_log_level())
-    config = load_config(config_path)
+    logger, config = load_cli_context(config_path)
     payload = analyze_normalized_thread(
         config=config,
         logger=logger,
-        trace=TraceContext.create(run_id="cli-analyze", source_name="reddit"),
+        trace=cli_trace("cli-analyze"),
         input_path=input_path,
         output_path=output_path,
     )
@@ -501,12 +493,11 @@ def run_analysis_infer(
     task_name: str,
     required: bool,
 ) -> int:
-    logger = configure_logging(level=cli_log_level())
-    config = load_config(config_path)
+    logger, config = load_cli_context(config_path)
     payload = infer_analysis(
         config=config,
         logger=logger,
-        trace=TraceContext.create(run_id="cli-infer", source_name="reddit"),
+        trace=cli_trace("cli-infer"),
         input_path=input_path,
         task=InferenceTask(task_name),
         required=required,
@@ -523,12 +514,11 @@ def run_analysis_report(
     with_summary: bool,
     summary_required: bool,
 ) -> int:
-    logger = configure_logging(level=cli_log_level())
-    config = load_config(config_path)
+    logger, config = load_cli_context(config_path)
     payload = report_analysis(
         config=config,
         logger=logger,
-        trace=TraceContext.create(run_id="cli-report", source_name="reddit"),
+        trace=cli_trace("cli-report"),
         input_path=input_path,
         output_path=output_path,
         report_format=report_format,
@@ -544,8 +534,7 @@ def run_batch(
     manifest_path: Path,
     output_path: Path | None,
 ) -> int:
-    logger = configure_logging(level=cli_log_level())
-    config = load_config(config_path)
+    logger, config = load_cli_context(config_path)
     payload = run_batch_manifest(
         config=config,
         logger=logger,
@@ -620,13 +609,12 @@ def run_reddit_end_to_end(
     with_summary: bool,
     summary_required: bool,
 ) -> int:
-    logger = configure_logging(level=cli_log_level())
-    config = load_config(config_path)
+    logger, config = load_cli_context(config_path)
     with status("Running Reddit workflow"):
         payload = run_reddit_pipeline(
             config=config,
             logger=logger,
-            trace=TraceContext.create(run_id="cli-run", source_name="reddit"),
+            trace=cli_trace("cli-run"),
             url=url,
             expand_more=expand_more,
             flat=flat,
@@ -639,13 +627,17 @@ def run_reddit_end_to_end(
     return 0
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
-    try:
-        if args.command == "preflight":
+def _dispatch_command(args: argparse.Namespace) -> int:
+    command_key = (
+        args.command,
+        getattr(args, "source", None),
+        getattr(args, "artifact_type", None),
+        getattr(args, "batch_command", None),
+    )
+    match command_key:
+        case ("preflight", _, _, _):
             return run_preflight(args.config, args.skip_runtime)
-        if args.command == "fetch" and args.source == "reddit":
+        case ("fetch", "reddit", _, _):
             return run_reddit_fetch(
                 config_path=args.config,
                 url=args.url,
@@ -653,32 +645,32 @@ def main(argv: Sequence[str] | None = None) -> int:
                 expand_more=args.expand_more,
                 flat=args.flat,
             )
-        if args.command == "normalize" and args.source == "reddit":
+        case ("normalize", "reddit", _, _):
             return run_reddit_normalize(
                 config_path=args.config,
                 input_path=args.input,
                 output_path=args.output,
             )
-        if args.command == "analyze" and args.artifact_type == "normalized":
+        case ("analyze", _, "normalized", _):
             return run_normalized_analyze(
                 config_path=args.config,
                 input_path=args.input,
                 output_path=args.output,
             )
-        if args.command == "inspect" and args.artifact_type == "normalized":
+        case ("inspect", _, "normalized", _):
             return run_normalized_inspect(args.input)
-        if args.command == "inspect" and args.artifact_type == "analysis":
+        case ("inspect", _, "analysis", _):
             return run_analysis_inspect(args.input)
-        if args.command == "inspect" and args.artifact_type == "report":
+        case ("inspect", _, "report", _):
             return run_report_inspect(args.input)
-        if args.command == "infer" and args.artifact_type == "analysis":
+        case ("infer", _, "analysis", _):
             return run_analysis_infer(
                 config_path=args.config,
                 input_path=args.input,
                 task_name=args.task,
                 required=args.required,
             )
-        if args.command == "report" and args.artifact_type == "analysis":
+        case ("report", _, "analysis", _):
             return run_analysis_report(
                 config_path=args.config,
                 input_path=args.input,
@@ -687,19 +679,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 with_summary=args.with_summary,
                 summary_required=args.summary_required,
             )
-        if args.command == "batch" and args.batch_command == "run":
+        case ("batch", _, _, "run"):
             return run_batch(
                 config_path=args.config,
                 manifest_path=args.manifest,
                 output_path=args.output,
             )
-        if args.command == "serve":
+        case ("serve", _, _, _):
             return run_api_server(
                 config_path=args.config,
                 host=args.host,
                 port=args.port,
             )
-        if args.command == "run" and args.source == "reddit":
+        case ("run", "reddit", _, _):
             return run_reddit_end_to_end(
                 config_path=args.config,
                 url=args.url,
@@ -709,9 +701,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 with_summary=args.with_summary,
                 summary_required=args.summary_required,
             )
+        case _:
+            raise _CommandDispatchError(args.command)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        return _dispatch_command(args)
     except ThreadSenseError as error:
         emit_error(error)
         return 1
-
-    parser.error(f"unknown command: {args.command}")
-    return 2
+    except _CommandDispatchError:
+        parser.error(f"unknown command: {args.command}")
+        return 2
