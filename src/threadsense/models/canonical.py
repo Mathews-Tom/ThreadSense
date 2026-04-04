@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -139,8 +140,6 @@ def comment_from_dict(thread_id: str, payload: Mapping[str, Any]) -> Comment:
 
 
 def read_json_file(path: Path) -> dict[str, Any]:
-    import json
-
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as error:
