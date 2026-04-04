@@ -1,0 +1,60 @@
+{
+  "golden_version": 1,
+  "thread_fixture": "tests/fixtures/analysis/canonical_feedback_thread.json",
+  "domain": "developer_tools",
+  "expected_findings": [
+    {
+      "theme_key": "performance",
+      "min_severity": "medium",
+      "must_contain_comment_ids": [
+        "reddit:c3"
+      ],
+      "must_not_contain_comment_ids": []
+    },
+    {
+      "theme_key": "documentation",
+      "min_severity": "medium",
+      "must_contain_comment_ids": [
+        "reddit:c1"
+      ],
+      "must_not_contain_comment_ids": []
+    },
+    {
+      "theme_key": "reliability",
+      "min_severity": "medium",
+      "must_contain_comment_ids": [
+        "reddit:c5"
+      ],
+      "must_not_contain_comment_ids": []
+    },
+    {
+      "theme_key": "workflow",
+      "min_severity": "medium",
+      "must_contain_comment_ids": [
+        "reddit:c6",
+        "reddit:c7"
+      ],
+      "must_not_contain_comment_ids": []
+    }
+  ],
+  "expected_duplicate_groups": [
+    {
+      "min_size": 2,
+      "must_contain_comment_ids": [
+        "reddit:c1",
+        "reddit:c2"
+      ]
+    },
+    {
+      "min_size": 2,
+      "must_contain_comment_ids": [
+        "reddit:c3",
+        "reddit:c4"
+      ]
+    }
+  ],
+  "expected_absent_themes": [
+    "gaming",
+    "financial_markets"
+  ]
+}

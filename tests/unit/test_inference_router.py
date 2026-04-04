@@ -7,13 +7,16 @@ from typing import cast
 import pytest
 
 from threadsense.config import load_config
+from threadsense.contracts import DomainType
 from threadsense.errors import InferenceBoundaryError
 from threadsense.inference import InferenceRouter, InferenceTask
 from threadsense.inference.contracts import validate_task_output
 from threadsense.inference.router import InferenceClient
 from threadsense.models.analysis import load_analysis_artifact_file
 from threadsense.models.canonical import load_canonical_thread
+from threadsense.models.corpus import TrendPeriod
 from threadsense.pipeline.analyze import analyze_thread
+from threadsense.pipeline.corpus import build_corpus_analysis, build_corpus_manifest
 
 
 def load_analysis_fixture(tmp_path: Path) -> Path:
@@ -164,3 +167,66 @@ def test_validate_task_output_without_analysis_preserves_all_citations() -> None
 
     assert payload["cited_theme_keys"] == ["anything", "goes"]
     assert payload["cited_comment_ids"] == ["fake:1", "fake:2"]
+
+
+def test_validate_corpus_synthesis_strips_hallucinated_thread_ids(tmp_path: Path) -> None:
+    analysis_path = load_analysis_fixture(tmp_path)
+    manifest = build_corpus_manifest(
+        name="Corpus",
+        description="Deterministic corpus.",
+        domain=DomainType.DEVELOPER_TOOLS,
+        analysis_paths=[analysis_path],
+        source_filter=None,
+    )
+    corpus = build_corpus_analysis(
+        manifest,
+        manifest_path=tmp_path / "manifest.json",
+        evidence_limit=2,
+        period=TrendPeriod.MONTH,
+    )
+
+    payload = validate_task_output(
+        InferenceTask.CORPUS_SYNTHESIS,
+        {
+            "headline": "Cross-thread summary",
+            "key_patterns": ["Performance repeats across threads."],
+            "cited_thread_ids": [
+                corpus.cross_thread_findings[0].top_evidence[0].thread_id,
+                "missing:1",
+            ],
+            "recommended_actions": ["Review latency evidence"],
+            "confidence_note": "Built from a small corpus.",
+        },
+        corpus=corpus,
+    )
+
+    assert payload["cited_thread_ids"] == [
+        corpus.cross_thread_findings[0].top_evidence[0].thread_id
+    ]
+
+
+def test_router_returns_corpus_fallback_when_runtime_is_disabled(tmp_path: Path) -> None:
+    analysis_path = load_analysis_fixture(tmp_path)
+    manifest = build_corpus_manifest(
+        name="Corpus",
+        description="Deterministic corpus.",
+        domain=DomainType.DEVELOPER_TOOLS,
+        analysis_paths=[analysis_path],
+        source_filter=None,
+    )
+    corpus = build_corpus_analysis(
+        manifest,
+        manifest_path=tmp_path / "manifest.json",
+        evidence_limit=2,
+        period=TrendPeriod.MONTH,
+    )
+    config = load_config(env={"THREADSENSE_RUNTIME_ENABLED": "false"})
+
+    response = InferenceRouter(config).run_corpus_task(
+        corpus=corpus,
+        task=InferenceTask.CORPUS_SYNTHESIS,
+        required=False,
+    )
+
+    assert response.used_fallback is True
+    assert response.output["headline"]
