@@ -1,13 +1,15 @@
 [meta]
 domain = "developer_tools"
-version = "1.0"
+version = "1.1"
 
 [themes]
-documentation = ["doc", "docs", "guide", "guides", "onboarding", "quickstart", "tutorial"]
-performance = ["fast", "lag", "latency", "performance", "slow", "speed"]
-reliability = ["bug", "broken", "crash", "error", "fail", "failure", "retry"]
-workflow = ["automation", "batch", "dashboard", "export", "workflow"]
-usability = ["confusing", "discover", "discoverability", "hard", "ux", "ui"]
+documentation = ["doc", "docs", "guide", "guides", "onboarding", "quickstart", "tutorial", "readme", "wiki"]
+performance = ["fast", "lag", "latency", "performance", "slow", "speed", "memory", "gpu", "cpu", "token", "tokens"]
+reliability = ["bug", "broken", "crash", "error", "fail", "failure", "retry", "flaky", "timeout"]
+workflow = ["automation", "batch", "dashboard", "export", "workflow", "pipeline", "tagging", "capture", "ingest"]
+usability = ["confusing", "discover", "discoverability", "hard", "ux", "ui", "setup", "config", "configuration"]
+architecture = ["architecture", "stack", "server", "database", "self-hosted", "graph", "embedding", "vector", "schema", "api", "mcp", "plugin"]
+tooling = ["obsidian", "notion", "vault", "repo", "github", "extension", "integration", "framework", "library"]
 
 [markers]
 issue = ["bug", "broken", "confusing", "crash", "error", "fail", "issue", "lag", "slow"]

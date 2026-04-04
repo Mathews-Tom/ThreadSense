@@ -1,13 +1,13 @@
 [meta]
 domain = "product_feedback"
-version = "1.0"
+version = "1.1"
 
 [themes]
-pricing = ["pricing", "price", "subscription", "plan", "cost", "value"]
-limits = ["limit", "quota", "rate limit", "cap", "usage", "credits"]
-reliability = ["bug", "broken", "crash", "error", "downtime", "incident"]
-experience = ["confusing", "ux", "ui", "workflow", "onboarding", "discoverability"]
-support = ["support", "ticket", "response", "refund", "help", "billing"]
+pricing = ["pricing", "price", "subscription", "plan", "cost", "value", "tier", "free", "paid"]
+limits = ["limit", "quota", "rate limit", "cap", "usage", "credits", "throttle", "context window"]
+reliability = ["bug", "broken", "crash", "error", "downtime", "incident", "timeout", "outage"]
+experience = ["confusing", "ux", "ui", "workflow", "onboarding", "discoverability", "intuitive", "clunky"]
+support = ["support", "ticket", "response", "refund", "help", "billing", "documentation", "docs"]
 
 [markers]
 issue = ["broken", "error", "bug", "downtime", "refund", "frustrating", "slow"]
