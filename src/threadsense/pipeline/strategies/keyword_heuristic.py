@@ -443,6 +443,97 @@ def count_distinct_comments(
     return len(distinct_ids)
 
 
+_FEEDBACK_DECOMPOSE_RATIO = 0.50
+_FEEDBACK_CLUSTER_THRESHOLD = 0.30
+_FEEDBACK_MIN_CLUSTER_SIZE = 3
+
+
+def decompose_catch_all(
+    signals: list[CommentSignal],
+    total_signal_count: int,
+    default_theme: str,
+    *,
+    ratio_threshold: float = _FEEDBACK_DECOMPOSE_RATIO,
+    similarity_threshold: float = _FEEDBACK_CLUSTER_THRESHOLD,
+    min_cluster_size: int = _FEEDBACK_MIN_CLUSTER_SIZE,
+) -> list[tuple[str, list[CommentSignal]]]:
+    """Sub-cluster the default theme when it dominates the signal set.
+
+    Returns a list of (sub_theme_key, signals) pairs. Signals that don't
+    form clusters large enough stay in the original default theme bucket.
+    """
+    if len(signals) / max(total_signal_count, 1) < ratio_threshold:
+        return [(default_theme, signals)]
+
+    clusters = _cluster_signals(signals, similarity_threshold, min_cluster_size)
+    if not clusters:
+        return [(default_theme, signals)]
+
+    assigned_ids: set[str] = set()
+    result: list[tuple[str, list[CommentSignal]]] = []
+    for cluster_signals in clusters:
+        label = _cluster_label(cluster_signals)
+        sub_key = f"{default_theme}.{label}"
+        result.append((sub_key, cluster_signals))
+        assigned_ids.update(s.comment.comment_id for s in cluster_signals)
+
+    remainder = [s for s in signals if s.comment.comment_id not in assigned_ids]
+    if remainder:
+        result.append((default_theme, remainder))
+    return result
+
+
+def _cluster_signals(
+    signals: list[CommentSignal],
+    threshold: float,
+    min_size: int,
+) -> list[list[CommentSignal]]:
+    """Single-linkage clustering via Jaccard similarity on token sets."""
+    adjacency: dict[str, set[str]] = {}
+    for i, left in enumerate(signals):
+        left_tokens = set(left.tokens)
+        if not left_tokens:
+            continue
+        for right in signals[i + 1 :]:
+            right_tokens = set(right.tokens)
+            if not right_tokens:
+                continue
+            union = left_tokens | right_tokens
+            overlap = left_tokens & right_tokens
+            if len(overlap) / len(union) >= threshold:
+                adjacency.setdefault(left.comment.comment_id, set()).add(right.comment.comment_id)
+                adjacency.setdefault(right.comment.comment_id, set()).add(left.comment.comment_id)
+
+    signal_index = {s.comment.comment_id: s for s in signals}
+    visited: set[str] = set()
+    clusters: list[list[CommentSignal]] = []
+    for signal in signals:
+        cid = signal.comment.comment_id
+        if cid in visited or cid not in adjacency:
+            continue
+        component: list[str] = []
+        queue: deque[str] = deque([cid])
+        while queue:
+            current = queue.popleft()
+            if current in visited:
+                continue
+            visited.add(current)
+            component.append(current)
+            for neighbor in adjacency.get(current, set()):
+                if neighbor not in visited:
+                    queue.append(neighbor)
+        if len(component) >= min_size:
+            clusters.append([signal_index[c] for c in sorted(component)])
+    return clusters
+
+
+def _cluster_label(signals: list[CommentSignal]) -> str:
+    phrases = extract_top_phrases(signals, limit=1)
+    if phrases:
+        return phrases[0].replace(" ", "_")
+    return "misc"
+
+
 def build_findings(
     signals: list[CommentSignal],
     duplicate_index: dict[str, str],
@@ -464,6 +555,15 @@ def build_findings(
             ),
             [],
         ).append(signal)
+
+    if default_theme in grouped:
+        sub_groups = decompose_catch_all(
+            grouped.pop(default_theme),
+            total_signal_count=len(signals),
+            default_theme=default_theme,
+        )
+        for sub_key, sub_signals in sub_groups:
+            grouped[sub_key] = sub_signals
 
     findings: list[AnalysisFinding] = []
     for theme_key, theme_signals in grouped.items():

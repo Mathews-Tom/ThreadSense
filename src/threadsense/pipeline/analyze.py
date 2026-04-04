@@ -10,7 +10,7 @@ from threadsense.contracts import (
     contract_from_config,
     default_contract,
 )
-from threadsense.domains import load_domain_vocabulary
+from threadsense.domains import DomainVocabulary, load_domain_vocabulary
 from threadsense.errors import AnalysisBoundaryError
 from threadsense.models.analysis import (
     ANALYSIS_ENGINE_VERSION,
@@ -37,26 +37,14 @@ STRATEGY_REGISTRY: dict[str, type[KeywordHeuristicStrategy]] = {
 }
 
 
-def resolve_strategy(config: AnalysisConfig, contract: AnalysisContract) -> AnalysisStrategy:
-    strategy_cls = STRATEGY_REGISTRY.get(config.strategy)
-    if strategy_cls is None:
-        raise AnalysisBoundaryError(
-            f"unknown analysis strategy: {config.strategy}",
-            details={"strategy": config.strategy},
-        )
-    return strategy_cls(
-        duplicate_threshold=config.duplicate_threshold,
-        vocabulary=load_domain_vocabulary(contract.domain.value),
-    )
-
-
 def analyze_thread_file(
     normalized_artifact_path: Path,
     config: AnalysisConfig | None = None,
     contract: AnalysisContract | None = None,
+    vocabulary: DomainVocabulary | None = None,
 ) -> ThreadAnalysis:
     thread = load_normalized_artifact(normalized_artifact_path)
-    return analyze_thread(thread, normalized_artifact_path, config, contract)
+    return analyze_thread(thread, normalized_artifact_path, config, contract, vocabulary)
 
 
 def analyze_thread(
@@ -64,15 +52,24 @@ def analyze_thread(
     normalized_artifact_path: Path,
     config: AnalysisConfig | None = None,
     contract: AnalysisContract | None = None,
+    vocabulary: DomainVocabulary | None = None,
 ) -> ThreadAnalysis:
     resolved_contract = resolve_analysis_contract(config, contract)
+    resolved_vocabulary = vocabulary or load_domain_vocabulary(resolved_contract.domain.value)
     if config is not None:
-        strategy = resolve_strategy(config, resolved_contract)
-    else:
-        strategy = KeywordHeuristicStrategy(
-            vocabulary=load_domain_vocabulary(resolved_contract.domain.value)
+        strategy = STRATEGY_REGISTRY.get(config.strategy)
+        if strategy is None:
+            raise AnalysisBoundaryError(
+                f"unknown analysis strategy: {config.strategy}",
+                details={"strategy": config.strategy},
+            )
+        resolved_strategy: AnalysisStrategy = strategy(
+            duplicate_threshold=config.duplicate_threshold,
+            vocabulary=resolved_vocabulary,
         )
-    analysis_result = strategy.analyze(thread, resolved_contract)
+    else:
+        resolved_strategy = KeywordHeuristicStrategy(vocabulary=resolved_vocabulary)
+    analysis_result = resolved_strategy.analyze(thread, resolved_contract)
     return assemble_thread_analysis(
         thread,
         analysis_result,

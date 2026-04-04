@@ -17,6 +17,7 @@ class InferenceTask(StrEnum):
     FINDING_CLASSIFICATION = "finding_classification"
     REPORT_SUMMARY = "report_summary"
     CORPUS_SYNTHESIS = "corpus_synthesis"
+    VOCABULARY_EXPANSION = "vocabulary_expansion"
 
 
 @dataclass(frozen=True)
@@ -72,6 +73,8 @@ def validate_task_output(
         return validate_report_summary_output(payload, analysis)
     if task is InferenceTask.CORPUS_SYNTHESIS:
         return validate_corpus_synthesis_output(payload, corpus)
+    if task is InferenceTask.VOCABULARY_EXPANSION:
+        return validate_vocabulary_expansion_output(payload)
     raise SchemaBoundaryError("inference task validator is missing", details={"task": task.value})
 
 
@@ -197,6 +200,37 @@ def required_str_list(payload: Mapping[str, Any], key: str) -> list[str]:
                 details={"key": key},
             )
         normalized.append(item.strip())
+    return normalized
+
+
+def validate_vocabulary_expansion_output(payload: Mapping[str, Any]) -> dict[str, Any]:
+    existing_themes = payload.get("existing_themes")
+    new_themes = payload.get("new_themes")
+    if not isinstance(existing_themes, dict):
+        raise SchemaBoundaryError(
+            "vocabulary expansion must include existing_themes dict",
+        )
+    if not isinstance(new_themes, dict):
+        raise SchemaBoundaryError(
+            "vocabulary expansion must include new_themes dict",
+        )
+    return {
+        "existing_themes": _normalize_keyword_map(existing_themes),
+        "new_themes": _normalize_keyword_map(dict(list(new_themes.items())[:3])),
+    }
+
+
+def _normalize_keyword_map(
+    raw: dict[str, object],
+    max_per_theme: int = 10,
+) -> dict[str, list[str]]:
+    normalized: dict[str, list[str]] = {}
+    for theme_key, keywords in raw.items():
+        if not isinstance(keywords, list):
+            continue
+        normalized[str(theme_key)] = [
+            str(k).strip().lower() for k in keywords if isinstance(k, str) and k.strip()
+        ][:max_per_theme]
     return normalized
 
 
