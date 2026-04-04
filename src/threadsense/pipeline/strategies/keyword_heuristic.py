@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import re
-from collections import Counter
+from collections import Counter, deque
 from dataclasses import dataclass
 
 from threadsense.errors import AnalysisBoundaryError
@@ -169,9 +170,102 @@ def extract_top_phrases(signals: list[CommentSignal], limit: int) -> list[str]:
     return [phrase for phrase, _count in ranked[:limit]]
 
 
+# ---------------------------------------------------------------------------
+# MinHash / LSH constants — tuned for threshold ~0.88
+# With b=10 bands and r=5 rows per band (50 hash functions total):
+#   P(candidate | jaccard=0.88) ≈ 1 - (1 - 0.88^5)^10 ≈ 0.9997
+#   P(candidate | jaccard=0.50) ≈ 1 - (1 - 0.50^5)^10 ≈ 0.28
+# ---------------------------------------------------------------------------
+MINHASH_NUM_HASHES = 50
+MINHASH_BANDS = 10
+MINHASH_ROWS_PER_BAND = MINHASH_NUM_HASHES // MINHASH_BANDS
+_HASH_SEEDS: tuple[int, ...] = tuple(range(MINHASH_NUM_HASHES))
+_MINHASH_SIZE_THRESHOLD = 50
+
+
+def _token_shingles(tokens: tuple[str, ...], shingle_size: int = 3) -> set[str]:
+    """Generate character n-gram shingles from tokens."""
+    text = " ".join(tokens)
+    if len(text) < shingle_size:
+        return {text}
+    return {text[i : i + shingle_size] for i in range(len(text) - shingle_size + 1)}
+
+
+def _minhash_signature(shingles: set[str]) -> tuple[int, ...]:
+    """Compute MinHash signature with *k* hash functions."""
+    if not shingles:
+        return tuple(0 for _ in range(MINHASH_NUM_HASHES))
+    signature: list[int] = []
+    for seed in _HASH_SEEDS:
+        min_hash = float("inf")
+        for shingle in shingles:
+            h = int(
+                hashlib.md5(f"{seed}:{shingle}".encode(), usedforsecurity=False).hexdigest()[:8],
+                16,
+            )
+            if h < min_hash:
+                min_hash = h
+        signature.append(int(min_hash))
+    return tuple(signature)
+
+
+def _band_hashes(signature: tuple[int, ...]) -> tuple[int, ...]:
+    """Split signature into bands and hash each band."""
+    bands: list[int] = []
+    for band_idx in range(MINHASH_BANDS):
+        start = band_idx * MINHASH_ROWS_PER_BAND
+        end = start + MINHASH_ROWS_PER_BAND
+        bands.append(hash(signature[start:end]))
+    return tuple(bands)
+
+
+def _build_candidate_pairs(
+    signals: list[CommentSignal],
+) -> set[tuple[str, str]]:
+    """Use MinHash + LSH to identify candidate near-duplicate pairs."""
+    band_map: dict[str, tuple[int, ...]] = {}
+    for signal in signals:
+        shingles = _token_shingles(signal.tokens)
+        sig = _minhash_signature(shingles)
+        band_map[signal.comment.comment_id] = _band_hashes(sig)
+
+    buckets: dict[tuple[int, int], list[str]] = {}
+    for comment_id, bands in band_map.items():
+        for band_idx, band_hash in enumerate(bands):
+            bucket_key = (band_idx, band_hash)
+            buckets.setdefault(bucket_key, []).append(comment_id)
+
+    candidates: set[tuple[str, str]] = set()
+    for bucket_members in buckets.values():
+        if len(bucket_members) < 2:
+            continue
+        for i in range(len(bucket_members)):
+            for j in range(i + 1, len(bucket_members)):
+                pair = (
+                    min(bucket_members[i], bucket_members[j]),
+                    max(bucket_members[i], bucket_members[j]),
+                )
+                candidates.add(pair)
+    return candidates
+
+
+# ---------------------------------------------------------------------------
+# Duplicate cluster detection — dispatcher + implementations
+# ---------------------------------------------------------------------------
+
+
 def detect_duplicate_clusters(
     signals: list[CommentSignal], threshold: float
 ) -> list[DuplicateCluster]:
+    if len(signals) < _MINHASH_SIZE_THRESHOLD:
+        return _detect_duplicate_clusters_bruteforce(signals, threshold)
+    return _detect_duplicate_clusters_minhash(signals, threshold)
+
+
+def _detect_duplicate_clusters_bruteforce(
+    signals: list[CommentSignal], threshold: float
+) -> list[DuplicateCluster]:
+    """O(n²) brute-force — efficient for small sets."""
     clusters: list[DuplicateCluster] = []
     seen: set[str] = set()
     ordered_signals = sorted(signals, key=lambda signal: signal.comment.comment_id)
@@ -191,6 +285,62 @@ def detect_duplicate_clusters(
                 DuplicateCluster(
                     canonical_text=signal.canonical_text,
                     comment_ids=sorted(cluster_ids),
+                )
+            )
+    return clusters
+
+
+def _detect_duplicate_clusters_minhash(
+    signals: list[CommentSignal], threshold: float
+) -> list[DuplicateCluster]:
+    """MinHash-accelerated duplicate detection for large comment sets."""
+    signal_index = {signal.comment.comment_id: signal for signal in signals}
+    candidates = _build_candidate_pairs(signals)
+
+    # Build adjacency from verified candidates
+    adjacency: dict[str, set[str]] = {}
+    for id_a, id_b in candidates:
+        sig_a = signal_index[id_a]
+        sig_b = signal_index[id_b]
+        if are_near_duplicates(sig_a, sig_b, threshold):
+            adjacency.setdefault(id_a, set()).add(id_b)
+            adjacency.setdefault(id_b, set()).add(id_a)
+
+    # Exact canonical-text duplicates (guaranteed matches MinHash might band differently)
+    canonical_groups: dict[str, list[str]] = {}
+    for signal in signals:
+        canonical_groups.setdefault(signal.canonical_text, []).append(signal.comment.comment_id)
+    for group_ids in canonical_groups.values():
+        if len(group_ids) > 1:
+            for i in range(len(group_ids)):
+                for j in range(i + 1, len(group_ids)):
+                    adjacency.setdefault(group_ids[i], set()).add(group_ids[j])
+                    adjacency.setdefault(group_ids[j], set()).add(group_ids[i])
+
+    # Connected components via BFS
+    clusters: list[DuplicateCluster] = []
+    visited: set[str] = set()
+    for signal in sorted(signals, key=lambda s: s.comment.comment_id):
+        cid = signal.comment.comment_id
+        if cid in visited or cid not in adjacency:
+            continue
+        component: list[str] = []
+        queue: deque[str] = deque([cid])
+        while queue:
+            current = queue.popleft()
+            if current in visited:
+                continue
+            visited.add(current)
+            component.append(current)
+            for neighbor in adjacency.get(current, set()):
+                if neighbor not in visited:
+                    queue.append(neighbor)
+        if len(component) > 1:
+            representative = signal_index[sorted(component)[0]]
+            clusters.append(
+                DuplicateCluster(
+                    canonical_text=representative.canonical_text,
+                    comment_ids=sorted(component),
                 )
             )
     return clusters
