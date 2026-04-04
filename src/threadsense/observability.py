@@ -128,10 +128,12 @@ def emit_log(
     logger: logging.Logger,
     event: str,
     trace: TraceContext,
+    *,
+    level: int = logging.INFO,
     **fields: object,
 ) -> None:
     payload: dict[str, object] = {"event": event, **trace.to_dict(), **fields}
-    logger.info(json.dumps(payload, sort_keys=True))
+    logger.log(level, json.dumps(payload, sort_keys=True))
 
 
 @contextmanager
@@ -149,7 +151,7 @@ def observe_stage(
         "source_name": trace.source_name,
         **(dict(labels) if labels is not None else {}),
     }
-    emit_log(logger, "stage_started", trace, stage=stage, labels=base_labels)
+    emit_log(logger, "stage_started", trace, level=logging.DEBUG, stage=stage, labels=base_labels)
     try:
         yield
     except ThreadSenseError as error:
@@ -161,6 +163,7 @@ def observe_stage(
             logger,
             "stage_failed",
             trace,
+            level=logging.ERROR,
             stage=stage,
             latency_seconds=round(latency, 6),
             error=error.to_dict(),
@@ -175,6 +178,7 @@ def observe_stage(
             logger,
             "stage_completed",
             trace,
+            level=logging.INFO,
             stage=stage,
             latency_seconds=round(latency, 6),
         )
