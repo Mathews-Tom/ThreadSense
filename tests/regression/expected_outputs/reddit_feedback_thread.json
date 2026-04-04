@@ -203,6 +203,13 @@
         "score": 5
       }
     ],
+    "alignment_check": {
+      "domain": "developer_tools",
+      "domain_fit_score": 0.8,
+      "general_feedback_ratio": 0.0,
+      "suggested_domain": null,
+      "warning": null
+    },
     "provenance": {
       "normalized_artifact_path": "tests/fixtures/analysis/canonical_feedback_thread.json",
       "normalized_sha256": "820370cf44df8bd0b44529c350f0b706c9387c5017b5a8a34bdfa50fb7b2c2cd",

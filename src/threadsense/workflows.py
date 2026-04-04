@@ -5,10 +5,13 @@ import threading
 from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 from threadsense.config import AppConfig
 from threadsense.connectors import FetchRequest
+from threadsense.connectors.cache import FetchCache
+from threadsense.connectors.github_discussions import GitHubDiscussionsConnector
 from threadsense.connectors.hackernews import HackerNewsConnector
 from threadsense.connectors.reddit import (
     RedditConnector,
@@ -36,17 +39,22 @@ from threadsense.observability import (
     DEFAULT_METRICS,
     MetricsRegistry,
     TraceContext,
+    emit_log,
     observe_stage,
 )
+from threadsense.pipeline.alignment import suggest_domain
 from threadsense.pipeline.analyze import analyze_thread_file
 from threadsense.pipeline.corpus import build_corpus_analysis, build_corpus_manifest
+from threadsense.pipeline.corpus_index import index_corpus, search_index
 from threadsense.pipeline.storage import (
     build_corpus_paths,
     build_storage_paths,
     load_analysis_artifact,
+    load_analysis_artifact_version,
     load_corpus_manifest,
+    load_normalized_artifact,
     load_raw_artifact,
-    persist_analysis_artifact,
+    persist_analysis_artifact_with_config,
     persist_corpus_analysis,
     persist_corpus_manifest,
     persist_normalized_artifact,
@@ -54,11 +62,13 @@ from threadsense.pipeline.storage import (
     persist_report_artifact,
     write_text,
 )
-from threadsense.reporting import build_thread_report, render_report_markdown
+from threadsense.pipeline.versioning import diff_analyses
+from threadsense.reporting import build_thread_report, render_report_html, render_report_markdown
 from threadsense.reporting.corpus_render import render_corpus_markdown
 
 RedditConnectorFactory = Callable[[AppConfig], RedditConnector]
 HackerNewsConnectorFactory = Callable[[AppConfig], HackerNewsConnector]
+GitHubDiscussionsConnectorFactory = Callable[[AppConfig], GitHubDiscussionsConnector]
 SourceRegistryFactory = Callable[[AppConfig], SourceRegistry]
 
 
@@ -91,6 +101,18 @@ def fetch_reddit_thread(
         storage_paths = build_storage_paths(config.storage, "reddit", result.post.id)
         resolved_output_path = output_path or storage_paths.raw_path
         persist_raw_artifact(resolved_output_path, result)
+        registry.increment(
+            "threadsense_comments_processed_total",
+            {
+                "stage": "fetch",
+                "source_name": "reddit",
+                "count": str(result.total_comment_count),
+            },
+        )
+        registry.increment(
+            "threadsense_cache_hit_total",
+            {"source_name": "reddit", "outcome": result.cache_status},
+        )
         return FetchResult(
             status="ready",
             source="reddit",
@@ -133,6 +155,21 @@ def fetch_source_thread(
         )
         resolved_output_path = output_path or storage_paths.raw_path
         persist_raw_artifact(resolved_output_path, result)
+        registry.increment(
+            "threadsense_comments_processed_total",
+            {
+                "stage": "fetch",
+                "source_name": result.source_name,
+                "count": str(result.total_comment_count),
+            },
+        )
+        registry.increment(
+            "threadsense_cache_hit_total",
+            {
+                "source_name": result.source_name,
+                "outcome": str(getattr(result, "cache_status", "disabled")),
+            },
+        )
         return FetchResult(
             status="ready",
             source=result.source_name,
@@ -213,6 +250,7 @@ def analyze_normalized_thread(
     input_path: Path,
     output_path: Path | None,
     contract: AnalysisContract | None = None,
+    auto_domain: bool = False,
     registry: MetricsRegistry = DEFAULT_METRICS,
 ) -> AnalyzeResult:
     with observe_stage(
@@ -221,14 +259,59 @@ def analyze_normalized_thread(
         trace=trace,
         stage="analyze",
     ):
-        analysis = analyze_thread_file(input_path, config=config.analysis, contract=contract)
+        resolved_contract = resolve_analysis_contract_for_thread(
+            config=config,
+            input_path=input_path,
+            contract=contract,
+            auto_domain=auto_domain,
+        )
+        analysis = analyze_thread_file(
+            input_path,
+            config=config.analysis,
+            contract=resolved_contract,
+        )
         storage_paths = build_storage_paths(
             config.storage,
             analysis.source_name,
             analysis.provenance.source_thread_id,
         )
         resolved_output_path = output_path or storage_paths.analysis_path
-        persist_analysis_artifact(resolved_output_path, analysis)
+        resolved_output_path = persist_analysis_artifact_with_config(
+            config.storage,
+            resolved_output_path,
+            analysis,
+        )
+        duplicate_ratio = (
+            analysis.duplicate_group_count / analysis.total_comments
+            if analysis.total_comments
+            else 0.0
+        )
+        registry.set_gauge(
+            "threadsense_duplicate_ratio",
+            {"source_name": analysis.source_name, "thread_id": analysis.thread_id},
+            duplicate_ratio,
+        )
+        for finding in analysis.findings:
+            registry.increment(
+                "threadsense_findings_total",
+                {
+                    "source_name": analysis.source_name,
+                    "theme_key": finding.theme_key,
+                    "severity": finding.severity,
+                },
+            )
+        emit_log(
+            logger,
+            "analysis_completed",
+            trace,
+            thread_id=analysis.thread_id,
+            finding_count=len(analysis.findings),
+            duplicate_ratio=round(duplicate_ratio, 6),
+            top_severity=analysis.findings[0].severity if analysis.findings else "none",
+            alignment_warning=(
+                analysis.alignment_check.warning if analysis.alignment_check is not None else None
+            ),
+        )
         return AnalyzeResult(
             status="ready",
             artifact_type="analysis",
@@ -261,12 +344,13 @@ def infer_analysis(
     ):
         analysis = load_analysis_artifact(input_path)
         with runtime_slot_limit(config.limits.runtime_concurrency):
+            started_at = perf_counter()
             response = InferenceRouter(config).run_analysis_task(
                 analysis=analysis,
                 task=task,
                 required=required,
             )
-        record_runtime_completion(registry, response)
+        record_runtime_completion(registry, response, perf_counter() - started_at)
         return InferResult(
             status="ready" if not response.degraded else "degraded",
             artifact_type="analysis",
@@ -298,12 +382,13 @@ def infer_corpus(
         labels={"task": InferenceTask.CORPUS_SYNTHESIS.value},
     ):
         with runtime_slot_limit(config.limits.runtime_concurrency):
+            started_at = perf_counter()
             response = InferenceRouter(config).run_corpus_task(
                 corpus=corpus,
                 task=InferenceTask.CORPUS_SYNTHESIS,
                 required=required,
             )
-        record_runtime_completion(registry, response)
+        record_runtime_completion(registry, response, perf_counter() - started_at)
         return response
 
 
@@ -330,12 +415,13 @@ def report_analysis(
         summary_response = None
         if with_summary:
             with runtime_slot_limit(config.limits.runtime_concurrency):
+                started_at = perf_counter()
                 summary_response = InferenceRouter(config).run_analysis_task(
                     analysis=analysis,
                     task=InferenceTask.ANALYSIS_SUMMARY,
                     required=summary_required,
                 )
-            record_runtime_completion(registry, summary_response)
+            record_runtime_completion(registry, summary_response, perf_counter() - started_at)
 
         report = build_thread_report(
             analysis=analysis,
@@ -350,11 +436,15 @@ def report_analysis(
         default_output_path = (
             storage_paths.report_markdown_path
             if report_format == "markdown"
+            else storage_paths.report_html_path
+            if report_format == "html"
             else storage_paths.report_json_path
         )
         resolved_output_path = output_path or default_output_path
         if report_format == "json":
             persist_report_artifact(resolved_output_path, report)
+        elif report_format == "html":
+            write_text(resolved_output_path, render_report_html(report))
         else:
             write_text(resolved_output_path, render_report_markdown(report))
         return ReportResult(
@@ -382,8 +472,9 @@ def run_reddit_pipeline(
     report_format: str,
     with_summary: bool,
     summary_required: bool,
-    contract: AnalysisContract | None = None,
     connector_factory: RedditConnectorFactory,
+    contract: AnalysisContract | None = None,
+    auto_domain: bool = False,
     registry: MetricsRegistry = DEFAULT_METRICS,
 ) -> PipelineResult:
     fetch_result = fetch_reddit_thread(
@@ -412,6 +503,7 @@ def run_reddit_pipeline(
         input_path=normalize_result.output_path,
         output_path=None,
         contract=contract,
+        auto_domain=auto_domain,
         registry=registry,
     )
     report_result = report_analysis(
@@ -447,6 +539,7 @@ def run_source_pipeline(
     with_summary: bool,
     summary_required: bool,
     contract: AnalysisContract | None,
+    auto_domain: bool,
     registry_factory: SourceRegistryFactory,
     registry: MetricsRegistry = DEFAULT_METRICS,
 ) -> PipelineResult:
@@ -476,6 +569,7 @@ def run_source_pipeline(
         input_path=normalize_result.output_path,
         output_path=None,
         contract=contract,
+        auto_domain=auto_domain,
         registry=registry,
     )
     report_result = report_analysis(
@@ -564,6 +658,7 @@ def analyze_corpus(
         corpus_paths = build_corpus_paths(config.storage, manifest.corpus_id)
         resolved_output_path = output_path or corpus_paths.analysis_path
         persist_corpus_analysis(resolved_output_path, corpus)
+        index_corpus(corpus_paths.index_path, corpus)
         return CorpusAnalyzeResult(
             status="ready",
             input_path=manifest_path,
@@ -668,6 +763,7 @@ def evaluate_golden_dataset(
 def record_runtime_completion(
     registry: MetricsRegistry,
     response: InferenceResponse,
+    latency_seconds: float,
 ) -> None:
     registry.increment(
         "threadsense_stage_total",
@@ -678,6 +774,16 @@ def record_runtime_completion(
             "outcome": "degraded" if response.degraded else "ready",
         },
     )
+    registry.observe_histogram(
+        "threadsense_inference_latency_seconds",
+        {"provider": response.provider, "task": response.task.value},
+        latency_seconds,
+    )
+    if response.degraded:
+        registry.increment(
+            "threadsense_inference_fallback_total",
+            {"provider": response.provider, "task": response.task.value},
+        )
 
 
 @contextmanager
@@ -692,3 +798,66 @@ def runtime_slot_limit(concurrency_limit: int) -> Any:
 
 def build_source_registry(config: AppConfig) -> SourceRegistry:
     return SourceRegistry(config)
+
+
+def build_fetch_cache(config: AppConfig) -> FetchCache | None:
+    if not config.cache.enabled:
+        return None
+    return FetchCache(config.cache.cache_dir, config.cache.ttl_seconds)
+
+
+def resolve_analysis_contract_for_thread(
+    *,
+    config: AppConfig,
+    input_path: Path,
+    contract: AnalysisContract | None,
+    auto_domain: bool,
+) -> AnalysisContract | None:
+    if not auto_domain:
+        return contract
+    base_contract = contract
+    if base_contract is None:
+        base_contract = AnalysisContract(
+            domain=config.analysis.domain,
+            objective=config.analysis.objective,
+            abstraction_level=config.analysis.abstraction_level,
+        )
+    thread = load_normalized_artifact(input_path)
+    suggested_domain = suggest_domain(thread, exclude=base_contract.domain)
+    if suggested_domain is None:
+        return base_contract
+    return AnalysisContract(
+        domain=DomainType(suggested_domain),
+        objective=base_contract.objective,
+        abstraction_level=base_contract.abstraction_level,
+    )
+
+
+def diff_analysis_versions(
+    *,
+    analysis_path: Path,
+    left_version: int,
+    right_version: int,
+) -> dict[str, Any]:
+    left = load_analysis_artifact_version(analysis_path, left_version)
+    right = load_analysis_artifact_version(analysis_path, right_version)
+    return {
+        "status": "ready",
+        "analysis_path": str(analysis_path),
+        "left_version": left_version,
+        "right_version": right_version,
+        **diff_analyses(left, right),
+    }
+
+
+def search_corpora(
+    *,
+    config: AppConfig,
+    query: str,
+) -> dict[str, Any]:
+    index_path = config.storage.root_dir / config.storage.index_dirname / "corpora.json"
+    return {
+        "status": "ready",
+        "query": query,
+        "matches": search_index(index_path, query),
+    }

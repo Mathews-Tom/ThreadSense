@@ -8,7 +8,12 @@ from threadsense.models.analysis import load_analysis_artifact_file
 from threadsense.models.canonical import load_canonical_thread
 from threadsense.models.report import load_report_artifact_file
 from threadsense.pipeline.analyze import analyze_thread
-from threadsense.reporting import build_thread_report, render_report_json, render_report_markdown
+from threadsense.reporting import (
+    build_thread_report,
+    render_report_html,
+    render_report_json,
+    render_report_markdown,
+)
 
 
 def build_analysis_artifact(tmp_path: Path) -> Path:
@@ -87,3 +92,20 @@ def test_render_report_json_round_trips_report_artifact(tmp_path: Path) -> None:
     assert loaded.thread_id == report.thread_id
     assert loaded.executive_summary.headline == report.executive_summary.headline
     assert loaded.conversation_structure.max_depth == report.conversation_structure.max_depth
+
+
+def test_render_report_html_contains_findings_and_caveats(tmp_path: Path) -> None:
+    analysis_path = build_analysis_artifact(tmp_path)
+    analysis = load_analysis_artifact_file(analysis_path)
+    report = build_thread_report(
+        analysis=analysis,
+        analysis_artifact_path=str(analysis_path),
+        summary_response=None,
+    )
+
+    html = render_report_html(report)
+
+    assert "<!doctype html>" in html.lower()
+    assert "Next Steps" in html
+    assert "Findings" in html
+    assert "Caveats" in html

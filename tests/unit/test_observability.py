@@ -28,8 +28,16 @@ def test_metrics_registry_renders_prometheus_samples() -> None:
         {"stage": "fetch", "source_name": "reddit", "outcome": "ready"},
         0.25,
     )
+    registry.set_gauge("threadsense_duplicate_ratio", {"source_name": "reddit"}, 0.2)
+    registry.observe_histogram(
+        "threadsense_inference_latency_seconds",
+        {"provider": "local", "task": "analysis_summary"},
+        0.75,
+    )
 
     output = registry.render_prometheus()
 
     assert 'threadsense_stage_total{outcome="ready",source_name="reddit",stage="fetch"}' in output
     assert "threadsense_stage_seconds_avg" in output
+    assert "threadsense_gauge" in output
+    assert "threadsense_histogram_avg" in output

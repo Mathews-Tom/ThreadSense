@@ -72,6 +72,8 @@ class MetricsRegistry:
         self._lock = threading.Lock()
         self._counters: dict[tuple[str, tuple[tuple[str, str], ...]], int] = {}
         self._latencies: dict[tuple[str, tuple[tuple[str, str], ...]], list[float]] = {}
+        self._gauges: dict[tuple[str, tuple[tuple[str, str], ...]], float] = {}
+        self._histograms: dict[tuple[str, tuple[tuple[str, str], ...]], list[float]] = {}
 
     def increment(self, name: str, labels: Mapping[str, str]) -> None:
         key = self._metric_key(name, labels)
@@ -83,6 +85,16 @@ class MetricsRegistry:
         with self._lock:
             self._latencies.setdefault(key, []).append(value)
 
+    def observe_histogram(self, name: str, labels: Mapping[str, str], value: float) -> None:
+        key = self._metric_key(name, labels)
+        with self._lock:
+            self._histograms.setdefault(key, []).append(value)
+
+    def set_gauge(self, name: str, labels: Mapping[str, str], value: float) -> None:
+        key = self._metric_key(name, labels)
+        with self._lock:
+            self._gauges[key] = value
+
     def snapshot(self) -> dict[str, list[MetricSample]]:
         with self._lock:
             counters = [
@@ -93,9 +105,19 @@ class MetricsRegistry:
                 MetricSample(labels=dict(key[1]), value=sum(values) / len(values))
                 for key, values in sorted(self._latencies.items())
             ]
+            gauges = [
+                MetricSample(labels=dict(key[1]), value=value)
+                for key, value in sorted(self._gauges.items())
+            ]
+            histograms = [
+                MetricSample(labels=dict(key[1]), value=sum(values) / len(values))
+                for key, values in sorted(self._histograms.items())
+            ]
         return {
             "threadsense_stage_total": counters,
             "threadsense_stage_seconds_avg": latencies,
+            "threadsense_gauge": gauges,
+            "threadsense_histogram_avg": histograms,
         }
 
     def render_prometheus(self) -> str:
@@ -103,6 +125,8 @@ class MetricsRegistry:
         lines = [
             "# TYPE threadsense_stage_total counter",
             "# TYPE threadsense_stage_seconds_avg gauge",
+            "# TYPE threadsense_gauge gauge",
+            "# TYPE threadsense_histogram_avg histogram",
         ]
         for metric_name, samples in snapshot.items():
             for sample in samples:

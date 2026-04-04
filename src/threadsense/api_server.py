@@ -18,12 +18,14 @@ from threadsense.workflows import (
     RedditConnectorFactory,
     analyze_normalized_thread,
     build_source_registry,
+    diff_analysis_versions,
     fetch_reddit_thread,
     fetch_source_thread,
     infer_analysis,
     normalize_source_thread,
     report_analysis,
     run_source_pipeline,
+    search_corpora,
 )
 from threadsense.workflows import normalize_reddit_thread as normalize_reddit_workflow
 
@@ -123,7 +125,10 @@ def build_handler(dependencies: ServerDependencies) -> type[BaseHTTPRequestHandl
         def _dispatch(self, payload: dict[str, Any], trace: TraceContext) -> dict[str, Any]:
             if self.path == "/v1/fetch/reddit":
                 return fetch_reddit_thread(
-                    config=dependencies.config,
+                    config=cache_config(
+                        dependencies.config,
+                        optional_bool(payload, "no_cache", False),
+                    ),
                     logger=dependencies.logger,
                     trace=trace,
                     url=required_str(payload, "url"),
@@ -135,12 +140,32 @@ def build_handler(dependencies: ServerDependencies) -> type[BaseHTTPRequestHandl
                 ).to_dict()
             if self.path in {"/v1/fetch/hackernews", "/v1/fetch/hn"}:
                 return fetch_source_thread(
-                    config=dependencies.config,
+                    config=cache_config(
+                        dependencies.config,
+                        optional_bool(payload, "no_cache", False),
+                    ),
                     logger=dependencies.logger,
                     trace=trace,
                     url=required_str(payload, "url"),
                     output_path=optional_path(payload, "output_path"),
                     source_name="hackernews",
+                    registry_factory=build_source_registry,
+                    registry=dependencies.registry,
+                ).to_dict()
+            if self.path in {
+                "/v1/fetch/github-discussions",
+                "/v1/fetch/gh-discussions",
+            }:
+                return fetch_source_thread(
+                    config=cache_config(
+                        dependencies.config,
+                        optional_bool(payload, "no_cache", False),
+                    ),
+                    logger=dependencies.logger,
+                    trace=trace,
+                    url=required_str(payload, "url"),
+                    output_path=optional_path(payload, "output_path"),
+                    source_name="github_discussions",
                     registry_factory=build_source_registry,
                     registry=dependencies.registry,
                 ).to_dict()
@@ -163,6 +188,19 @@ def build_handler(dependencies: ServerDependencies) -> type[BaseHTTPRequestHandl
                     registry_factory=build_source_registry,
                     registry=dependencies.registry,
                 ).to_dict()
+            if self.path in {
+                "/v1/normalize/github-discussions",
+                "/v1/normalize/gh-discussions",
+            }:
+                return normalize_source_thread(
+                    config=dependencies.config,
+                    logger=dependencies.logger,
+                    trace=trace,
+                    input_path=required_path(payload, "input_path"),
+                    output_path=optional_path(payload, "output_path"),
+                    registry_factory=build_source_registry,
+                    registry=dependencies.registry,
+                ).to_dict()
             if self.path == "/v1/analyze/normalized":
                 return analyze_normalized_thread(
                     config=dependencies.config,
@@ -171,6 +209,7 @@ def build_handler(dependencies: ServerDependencies) -> type[BaseHTTPRequestHandl
                     input_path=required_path(payload, "input_path"),
                     output_path=optional_path(payload, "output_path"),
                     contract=optional_contract(dependencies.config, payload),
+                    auto_domain=optional_bool(payload, "auto_domain", False),
                     registry=dependencies.registry,
                 ).to_dict()
             if self.path == "/v1/report/analysis":
@@ -197,7 +236,10 @@ def build_handler(dependencies: ServerDependencies) -> type[BaseHTTPRequestHandl
                 ).to_dict()
             if self.path == "/v1/run":
                 return run_source_pipeline(
-                    config=dependencies.config,
+                    config=cache_config(
+                        dependencies.config,
+                        optional_bool(payload, "no_cache", False),
+                    ),
                     logger=dependencies.logger,
                     trace=trace,
                     url=required_str(payload, "url"),
@@ -206,9 +248,21 @@ def build_handler(dependencies: ServerDependencies) -> type[BaseHTTPRequestHandl
                     with_summary=optional_bool(payload, "with_summary", False),
                     summary_required=optional_bool(payload, "summary_required", False),
                     contract=optional_contract(dependencies.config, payload),
+                    auto_domain=optional_bool(payload, "auto_domain", False),
                     registry_factory=build_source_registry,
                     registry=dependencies.registry,
                 ).to_dict()
+            if self.path == "/v1/diff/analysis":
+                return diff_analysis_versions(
+                    analysis_path=required_path(payload, "analysis_path"),
+                    left_version=required_int(payload, "left_version"),
+                    right_version=required_int(payload, "right_version"),
+                )
+            if self.path == "/v1/corpus/search":
+                return search_corpora(
+                    config=dependencies.config,
+                    query=required_str(payload, "query"),
+                )
             raise ApiInputError("API route does not exist", details={"path": self.path})
 
         def _read_json_body(self, max_request_bytes: int) -> dict[str, Any]:
@@ -295,7 +349,22 @@ def optional_source(payload: dict[str, Any]) -> str | None:
         raise ApiInputError("request field is invalid", details={"key": "source"})
     if value == "hn":
         return "hackernews"
+    if value in {"github-discussions", "gh-discussions"}:
+        return "github_discussions"
     return value
+
+
+def required_int(payload: dict[str, Any], key: str) -> int:
+    value = payload.get(key)
+    if not isinstance(value, int):
+        raise ApiInputError("request field is invalid", details={"key": key})
+    return value
+
+
+def cache_config(config: AppConfig, no_cache: bool) -> AppConfig:
+    if not no_cache:
+        return config
+    return config.model_copy(update={"cache": config.cache.model_copy(update={"enabled": False})})
 
 
 def optional_contract(config: AppConfig, payload: dict[str, Any]) -> Any:

@@ -27,6 +27,16 @@ base_url = "https://hacker-news.firebaseio.com/v0"
 timeout_seconds = 15
 request_delay_seconds = 1.0
 
+[github]
+base_url = "https://api.github.com/graphql"
+token = ""
+timeout_seconds = 20
+
+[cache]
+enabled = true
+ttl_seconds = 3600
+cache_dir = ".threadsense/cache"
+
 [storage]
 root_dir = ".threadsense"
 raw_dirname = "raw"
@@ -35,6 +45,8 @@ analysis_dirname = "analysis"
 report_dirname = "reports"
 batch_dirname = "batches"
 corpus_dirname = "corpora"
+index_dirname = "index"
+versioning_enabled = false
 
 [batch]
 max_workers = 2

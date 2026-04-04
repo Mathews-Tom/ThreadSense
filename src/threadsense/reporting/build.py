@@ -22,7 +22,7 @@ def build_thread_report(
     summary_response: InferenceResponse | None,
 ) -> ThreadReport:
     summary = build_executive_summary(analysis, summary_response)
-    caveats = build_caveats(summary_response)
+    caveats = build_caveats(analysis, summary_response)
     report = ThreadReport(
         thread_id=analysis.thread_id,
         source_name=analysis.source_name,
@@ -108,14 +108,18 @@ def build_executive_summary(
     )
 
 
-def build_caveats(summary_response: InferenceResponse | None) -> list[str]:
-    if summary_response is None:
-        return []
+def build_caveats(
+    analysis: ThreadAnalysis,
+    summary_response: InferenceResponse | None,
+) -> list[str]:
     caveats: list[str] = []
-    if summary_response.degraded:
-        caveats.append("Local inference was unavailable; deterministic summary was used.")
-    if summary_response.failure_reason:
-        caveats.append(summary_response.failure_reason)
+    if summary_response is not None:
+        if summary_response.degraded:
+            caveats.append("Local inference was unavailable; deterministic summary was used.")
+        if summary_response.failure_reason:
+            caveats.append(summary_response.failure_reason)
+    if analysis.alignment_check is not None and analysis.alignment_check.warning is not None:
+        caveats.append(analysis.alignment_check.warning)
     return caveats
 
 

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from threadsense.config import AppConfig
 from threadsense.connectors import SourceConnector
+from threadsense.connectors.cache import FetchCache
+from threadsense.connectors.github_discussions import GitHubDiscussionsConnector
 from threadsense.connectors.hackernews import HackerNewsConnector
 from threadsense.connectors.reddit import RedditConnector
 from threadsense.errors import AnalysisBoundaryError
@@ -32,7 +34,14 @@ class SourceRegistry:
 
     def _register_defaults(self, config: AppConfig) -> None:
         enabled = set(config.source_policy.enabled_sources)
+        cache = (
+            FetchCache(config.cache.cache_dir, config.cache.ttl_seconds)
+            if config.cache.enabled
+            else None
+        )
         if "reddit" in enabled:
-            self._connectors["reddit"] = RedditConnector(config.reddit)
+            self._connectors["reddit"] = RedditConnector(config.reddit, cache=cache)
         if "hackernews" in enabled or "hn" in enabled:
-            self._connectors["hackernews"] = HackerNewsConnector(config.hackernews)
+            self._connectors["hackernews"] = HackerNewsConnector(config.hackernews, cache=cache)
+        if "github_discussions" in enabled:
+            self._connectors["github_discussions"] = GitHubDiscussionsConnector(config.github)

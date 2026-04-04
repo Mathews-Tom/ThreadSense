@@ -15,7 +15,14 @@ def test_source_registry_detects_reddit_and_hackernews_urls() -> None:
 
 
 def test_source_registry_registers_enabled_sources() -> None:
-    registry = SourceRegistry(load_config(env={"THREADSENSE_ENABLED_SOURCES": "reddit,hackernews"}))
+    registry = SourceRegistry(
+        load_config(
+            env={
+                "THREADSENSE_ENABLED_SOURCES": "reddit,hackernews,github_discussions",
+            }
+        )
+    )
 
     assert registry.get("reddit").source_name == "reddit"
     assert registry.get("hackernews").source_name == "hackernews"
+    assert registry.get("github_discussions").source_name == "github_discussions"

@@ -18,6 +18,8 @@ def test_build_parser_parses_run_summary_and_contract_flags() -> None:
             "json",
             "--with-summary",
             "--summary-required",
+            "--no-cache",
+            "--auto-domain",
             "--domain",
             "financial_markets",
             "--objective",
@@ -32,6 +34,8 @@ def test_build_parser_parses_run_summary_and_contract_flags() -> None:
     assert args.format == "json"
     assert args.with_summary is True
     assert args.summary_required is True
+    assert args.no_cache is True
+    assert args.auto_domain is True
     assert args.domain == "financial_markets"
     assert args.objective == "competitive_intelligence"
     assert args.abstraction_level == "strategic"
@@ -46,6 +50,7 @@ def test_main_dispatches_fetch_reddit(monkeypatch: pytest.MonkeyPatch) -> None:
         output_path: Path | None,
         expand_more: bool,
         flat: bool,
+        no_cache: bool,
     ) -> int:
         captured.update(
             {
@@ -54,6 +59,7 @@ def test_main_dispatches_fetch_reddit(monkeypatch: pytest.MonkeyPatch) -> None:
                 "output_path": output_path,
                 "expand_more": expand_more,
                 "flat": flat,
+                "no_cache": no_cache,
             }
         )
         return 7
@@ -71,6 +77,7 @@ def test_main_dispatches_fetch_reddit(monkeypatch: pytest.MonkeyPatch) -> None:
             "artifact.json",
             "--expand-more",
             "--flat",
+            "--no-cache",
         ]
     )
 
@@ -81,6 +88,7 @@ def test_main_dispatches_fetch_reddit(monkeypatch: pytest.MonkeyPatch) -> None:
         "output_path": Path("artifact.json"),
         "expand_more": True,
         "flat": True,
+        "no_cache": True,
     }
 
 
@@ -109,6 +117,7 @@ def test_output_format_does_not_collide_with_subcommand_output(
         output_path: Path | None,
         expand_more: bool,
         flat: bool,
+        no_cache: bool,
     ) -> int:
         captured["output_path"] = output_path
         return 0
@@ -219,3 +228,38 @@ def test_build_parser_parses_evaluate_command() -> None:
     assert args.command == "evaluate"
     assert args.golden == Path("tests/golden/manifest.json")
     assert args.strategy == ["keyword_heuristic", "keyword_heuristic"]
+
+
+def test_build_parser_accepts_html_report_and_diff_command() -> None:
+    parser = cli.build_parser()
+
+    report_args = parser.parse_args(
+        ["report", "analysis", "--input", "analysis.json", "--format", "html"]
+    )
+    diff_args = parser.parse_args(
+        [
+            "diff",
+            "--analysis-path",
+            "analysis.json",
+            "--left-version",
+            "1",
+            "--right-version",
+            "2",
+        ]
+    )
+
+    assert report_args.format == "html"
+    assert diff_args.command == "diff"
+    assert diff_args.analysis_path == Path("analysis.json")
+    assert diff_args.left_version == 1
+    assert diff_args.right_version == 2
+
+
+def test_build_parser_parses_corpus_search_command() -> None:
+    parser = cli.build_parser()
+
+    args = parser.parse_args(["corpus", "search", "documentation"])
+
+    assert args.command == "corpus"
+    assert args.corpus_command == "search"
+    assert args.query == "documentation"
