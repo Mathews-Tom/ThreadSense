@@ -34,9 +34,6 @@ from threadsense.reporting import build_thread_report, render_report_markdown
 
 RedditConnectorFactory = Callable[[AppConfig], RedditConnector]
 
-_RUNTIME_LIMITERS: dict[int, threading.BoundedSemaphore] = {}
-_RUNTIME_LIMITERS_LOCK = threading.Lock()
-
 
 def fetch_reddit_thread(
     *,
@@ -335,18 +332,9 @@ def record_runtime_completion(
 
 @contextmanager
 def runtime_slot_limit(concurrency_limit: int) -> Any:
-    limiter = get_runtime_limiter(concurrency_limit)
+    limiter = threading.BoundedSemaphore(concurrency_limit)
     limiter.acquire()
     try:
         yield
     finally:
         limiter.release()
-
-
-def get_runtime_limiter(concurrency_limit: int) -> threading.BoundedSemaphore:
-    with _RUNTIME_LIMITERS_LOCK:
-        limiter = _RUNTIME_LIMITERS.get(concurrency_limit)
-        if limiter is None:
-            limiter = threading.BoundedSemaphore(concurrency_limit)
-            _RUNTIME_LIMITERS[concurrency_limit] = limiter
-        return limiter
