@@ -160,7 +160,11 @@ def test_load_domain_vocabulary_matches_default_developer_tools_rules() -> None:
         "onboarding",
         "quickstart",
         "tutorial",
+        "readme",
+        "wiki",
     )
+    assert "architecture" in vocabulary.theme_rules
+    assert "tooling" in vocabulary.theme_rules
     assert vocabulary.issue_markers[:3] == ("bug", "broken", "confusing")
     assert vocabulary.request_fallback_theme == "workflow"
 
