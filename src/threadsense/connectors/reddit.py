@@ -16,12 +16,15 @@ from threadsense.errors import (
     RedditRequestError,
     RedditResponseError,
 )
+from threadsense.schema_utils import SchemaReader
 
 JsonObject = dict[str, Any]
 QueryParams = Mapping[str, str | int | float | bool]
 RedditTransport = Callable[[str, Mapping[str, str], QueryParams, float], Any]
 
 RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+
+_schema = SchemaReader(RedditResponseError, "reddit payload")
 REDDIT_HOST_SUFFIXES = ("reddit.com",)
 MORECHILDREN_URL = "https://www.reddit.com/api/morechildren.json"
 
@@ -257,42 +260,42 @@ def validate_thread_payload(payload: Any) -> list[JsonObject]:
 
 
 def extract_post(post_listing: JsonObject) -> RedditPost:
-    children = nested_list(post_listing, "data", "children")
+    children = _schema.nested_list(post_listing, "data", "children")
     if not children:
         raise RedditResponseError("reddit post listing is empty")
-    post_data = nested_object(children[0], "data")
+    post_data = _schema.nested_object(children[0], "data")
     return RedditPost(
-        id=required_str(post_data, "id"),
-        title=required_str(post_data, "title"),
-        subreddit=optional_str(post_data, "subreddit", default=""),
-        author=optional_str(post_data, "author", default="[deleted]"),
-        permalink=f"https://reddit.com{optional_str(post_data, 'permalink', default='')}",
-        num_comments=optional_int(post_data, "num_comments", default=0),
+        id=_schema.required_str(post_data, "id"),
+        title=_schema.required_str(post_data, "title"),
+        subreddit=_schema.optional_str(post_data, "subreddit", ""),
+        author=_schema.optional_str(post_data, "author", "[deleted]"),
+        permalink=f"https://reddit.com{_schema.optional_str(post_data, 'permalink', '')}",
+        num_comments=_schema.optional_int(post_data, "num_comments", 0),
     )
 
 
 def extract_comment_listing(comment_listing: JsonObject) -> list[JsonObject]:
-    return nested_list(comment_listing, "data", "children")
+    return _schema.nested_list(comment_listing, "data", "children")
 
 
 def extract_morechildren_things(payload: Any) -> list[JsonObject]:
     if not isinstance(payload, dict):
         raise RedditResponseError("morechildren payload must be an object")
-    return nested_list(payload, "json", "data", "things")
+    return _schema.nested_list(payload, "json", "data", "things")
 
 
 def collect_more_ids(children: list[JsonObject]) -> tuple[list[RedditComment], list[str]]:
     comments: list[RedditComment] = []
     more_ids: list[str] = []
     for child in children:
-        kind = required_str(child, "kind")
+        kind = _schema.required_str(child, "kind")
         if kind == "t1":
             parsed_comment = parse_comment(child, depth=0)
             if parsed_comment is not None:
                 comments.append(parsed_comment)
             continue
         if kind == "more":
-            for child_id in nested_list(child, "data", "children"):
+            for child_id in _schema.nested_list(child, "data", "children"):
                 if not isinstance(child_id, str):
                     raise RedditResponseError("morechildren child IDs must be strings")
                 more_ids.append(child_id)
@@ -300,35 +303,35 @@ def collect_more_ids(children: list[JsonObject]) -> tuple[list[RedditComment], l
 
 
 def parse_comment(raw_comment: JsonObject, depth: int = 0) -> RedditComment | None:
-    data = nested_object(raw_comment, "data")
-    body = optional_str(data, "body", default="")
+    data = _schema.nested_object(raw_comment, "data")
+    body = _schema.optional_str(data, "body", "")
     if body in {"", "[deleted]", "[removed]"}:
         return None
 
     replies = data.get("replies", "")
     reply_children: list[JsonObject] = []
     if isinstance(replies, dict):
-        reply_children = nested_list(replies, "data", "children")
+        reply_children = _schema.nested_list(replies, "data", "children")
     elif replies not in {"", None}:
         raise RedditResponseError("reddit replies payload must be a listing object or empty string")
 
     parsed_replies: list[RedditComment] = []
     for child in reply_children:
-        kind = required_str(child, "kind")
+        kind = _schema.required_str(child, "kind")
         if kind != "t1":
             continue
         reply = parse_comment(child, depth=depth + 1)
         if reply is not None:
             parsed_replies.append(reply)
     return RedditComment(
-        id=required_str(data, "id"),
-        author=optional_str(data, "author", default="[deleted]"),
+        id=_schema.required_str(data, "id"),
+        author=_schema.optional_str(data, "author", "[deleted]"),
         body=body,
-        score=optional_int(data, "score", default=0),
-        created_utc=optional_float(data, "created_utc", default=0.0),
+        score=_schema.optional_int(data, "score", 0),
+        created_utc=_schema.optional_float(data, "created_utc", 0.0),
         depth=depth,
-        parent_id=optional_str(data, "parent_id", default=""),
-        permalink=f"https://reddit.com{optional_str(data, 'permalink', default='')}",
+        parent_id=_schema.optional_str(data, "parent_id", ""),
+        permalink=f"https://reddit.com{_schema.optional_str(data, 'permalink', '')}",
         replies=tuple(parsed_replies),
     )
 
@@ -346,81 +349,3 @@ def flatten(comments: list[RedditComment]) -> list[RedditComment]:
 def write_thread_artifact(path: Path, result: RedditThreadResult) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(result.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
-
-
-def nested_object(payload: Mapping[str, Any], *keys: str) -> JsonObject:
-    current: Any = payload
-    for key in keys:
-        if not isinstance(current, dict):
-            raise RedditResponseError(
-                "reddit payload object boundary is invalid",
-                details={"key": key},
-            )
-        current = current.get(key)
-    if not isinstance(current, dict):
-        raise RedditResponseError(
-            "reddit payload object boundary is invalid",
-            details={"keys": list(keys)},
-        )
-    return current
-
-
-def nested_list(payload: Mapping[str, Any], *keys: str) -> list[Any]:
-    current: Any = payload
-    for key in keys:
-        if not isinstance(current, dict):
-            raise RedditResponseError(
-                "reddit payload list boundary is invalid",
-                details={"key": key},
-            )
-        current = current.get(key)
-    if not isinstance(current, list):
-        raise RedditResponseError(
-            "reddit payload list boundary is invalid",
-            details={"keys": list(keys)},
-        )
-    return current
-
-
-def required_str(payload: Mapping[str, Any], key: str) -> str:
-    value = payload.get(key)
-    if not isinstance(value, str) or not value:
-        raise RedditResponseError(
-            "reddit payload string field is missing",
-            details={"key": key},
-        )
-    return value
-
-
-def optional_str(payload: Mapping[str, Any], key: str, default: str) -> str:
-    value = payload.get(key, default)
-    if value is None:
-        return default
-    if not isinstance(value, str):
-        raise RedditResponseError(
-            "reddit payload string field has invalid type",
-            details={"key": key},
-        )
-    return value
-
-
-def optional_int(payload: Mapping[str, Any], key: str, default: int) -> int:
-    value = payload.get(key, default)
-    if not isinstance(value, int):
-        raise RedditResponseError(
-            "reddit payload integer field has invalid type",
-            details={"key": key},
-        )
-    return value
-
-
-def optional_float(payload: Mapping[str, Any], key: str, default: float) -> float:
-    value = payload.get(key, default)
-    if isinstance(value, int):
-        return float(value)
-    if not isinstance(value, float):
-        raise RedditResponseError(
-            "reddit payload float field has invalid type",
-            details={"key": key},
-        )
-    return value
