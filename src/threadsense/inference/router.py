@@ -12,7 +12,13 @@ from threadsense.models.analysis import ThreadAnalysis
 
 
 class InferenceClient(Protocol):
-    def complete(self, request: InferenceRequest) -> InferenceResponse: ...
+    def complete(
+        self,
+        request: InferenceRequest,
+        opener: Any = ...,
+        *,
+        analysis: ThreadAnalysis | None = ...,
+    ) -> InferenceResponse: ...
 
 
 InferenceClientFactory = Callable[[AppConfig], InferenceClient]
@@ -48,7 +54,7 @@ class InferenceRouter:
         )
 
         try:
-            return self._client_factory(self._config).complete(request)
+            return self._client_factory(self._config).complete(request, analysis=analysis)
         except (InferenceBoundaryError, NetworkBoundaryError, SchemaBoundaryError) as error:
             if required:
                 raise

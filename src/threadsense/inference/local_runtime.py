@@ -4,7 +4,7 @@ import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from time import perf_counter
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib import error, request
 
 from threadsense.config import RuntimeConfig
@@ -15,6 +15,9 @@ from threadsense.inference.contracts import (
     InferenceResponse,
     validate_task_output,
 )
+
+if TYPE_CHECKING:
+    from threadsense.models.analysis import ThreadAnalysis
 
 JsonObject = dict[str, Any]
 JsonRequest = Callable[[str, JsonObject, float], tuple[int, JsonObject]]
@@ -123,6 +126,8 @@ class LocalRuntimeClient:
         self,
         inference_request: InferenceRequest,
         opener: JsonRequest | None = None,
+        *,
+        analysis: ThreadAnalysis | None = None,
     ) -> InferenceResponse:
         request_fn = opener or send_json_request
         messages = list(inference_request.messages)
@@ -140,6 +145,7 @@ class LocalRuntimeClient:
                 output = validate_task_output(
                     inference_request.task,
                     parse_structured_output(content),
+                    analysis=analysis,
                 )
             except SchemaBoundaryError:
                 if attempt >= inference_request.repair_retries:
