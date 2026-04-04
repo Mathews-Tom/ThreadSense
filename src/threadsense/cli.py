@@ -36,8 +36,10 @@ from threadsense.preflight import DiagnosticCheck, run_diagnostic_checks
 from threadsense.workflows import (
     analyze_corpus,
     analyze_normalized_thread,
+    build_fetch_cache,
     build_source_registry,
     create_corpus,
+    diff_analysis_versions,
     evaluate_golden_dataset,
     fetch_reddit_thread,
     fetch_source_thread,
@@ -49,6 +51,7 @@ from threadsense.workflows import (
     report_corpus,
     run_reddit_pipeline,
     run_source_pipeline,
+    search_corpora,
 )
 
 
@@ -74,6 +77,22 @@ def _add_report_summary_arguments(parser: argparse.ArgumentParser) -> None:
         "--summary-required",
         action="store_true",
         help="Fail instead of falling back when local summary generation is unavailable.",
+    )
+
+
+def _add_no_cache_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Bypass the fetch cache for this command.",
+    )
+
+
+def _add_auto_domain_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--auto-domain",
+        action="store_true",
+        help="Select the analysis domain from thread content before analysis.",
     )
 
 
@@ -129,6 +148,7 @@ def _build_fetch_parser(subparsers: argparse._SubParsersAction[argparse.Argument
         help="Raw artifact output path. Defaults to the configured raw store path.",
     )
     _add_config_argument(reddit_parser)
+    _add_no_cache_argument(reddit_parser)
     reddit_parser.add_argument(
         "--expand-more",
         action="store_true",
@@ -152,6 +172,21 @@ def _build_fetch_parser(subparsers: argparse._SubParsersAction[argparse.Argument
         help="Raw artifact output path. Defaults to the configured raw store path.",
     )
     _add_config_argument(hn_parser)
+    _add_no_cache_argument(hn_parser)
+    gh_parser = fetch_subparsers.add_parser(
+        "github-discussions",
+        aliases=["gh-discussions"],
+        help="Fetch one GitHub Discussions thread.",
+    )
+    gh_parser.add_argument("url", help="Full GitHub Discussions URL")
+    gh_parser.add_argument(
+        "--output",
+        "-o",
+        type=Path,
+        help="Raw artifact output path. Defaults to the configured raw store path.",
+    )
+    _add_config_argument(gh_parser)
+    _add_no_cache_argument(gh_parser)
 
 
 def _build_normalize_parser(
@@ -197,6 +232,24 @@ def _build_normalize_parser(
         help="Normalized artifact output path. Defaults to the configured normalized store path.",
     )
     _add_config_argument(normalize_hn_parser)
+    normalize_gh_parser = normalize_subparsers.add_parser(
+        "github-discussions",
+        aliases=["gh-discussions"],
+        help="Normalize one GitHub Discussions raw artifact.",
+    )
+    normalize_gh_parser.add_argument(
+        "--input",
+        type=Path,
+        required=True,
+        help="Raw GitHub Discussions artifact path.",
+    )
+    normalize_gh_parser.add_argument(
+        "--output",
+        "-o",
+        type=Path,
+        help="Normalized artifact output path. Defaults to the configured normalized store path.",
+    )
+    _add_config_argument(normalize_gh_parser)
 
 
 def _build_analyze_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -222,6 +275,7 @@ def _build_analyze_parser(subparsers: argparse._SubParsersAction[argparse.Argume
         help="Analysis artifact output path. Defaults to the configured analysis store path.",
     )
     _add_contract_arguments(analyze_normalized_parser)
+    _add_auto_domain_argument(analyze_normalized_parser)
     _add_config_argument(analyze_normalized_parser)
 
 
@@ -313,7 +367,7 @@ def _build_report_parser(subparsers: argparse._SubParsersAction[argparse.Argumen
     )
     report_analysis_parser.add_argument(
         "--format",
-        choices=["markdown", "json"],
+        choices=["markdown", "html", "json"],
         default="markdown",
         help="Report output format.",
     )
@@ -340,6 +394,31 @@ def _build_replay_parser(subparsers: argparse._SubParsersAction[argparse.Argumen
         type=Path,
         required=True,
         help="Analysis artifact path.",
+    )
+
+
+def _build_diff_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    diff_parser = subparsers.add_parser(
+        "diff",
+        help="Compare two persisted analysis versions for one thread.",
+    )
+    diff_parser.add_argument(
+        "--analysis-path",
+        type=Path,
+        required=True,
+        help="Logical analysis artifact path used for versioned storage.",
+    )
+    diff_parser.add_argument(
+        "--left-version",
+        type=int,
+        required=True,
+        help="Older analysis version number.",
+    )
+    diff_parser.add_argument(
+        "--right-version",
+        type=int,
+        required=True,
+        help="Newer analysis version number.",
     )
 
 
@@ -374,7 +453,7 @@ def _build_corpus_parser(subparsers: argparse._SubParsersAction[argparse.Argumen
     )
     corpus_create_parser.add_argument(
         "--source",
-        choices=["reddit", "hackernews"],
+        choices=["reddit", "hackernews", "github_discussions"],
         help="Optional source filter.",
     )
     corpus_create_parser.add_argument(
@@ -421,6 +500,13 @@ def _build_corpus_parser(subparsers: argparse._SubParsersAction[argparse.Argumen
     )
     _add_report_summary_arguments(corpus_report_parser)
     _add_config_argument(corpus_report_parser)
+
+    corpus_search_parser = corpus_subparsers.add_parser(
+        "search",
+        help="Search the persisted corpus index.",
+    )
+    corpus_search_parser.add_argument("query", help="Search query.")
+    _add_config_argument(corpus_search_parser)
 
 
 def _build_evaluate_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -508,12 +594,14 @@ def _build_run_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPa
     )
     run_parser.add_argument(
         "--format",
-        choices=["markdown", "json"],
+        choices=["markdown", "html", "json"],
         default="markdown",
         help="Final report output format.",
     )
+    _add_no_cache_argument(run_parser)
     _add_report_summary_arguments(run_parser)
     _add_contract_arguments(run_parser)
+    _add_auto_domain_argument(run_parser)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -534,6 +622,7 @@ def build_parser() -> argparse.ArgumentParser:
     _build_infer_parser(subparsers)
     _build_report_parser(subparsers)
     _build_replay_parser(subparsers)
+    _build_diff_parser(subparsers)
     _build_corpus_parser(subparsers)
     _build_evaluate_parser(subparsers)
     _build_batch_parser(subparsers)
@@ -597,11 +686,17 @@ def run_preflight(config_path: Path | None, skip_runtime: bool) -> int:
 
 
 def build_reddit_connector(config: AppConfig) -> RedditConnector:
-    return RedditConnector(config.reddit)
+    return RedditConnector(config.reddit, cache=build_fetch_cache(config))
 
 
 def build_hackernews_connector(config: AppConfig) -> HackerNewsConnector:
-    return HackerNewsConnector(config.hackernews)
+    return HackerNewsConnector(config.hackernews, cache=build_fetch_cache(config))
+
+
+def disable_cache(config: AppConfig, no_cache: bool) -> AppConfig:
+    if not no_cache:
+        return config
+    return config.model_copy(update={"cache": config.cache.model_copy(update={"enabled": False})})
 
 
 def resolve_contract_from_args(
@@ -632,8 +727,10 @@ def run_reddit_fetch(
     output_path: Path | None,
     expand_more: bool,
     flat: bool,
+    no_cache: bool,
 ) -> int:
     logger, config = load_cli_context(config_path)
+    config = disable_cache(config, no_cache)
     payload = fetch_reddit_thread(
         config=config,
         logger=logger,
@@ -643,6 +740,28 @@ def run_reddit_fetch(
         expand_more=expand_more,
         flat=flat,
         connector_factory=build_reddit_connector,
+    )
+    emit_payload(payload.to_dict())
+    return 0
+
+
+def run_source_fetch(
+    config_path: Path | None,
+    url: str,
+    output_path: Path | None,
+    source_name: str,
+    no_cache: bool,
+) -> int:
+    logger, config = load_cli_context(config_path)
+    config = disable_cache(config, no_cache)
+    payload = fetch_source_thread(
+        config=config,
+        logger=logger,
+        trace=cli_trace("cli-fetch"),
+        url=url,
+        output_path=output_path,
+        source_name=source_name,
+        registry_factory=build_source_registry,
     )
     emit_payload(payload.to_dict())
     return 0
@@ -690,6 +809,7 @@ def run_normalized_analyze(
     domain: str | None,
     objective: str | None,
     abstraction_level: str | None,
+    auto_domain: bool,
 ) -> int:
     logger, config = load_cli_context(config_path)
     contract = resolve_contract_from_args(config, domain, objective, abstraction_level)
@@ -700,6 +820,7 @@ def run_normalized_analyze(
         input_path=input_path,
         output_path=output_path,
         contract=contract,
+        auto_domain=auto_domain,
     )
     emit_payload(payload.to_dict())
     return 0
@@ -978,6 +1099,15 @@ def run_corpus_report(
     return 0 if not summary_required or not payload.degraded_summary else 1
 
 
+def run_corpus_search(
+    config_path: Path | None,
+    query: str,
+) -> int:
+    _logger, config = load_cli_context(config_path)
+    emit_payload(search_corpora(config=config, query=query))
+    return 0
+
+
 def run_evaluate(
     config_path: Path | None,
     golden_path: Path,
@@ -1012,9 +1142,12 @@ def run_reddit_end_to_end(
     report_format: str,
     with_summary: bool,
     summary_required: bool,
+    no_cache: bool,
+    auto_domain: bool,
     contract: AnalysisContract | None = None,
 ) -> int:
     logger, config = load_cli_context(config_path)
+    config = disable_cache(config, no_cache)
     with status("Running Reddit workflow"):
         payload = run_reddit_pipeline(
             config=config,
@@ -1027,6 +1160,7 @@ def run_reddit_end_to_end(
             with_summary=with_summary,
             summary_required=summary_required,
             contract=contract,
+            auto_domain=auto_domain,
             connector_factory=build_reddit_connector,
         )
     emit_payload(payload.to_dict())
@@ -1041,11 +1175,14 @@ def run_source_end_to_end(
     report_format: str,
     with_summary: bool,
     summary_required: bool,
+    no_cache: bool,
     domain: str | None,
     objective: str | None,
     abstraction_level: str | None,
+    auto_domain: bool,
 ) -> int:
     logger, config = load_cli_context(config_path)
+    config = disable_cache(config, no_cache)
     source_name, url = parse_run_target(target)
     contract = resolve_contract_from_args(config, domain, objective, abstraction_level)
     if source_name == "reddit":
@@ -1057,6 +1194,8 @@ def run_source_end_to_end(
             report_format=report_format,
             with_summary=with_summary,
             summary_required=summary_required,
+            no_cache=no_cache,
+            auto_domain=auto_domain,
             contract=contract,
         )
     with status("Running workflow"):
@@ -1070,9 +1209,26 @@ def run_source_end_to_end(
             with_summary=with_summary,
             summary_required=summary_required,
             contract=contract,
+            auto_domain=auto_domain,
             registry_factory=build_source_registry,
         )
     emit_payload(payload.to_dict())
+    return 0
+
+
+def run_analysis_diff(
+    analysis_path: Path,
+    left_version: int,
+    right_version: int,
+) -> int:
+    configure_logging(level=cli_log_level())
+    emit_payload(
+        diff_analysis_versions(
+            analysis_path=analysis_path,
+            left_version=left_version,
+            right_version=right_version,
+        )
+    )
     return 0
 
 
@@ -1080,7 +1236,11 @@ def parse_run_target(target: list[str]) -> tuple[str | None, str]:
     if len(target) == 1:
         return None, target[0]
     if len(target) == 2:
-        source_name = "hackernews" if target[0] in {"hn", "hackernews"} else target[0]
+        source_name = target[0]
+        if source_name in {"hn", "hackernews"}:
+            source_name = "hackernews"
+        if source_name in {"github-discussions", "gh-discussions"}:
+            source_name = "github_discussions"
         return source_name, target[1]
     raise _CommandDispatchError("run")
 
@@ -1103,27 +1263,31 @@ def _dispatch_command(args: argparse.Namespace) -> int:
                 output_path=args.output,
                 expand_more=args.expand_more,
                 flat=args.flat,
+                no_cache=args.no_cache,
             )
         case ("fetch", "hn" | "hackernews", _, _, _):
-            logger, config = load_cli_context(args.config)
-            payload = fetch_source_thread(
-                config=config,
-                logger=logger,
-                trace=cli_trace("cli-fetch"),
+            return run_source_fetch(
+                config_path=args.config,
                 url=args.url,
                 output_path=args.output,
                 source_name="hackernews",
-                registry_factory=build_source_registry,
+                no_cache=args.no_cache,
             )
-            emit_payload(payload.to_dict())
-            return 0
+        case ("fetch", "github-discussions" | "gh-discussions", _, _, _):
+            return run_source_fetch(
+                config_path=args.config,
+                url=args.url,
+                output_path=args.output,
+                source_name="github_discussions",
+                no_cache=args.no_cache,
+            )
         case ("normalize", "reddit", _, _, _):
             return run_reddit_normalize(
                 config_path=args.config,
                 input_path=args.input,
                 output_path=args.output,
             )
-        case ("normalize", "hn" | "hackernews", _, _, _):
+        case ("normalize", "hn" | "hackernews" | "github-discussions" | "gh-discussions", _, _, _):
             return run_source_normalize(
                 config_path=args.config,
                 input_path=args.input,
@@ -1137,6 +1301,7 @@ def _dispatch_command(args: argparse.Namespace) -> int:
                 domain=args.domain,
                 objective=args.objective,
                 abstraction_level=args.abstraction_level,
+                auto_domain=args.auto_domain,
             )
         case ("inspect", _, "normalized", _, _):
             return run_normalized_inspect(args.input)
@@ -1168,6 +1333,12 @@ def _dispatch_command(args: argparse.Namespace) -> int:
             )
         case ("replay", _, _, _, _):
             return run_replay(args.analysis_artifact)
+        case ("diff", _, _, _, _):
+            return run_analysis_diff(
+                analysis_path=args.analysis_path,
+                left_version=args.left_version,
+                right_version=args.right_version,
+            )
         case ("corpus", _, _, _, "create"):
             return run_corpus_create(
                 config_path=args.config,
@@ -1191,6 +1362,11 @@ def _dispatch_command(args: argparse.Namespace) -> int:
                 output_path=args.output,
                 with_summary=args.with_summary,
                 summary_required=args.summary_required,
+            )
+        case ("corpus", _, _, _, "search"):
+            return run_corpus_search(
+                config_path=args.config,
+                query=args.query,
             )
         case ("evaluate", _, _, _, _):
             return run_evaluate(
@@ -1219,9 +1395,11 @@ def _dispatch_command(args: argparse.Namespace) -> int:
                 report_format=args.format,
                 with_summary=args.with_summary,
                 summary_required=args.summary_required,
+                no_cache=args.no_cache,
                 domain=args.domain,
                 objective=args.objective,
                 abstraction_level=args.abstraction_level,
+                auto_domain=args.auto_domain,
             )
         case _:
             raise _CommandDispatchError(args.command)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from html import escape
 
 from threadsense.models.report import ThreadReport
 
@@ -78,3 +79,115 @@ def render_report_markdown(report: ThreadReport) -> str:
     else:
         lines.append("- No quality issues detected.")
     return "\n".join(lines).strip() + "\n"
+
+
+def render_report_html(report: ThreadReport) -> str:
+    finding_cards = []
+    for finding in report.findings:
+        quotes = "".join(
+            (
+                f'<li><a href="{escape(quote.permalink)}">{escape(quote.comment_id)}</a> '
+                f"<strong>{escape(quote.author)}</strong>: {escape(quote.body_excerpt)}</li>"
+            )
+            for quote in finding.quotes
+        )
+        finding_cards.append(
+            f"""
+            <details class="finding-card">
+              <summary>
+                {escape(finding.theme_label.title())}
+                <span class="severity">{escape(finding.severity)}</span>
+              </summary>
+              <p><strong>Comments:</strong> {finding.comment_count}</p>
+              <p>
+                <strong>Evidence IDs:</strong>
+                {escape(", ".join(finding.evidence_comment_ids))}
+              </p>
+              <p>
+                <strong>Key Phrases:</strong>
+                {escape(", ".join(finding.key_phrases) or "None")}
+              </p>
+              <ul>{quotes or "<li>No quotes.</li>"}</ul>
+            </details>
+            """
+        )
+    caveats = "".join(f"<li>{escape(caveat)}</li>" for caveat in report.caveats) or "<li>None.</li>"
+    next_steps = (
+        "".join(f"<li>{escape(step)}</li>" for step in report.executive_summary.next_steps)
+        or "<li>None.</li>"
+    )
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{escape(report.title)}</title>
+  <style>
+    :root {{
+      --bg:#f5f1e8; --panel:#fffaf1; --ink:#1d1d1d; --accent:#8b4513; --muted:#665e52;
+    }}
+    body {{
+      margin:0;
+      font-family: Georgia, 'Iowan Old Style', serif;
+      background:linear-gradient(180deg,#f0e7d8,#faf5ec);
+      color:var(--ink);
+    }}
+    main {{ max-width:960px; margin:0 auto; padding:32px 20px 60px; }}
+    .hero {{
+      padding:24px;
+      background:rgba(255,250,241,.88);
+      border:1px solid #d7c6aa;
+      border-radius:18px;
+      box-shadow:0 10px 30px rgba(0,0,0,.06);
+    }}
+    .finding-card {{
+      background:var(--panel);
+      border:1px solid #d7c6aa;
+      border-radius:14px;
+      padding:14px 16px;
+      margin:14px 0;
+    }}
+    .severity {{ color:var(--accent); font-weight:700; margin-left:10px; }}
+    .grid {{
+      display:grid;
+      grid-template-columns:repeat(auto-fit,minmax(180px,1fr));
+      gap:12px;
+      margin:20px 0;
+    }}
+    .metric {{
+      background:var(--panel);
+      border:1px solid #d7c6aa;
+      border-radius:12px;
+      padding:12px;
+    }}
+    ul {{ padding-left:20px; }}
+  </style>
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <h1>{escape(report.title)}</h1>
+      <p><strong>{escape(report.executive_summary.headline)}</strong></p>
+      <p>{escape(report.executive_summary.summary)}</p>
+      <div class="grid">
+        <div class="metric">
+          <strong>Top Phrases</strong><br>{escape(", ".join(report.top_phrases) or "None")}
+        </div>
+        <div class="metric">
+          <strong>Reply Chains</strong><br>{report.conversation_structure.reply_chain_count}
+        </div>
+        <div class="metric">
+          <strong>Controversy</strong><br>{report.conversation_structure.controversy_count}
+        </div>
+        <div class="metric">
+          <strong>Consensus</strong><br>{report.conversation_structure.consensus_count}
+        </div>
+      </div>
+    </section>
+    <section><h2>Next Steps</h2><ul>{next_steps}</ul></section>
+    <section><h2>Findings</h2>{"".join(finding_cards)}</section>
+    <section><h2>Caveats</h2><ul>{caveats}</ul></section>
+  </main>
+</body>
+</html>
+"""
