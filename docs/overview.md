@@ -6,7 +6,7 @@
 
 ThreadSense is a discussion-intelligence system for extracting structured signals from long-form community conversations. The current repository contains an MVP ingestion path centered on Reddit comment retrieval. The long-term product is a full pipeline that starts with thread discovery, normalizes conversation structure, scores relevance, extracts repeated signals, and emits reports that teams can use for product, market, and competitive decisions.
 
-The reference implementation in [`.docs/reddit_scraper.py`](/Users/druk/WorkSpace/AetherForge/ThreadSense/.docs/reddit_scraper.py) is the anchor for the current design. It is not a generic vision document. It is the concrete baseline the rest of the system should extend.
+The reference implementation in [`.docs/reddit_scraper.py`](.docs/reddit_scraper.py) is the anchor for the current design. It is not a generic vision document. It is the concrete baseline the rest of the system should extend.
 
 ## What Exists Today
 

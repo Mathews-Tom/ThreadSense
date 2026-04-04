@@ -130,7 +130,7 @@ uv run threadsense infer analysis \
   [--config threadsense.toml]
 ```
 
-Current tasks come from the inference contract in [src/threadsense/inference/contracts.py](/Users/druk/WorkSpace/AetherForge/ThreadSense/src/threadsense/inference/contracts.py).
+Current tasks come from the inference contract in [src/threadsense/inference/contracts.py](src/threadsense/inference/contracts.py).
 
 Behavior:
 
@@ -193,7 +193,7 @@ uv run threadsense batch run \
   [--config threadsense.toml]
 ```
 
-The manifest shape is documented in [docs/batch-api-runtime.md](/Users/druk/WorkSpace/AetherForge/ThreadSense/docs/batch-api-runtime.md).
+The manifest shape is documented in [docs/batch-api-runtime.md](docs/batch-api-runtime.md).
 
 Without `--output`, the batch artifact is written to:
 
@@ -232,7 +232,7 @@ Important:
 
 Default config file:
 
-- [threadsense.toml](/Users/druk/WorkSpace/AetherForge/ThreadSense/threadsense.toml)
+- [threadsense.toml](threadsense.toml)
 
 Important config sections:
 
@@ -288,7 +288,7 @@ uv run pytest
 
 ## Related Docs
 
-- [README.md](/Users/druk/WorkSpace/AetherForge/ThreadSense/README.md)
-- [docs/local-runtime-contract.md](/Users/druk/WorkSpace/AetherForge/ThreadSense/docs/local-runtime-contract.md)
-- [docs/batch-api-runtime.md](/Users/druk/WorkSpace/AetherForge/ThreadSense/docs/batch-api-runtime.md)
-- [.docs/2026-04-04-system-enhancement-analysis.md](/Users/druk/WorkSpace/AetherForge/ThreadSense/.docs/2026-04-04-system-enhancement-analysis.md)
+- [README.md](README.md)
+- [docs/local-runtime-contract.md](docs/local-runtime-contract.md)
+- [docs/batch-api-runtime.md](docs/batch-api-runtime.md)
+- [.docs/2026-04-04-system-enhancement-analysis.md](.docs/2026-04-04-system-enhancement-analysis.md)
