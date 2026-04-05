@@ -30,6 +30,7 @@ from threadsense.pipeline.strategies.keyword_heuristic import (
     clean_text,
     decompose_catch_all,
     extract_top_phrases,
+    is_noise_signal,
     score_severity,
     select_representative_quotes,
 )
@@ -499,3 +500,43 @@ def test_decompose_catch_all_preserves_remainder_in_default() -> None:
 
     has_remainder = any(key == "general_feedback" for key, _ in result)
     assert has_remainder
+
+
+# ---------------------------------------------------------------------------
+# Noise filter
+# ---------------------------------------------------------------------------
+
+
+def test_noise_filter_excludes_short_empty_comments() -> None:
+    signal = _make_signal("c1", "ok", 1)
+    assert is_noise_signal(signal) is True
+
+
+def test_noise_filter_preserves_short_comments_with_markers() -> None:
+    signal = _make_signal("c1", "bug in export", 1)
+    assert is_noise_signal(signal) is False
+
+
+def test_noise_filter_detects_reminder_bots() -> None:
+    signal = _make_signal("c1", "RemindMe! 30 days to check this thread", 1)
+    assert is_noise_signal(signal) is True
+
+
+def test_noise_filter_detects_bot_accounts() -> None:
+    signal = _make_signal("c1", "This is a bot account", 1)
+    assert is_noise_signal(signal) is True
+
+
+def test_noise_filter_detects_acknowledgements() -> None:
+    signal = _make_signal("c1", "thanks", 1)
+    assert is_noise_signal(signal) is True
+
+
+def test_noise_filter_preserves_substantive_comments() -> None:
+    signal = _make_signal(
+        "c1",
+        "I have been running something close to what you describe for about a year "
+        "with two Obsidian vaults and a self-hosted Paperless instance",
+        5,
+    )
+    assert is_noise_signal(signal) is False

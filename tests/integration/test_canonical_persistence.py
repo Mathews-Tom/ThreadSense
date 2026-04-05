@@ -126,7 +126,7 @@ def test_end_to_end_fetch_normalize_analyze_and_inspect(
     assert normalized_path.exists()
     assert analysis_path.exists()
     assert inspect_report["thread_id"] == "reddit:abc123"
-    assert inspect_report["distinct_comment_count"] == 3
+    assert inspect_report["distinct_comment_count"] == 2
     assert inspect_report["duplicate_group_count"] == 0
     assert inspect_report["top_findings"]
 
