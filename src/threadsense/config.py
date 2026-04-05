@@ -33,10 +33,10 @@ class RuntimeConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     enabled: bool = True
-    base_url: str = "http://127.0.0.1:8080"
+    base_url: str = "http://127.0.0.1:11434"
     chat_path: str = "/v1/chat/completions"
-    model: str = "local-model"
-    timeout_seconds: float = 90
+    model: str = "gemma4:latest"
+    timeout_seconds: float = 120
     repair_retries: int = 1
     json_mode: bool = False
 
