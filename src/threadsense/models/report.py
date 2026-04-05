@@ -14,7 +14,7 @@ from threadsense.models.analysis import (
 )
 
 REPORT_SCHEMA_VERSION = 1
-REPORT_ENGINE_VERSION = "report-v1"
+REPORT_ENGINE_VERSION = "report-v1.1"
 REPORT_ARTIFACT_KIND = "thread_report"
 
 

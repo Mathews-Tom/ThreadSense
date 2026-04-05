@@ -13,7 +13,7 @@ from threadsense.models.report import (
     ThreadReport,
 )
 from threadsense.pipeline.storage import calculate_sha256
-from threadsense.reporting.quality import run_quality_checks
+from threadsense.reporting.quality import resolve_coverage_gaps, run_quality_checks
 
 
 def build_thread_report(
@@ -54,7 +54,7 @@ def build_thread_report(
         ),
     )
     quality_checks = run_quality_checks(report)
-    return ThreadReport(
+    report = ThreadReport(
         thread_id=report.thread_id,
         source_name=report.source_name,
         title=report.title,
@@ -66,6 +66,7 @@ def build_thread_report(
         quality_checks=quality_checks,
         provenance=report.provenance,
     )
+    return resolve_coverage_gaps(report)
 
 
 def build_executive_summary(

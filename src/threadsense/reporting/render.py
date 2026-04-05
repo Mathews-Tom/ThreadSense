@@ -78,7 +78,32 @@ def render_report_markdown(report: ThreadReport) -> str:
             lines.append(f"- `{check.level}` `{check.code}`: {check.message}")
     else:
         lines.append("- No quality issues detected.")
+    lines.extend(_render_metadata_section(report))
     return "\n".join(lines).strip() + "\n"
+
+
+def _render_metadata_section(report: ThreadReport) -> list[str]:
+    general_feedback_ratio = _compute_general_feedback_ratio(report)
+    lines = [
+        "",
+        "## Metadata",
+        "",
+        f"- Domain: `{report.provenance.report_version}`",
+        f"- Summary Provider: `{report.provenance.summary_provider}`",
+        f"- General Feedback Ratio: `{general_feedback_ratio:.0%}`",
+        f"- Engine: `{report.provenance.report_version}`",
+    ]
+    return lines
+
+
+def _compute_general_feedback_ratio(report: ThreadReport) -> float:
+    total = sum(f.comment_count for f in report.findings)
+    if total == 0:
+        return 0.0
+    feedback = sum(
+        f.comment_count for f in report.findings if f.theme_key.startswith("general_feedback")
+    )
+    return feedback / total
 
 
 def render_report_html(report: ThreadReport) -> str:

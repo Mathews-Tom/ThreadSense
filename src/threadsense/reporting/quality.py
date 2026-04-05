@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from threadsense.models.report import ReportQualityCheck, ThreadReport
+from threadsense.models.report import (
+    ReportExecutiveSummary,
+    ReportQualityCheck,
+    ThreadReport,
+)
 
 
 def run_quality_checks(report: ThreadReport) -> list[ReportQualityCheck]:
@@ -89,3 +93,38 @@ def check_coverage_gaps(report: ThreadReport) -> list[ReportQualityCheck]:
             message=f"Executive summary does not reference: {', '.join(uncovered)}.",
         )
     ]
+
+
+def resolve_coverage_gaps(report: ThreadReport) -> ThreadReport:
+    """Append uncovered themes to next_steps so the report acknowledges all findings."""
+    cited_theme_keys = set(report.executive_summary.cited_theme_keys)
+    uncovered = [
+        finding.theme_key
+        for finding in report.findings
+        if finding.theme_key not in cited_theme_keys
+    ]
+    if not uncovered:
+        return report
+    augmented_steps = list(report.executive_summary.next_steps) + [
+        f"Investigate additional themes: {', '.join(uncovered)}."
+    ]
+    return ThreadReport(
+        thread_id=report.thread_id,
+        source_name=report.source_name,
+        title=report.title,
+        top_phrases=report.top_phrases,
+        executive_summary=ReportExecutiveSummary(
+            headline=report.executive_summary.headline,
+            summary=report.executive_summary.summary,
+            cited_theme_keys=report.executive_summary.cited_theme_keys,
+            cited_comment_ids=report.executive_summary.cited_comment_ids,
+            next_steps=augmented_steps,
+            provider=report.executive_summary.provider,
+            degraded=report.executive_summary.degraded,
+        ),
+        conversation_structure=report.conversation_structure,
+        findings=report.findings,
+        caveats=report.caveats,
+        quality_checks=report.quality_checks,
+        provenance=report.provenance,
+    )

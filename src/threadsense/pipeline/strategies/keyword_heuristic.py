@@ -762,9 +762,18 @@ def representative_comment_id(comment_id: str, duplicate_index: dict[str, str]) 
     return duplicate_index.get(comment_id, comment_id)
 
 
-def representative_quote_sort_key(signal: CommentSignal) -> tuple[int, int, int, str]:
-    weighted_score, text_length, negative_depth, comment_id = rank_comment_signal(signal)
-    return (-weighted_score, -text_length, negative_depth, comment_id)
+_QUOTE_SCORE_CAP = 20
+_QUOTE_LENGTH_CAP = 500
+_QUOTE_TOKEN_CAP = 30
+
+
+def representative_quote_sort_key(signal: CommentSignal) -> tuple[float, int, str]:
+    score_normalized = min(max(signal.comment.score, 0), _QUOTE_SCORE_CAP) / _QUOTE_SCORE_CAP
+    length_normalized = min(len(signal.cleaned_text), _QUOTE_LENGTH_CAP) / _QUOTE_LENGTH_CAP
+    unique_tokens = len(set(signal.tokens) - STOPWORDS)
+    density_normalized = min(unique_tokens, _QUOTE_TOKEN_CAP) / _QUOTE_TOKEN_CAP
+    composite = score_normalized * 0.3 + length_normalized * 0.35 + density_normalized * 0.35
+    return (-composite, -len(signal.cleaned_text), signal.comment.comment_id)
 
 
 def select_representative_quotes(

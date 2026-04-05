@@ -109,3 +109,129 @@ def test_render_report_html_contains_findings_and_caveats(tmp_path: Path) -> Non
     assert "Next Steps" in html
     assert "Findings" in html
     assert "Caveats" in html
+
+
+def test_coverage_gap_auto_resolution_appends_uncovered_themes(tmp_path: Path) -> None:
+    analysis_path = build_analysis_artifact(tmp_path)
+    analysis = load_analysis_artifact_file(analysis_path)
+    summary_response = InferenceResponse(
+        task=InferenceTask.ANALYSIS_SUMMARY,
+        provider="local_openai_compatible",
+        model="local-model",
+        finish_reason="stop",
+        output={
+            "headline": "Performance leads",
+            "summary": "Only performance discussed.",
+            "cited_theme_keys": ["performance"],
+            "cited_comment_ids": ["reddit:c3"],
+            "next_steps": ["Profile search latency"],
+        },
+        used_fallback=False,
+        degraded=False,
+        failure_reason=None,
+    )
+
+    report = build_thread_report(
+        analysis=analysis,
+        analysis_artifact_path=str(analysis_path),
+        summary_response=summary_response,
+    )
+
+    assert any("additional themes" in step.lower() for step in report.executive_summary.next_steps)
+    assert any("documentation" in step for step in report.executive_summary.next_steps)
+    assert any("reliability" in step for step in report.executive_summary.next_steps)
+
+
+def test_coverage_gap_resolution_is_noop_when_all_themes_cited(tmp_path: Path) -> None:
+    analysis_path = build_analysis_artifact(tmp_path)
+    analysis = load_analysis_artifact_file(analysis_path)
+    all_theme_keys = [finding.theme_key for finding in analysis.findings]
+    summary_response = InferenceResponse(
+        task=InferenceTask.ANALYSIS_SUMMARY,
+        provider="local_openai_compatible",
+        model="local-model",
+        finish_reason="stop",
+        output={
+            "headline": "Full coverage",
+            "summary": "All themes covered.",
+            "cited_theme_keys": all_theme_keys,
+            "cited_comment_ids": ["reddit:c1"],
+            "next_steps": ["Done"],
+        },
+        used_fallback=False,
+        degraded=False,
+        failure_reason=None,
+    )
+
+    report = build_thread_report(
+        analysis=analysis,
+        analysis_artifact_path=str(analysis_path),
+        summary_response=summary_response,
+    )
+
+    has_gap_step = any(
+        "additional themes" in step.lower() for step in report.executive_summary.next_steps
+    )
+    assert not has_gap_step
+
+
+def test_render_report_markdown_includes_metadata_section(tmp_path: Path) -> None:
+    analysis_path = build_analysis_artifact(tmp_path)
+    analysis = load_analysis_artifact_file(analysis_path)
+    report = build_thread_report(
+        analysis=analysis,
+        analysis_artifact_path=str(analysis_path),
+        summary_response=None,
+    )
+
+    markdown = render_report_markdown(report)
+
+    assert "## Metadata" in markdown
+    assert "Summary Provider:" in markdown
+    assert "General Feedback Ratio:" in markdown
+
+
+def test_weighted_quote_selection_prefers_dense_comments() -> None:
+    """A longer, token-rich comment with moderate score should rank above a short high-voted one."""
+    from threadsense.models.canonical import AuthorRef, Comment
+    from threadsense.pipeline.strategies.keyword_heuristic import (
+        build_comment_signal,
+        select_representative_quotes,
+    )
+
+    short_high_score = Comment(
+        thread_id="t",
+        comment_id="short",
+        parent_comment_id=None,
+        author=AuthorRef(username="u1", source_author_id=None),
+        body="yes same",
+        score=20,
+        created_utc=1.0,
+        depth=0,
+        permalink="https://example.com/short",
+    )
+    long_moderate_score = Comment(
+        thread_id="t",
+        comment_id="long",
+        parent_comment_id=None,
+        author=AuthorRef(username="u2", source_author_id=None),
+        body=(
+            "I have been running something close to what you describe for about a year. "
+            "Two Obsidian vaults, work and personal. OCR documents from a self-hosted "
+            "Paperless instance. Everything chunked, embedded on a local AMD GPU. "
+            "The architecture uses a knowledge graph with vector embeddings for retrieval."
+        ),
+        score=5,
+        created_utc=2.0,
+        depth=0,
+        permalink="https://example.com/long",
+    )
+    signals = [
+        s
+        for c in [short_high_score, long_moderate_score]
+        if (s := build_comment_signal(c)) is not None
+    ]
+
+    quotes = select_representative_quotes(signals, limit=2)
+
+    assert quotes[0].comment_id == "long"
