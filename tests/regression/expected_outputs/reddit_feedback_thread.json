@@ -1,7 +1,7 @@
 {
   "artifact_kind": "thread_analysis",
   "schema_version": 1,
-  "analysis_version": "hybrid-v1",
+  "analysis_version": "hybrid-v2",
   "analysis": {
     "thread_id": "reddit:analysis123",
     "source_name": "reddit",
@@ -214,15 +214,15 @@
       "normalized_artifact_path": "tests/fixtures/analysis/canonical_feedback_thread.json",
       "normalized_sha256": "820370cf44df8bd0b44529c350f0b706c9387c5017b5a8a34bdfa50fb7b2c2cd",
       "source_thread_id": "analysis123",
-      "analyzed_at_utc": 1775340348.436479,
+      "analyzed_at_utc": 1775355077.157415,
       "schema_version": 1,
-      "analysis_version": "hybrid-v1",
+      "analysis_version": "hybrid-v2",
       "contract": {
         "domain": "developer_tools",
         "objective": "general_survey",
         "abstraction_level": "operational",
         "schema_version": "1.0",
-        "created_at_utc": 1775340348.435966
+        "created_at_utc": 1775355077.1568031
       },
       "contract_schema_version": "1.0"
     }

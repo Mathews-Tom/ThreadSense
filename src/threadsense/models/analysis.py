@@ -17,7 +17,7 @@ from threadsense.schema_utils import SchemaReader
 _schema = SchemaReader(AnalysisBoundaryError, "analysis")
 
 ANALYSIS_SCHEMA_VERSION = 1
-ANALYSIS_ENGINE_VERSION = "hybrid-v1"
+ANALYSIS_ENGINE_VERSION = "hybrid-v2"
 ANALYSIS_ARTIFACT_KIND = "thread_analysis"
 
 
