@@ -359,3 +359,41 @@ def test_render_analysis_payload_includes_thread_context(tmp_path: Path) -> None
     assert len(payload_with["top_comments"]) <= 3
     assert "conversation_structure" in payload_with
     assert payload_with["conversation_structure"]["total_comments"] == 5
+
+
+# ---------------------------------------------------------------------------
+# Reclassification
+# ---------------------------------------------------------------------------
+
+
+def test_reclassification_fallback_when_runtime_disabled() -> None:
+    config = load_config(env={"THREADSENSE_RUNTIME_ENABLED": "false"})
+    thread = load_canonical_thread(Path("tests/fixtures/analysis/canonical_feedback_thread.json"))
+
+    response = InferenceRouter(config).run_reclassification(
+        thread=thread,
+        comment_ids=["reddit:c1"],
+        existing_themes={"performance": ("slow", "lag")},
+    )
+
+    assert response.used_fallback is True
+    assert response.output == {"classifications": []}
+
+
+def test_validate_reclassification_output_normalizes_themes() -> None:
+    payload = validate_task_output(
+        InferenceTask.CATCH_ALL_RECLASSIFICATION,
+        {
+            "classifications": [
+                {"comment_id": "reddit:c1", "theme": "Knowledge Management", "confidence": 0.85},
+                {"comment_id": "reddit:c2", "theme": "general_feedback", "confidence": 0.3},
+                {"comment_id": "", "theme": "valid", "confidence": 0.9},
+            ],
+        },
+    )
+
+    classifications = payload["classifications"]
+    assert len(classifications) == 2
+    assert classifications[0]["theme"] == "knowledge_management"
+    assert classifications[0]["confidence"] == 0.85
+    assert classifications[1]["theme"] == "general_feedback"

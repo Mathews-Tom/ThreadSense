@@ -274,6 +274,62 @@ def build_vocabulary_expansion_request(
     )
 
 
+def build_reclassification_request(
+    thread: Thread,
+    comment_ids: list[str],
+    existing_themes: dict[str, tuple[str, ...]],
+    *,
+    required: bool = False,
+    repair_retries: int = 1,
+) -> InferenceRequest:
+    comment_index = {c.comment_id: c for c in thread.comments}
+    comment_lines = []
+    for cid in comment_ids:
+        comment = comment_index.get(cid)
+        if comment is None:
+            continue
+        comment_lines.append(f"[id={cid}] {comment.body[:300]}")
+    theme_lines = "\n".join(
+        f"  {key}: {', '.join(keywords[:8])}" for key, keywords in existing_themes.items()
+    )
+    return InferenceRequest(
+        task=InferenceTask.CATCH_ALL_RECLASSIFICATION,
+        messages=[
+            InferenceMessage(
+                role="system",
+                content=(
+                    "You classify discussion comments into thematic categories. "
+                    "For each comment, assign it to the most fitting existing theme "
+                    "OR propose a new theme name (lowercase_snake_case) if none fit. "
+                    "Return only valid JSON with key classifications. "
+                    "classifications is a list of objects with "
+                    "comment_id, theme, confidence (0.0-1.0). "
+                    "Assign general_feedback only when the comment "
+                    "genuinely has no thematic content. "
+                    "Do not include markdown fences."
+                ),
+            ),
+            InferenceMessage(
+                role="user",
+                content=(
+                    f"Thread title: {thread.title}\n\n"
+                    f"Existing themes:\n{theme_lines}\n\n"
+                    f"Unclassified comments:\n"
+                    + "\n---\n".join(comment_lines)
+                    + "\n\nClassify each comment."
+                ),
+            ),
+        ],
+        required=required,
+        repair_retries=repair_retries,
+        repair_instruction=(
+            "Return only valid JSON with key classifications. "
+            "Each item must have comment_id (string), theme (lowercase_snake_case string), "
+            "and confidence (float 0.0-1.0)."
+        ),
+    )
+
+
 def render_corpus_payload(corpus: CorpusAnalysis) -> str:
     payload = {
         "corpus_id": corpus.corpus_id,

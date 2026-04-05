@@ -4,10 +4,10 @@ privacy_mode = "local_only"
 
 [runtime]
 enabled = true
-base_url = "http://127.0.0.1:8080"
+base_url = "http://127.0.0.1:11434"
 chat_path = "/v1/chat/completions"
-model = "local-model"
-timeout_seconds = 90
+model = "gemma4:latest"
+timeout_seconds = 120
 repair_retries = 1
 json_mode = false
 

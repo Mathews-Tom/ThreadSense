@@ -22,6 +22,7 @@ from threadsense.contracts import AnalysisContract, DomainType
 from threadsense.domains import DomainVocabulary, load_domain_vocabulary, merge_vocabulary_expansion
 from threadsense.evaluation import compare_strategies, load_golden_dataset
 from threadsense.inference import InferenceResponse, InferenceRouter, InferenceTask
+from threadsense.models.analysis import AnalysisFinding, ThreadAnalysis
 from threadsense.models.canonical import load_canonical_thread
 from threadsense.models.corpus import CorpusAnalysis
 from threadsense.models.results import (
@@ -273,6 +274,7 @@ def analyze_normalized_thread(
             contract=resolved_contract,
             vocabulary=expanded_vocabulary,
         )
+        analysis = _try_reclassification(config, analysis, input_path)
         storage_paths = build_storage_paths(
             config.storage,
             analysis.source_name,
@@ -807,6 +809,161 @@ def build_fetch_cache(config: AppConfig) -> FetchCache | None:
     if not config.cache.enabled:
         return None
     return FetchCache(config.cache.cache_dir, config.cache.ttl_seconds)
+
+
+_RECLASSIFICATION_THRESHOLD = 0.30
+_RECLASSIFICATION_CONFIDENCE = 0.6
+_RECLASSIFICATION_MAX_NEW_THEMES = 5
+
+
+def _try_reclassification(
+    config: AppConfig,
+    analysis: ThreadAnalysis,
+    input_path: Path,
+) -> ThreadAnalysis:
+    """Reclassify general_feedback comments via LLM when the catch-all ratio is high."""
+    if not config.runtime.enabled:
+        return analysis
+    gf_finding = next(
+        (f for f in analysis.findings if f.theme_key == "general_feedback"),
+        None,
+    )
+    if gf_finding is None:
+        return analysis
+    total = max(analysis.distinct_comment_count, 1)
+    if gf_finding.comment_count / total < _RECLASSIFICATION_THRESHOLD:
+        return analysis
+
+    thread = load_normalized_artifact(input_path)
+    existing_themes = {
+        f.theme_key: tuple(f.key_phrases)
+        for f in analysis.findings
+        if f.theme_key != "general_feedback"
+    }
+    response = InferenceRouter(config).run_reclassification(
+        thread=thread,
+        comment_ids=gf_finding.evidence_comment_ids,
+        existing_themes=existing_themes,
+    )
+    if response.degraded or not response.output:
+        return analysis
+    classifications = response.output.get("classifications", [])
+    if not classifications:
+        return analysis
+    return _merge_reclassifications(analysis, classifications)
+
+
+def _merge_reclassifications(
+    analysis: ThreadAnalysis,
+    classifications: list[dict[str, object]],
+) -> ThreadAnalysis:
+    """Move reclassified comments from general_feedback to their assigned themes."""
+    reassigned: dict[str, list[str]] = {}
+    for item in classifications:
+        confidence = float(item.get("confidence", 0.0))
+        if confidence < _RECLASSIFICATION_CONFIDENCE:
+            continue
+        theme = str(item.get("theme", "general_feedback"))
+        if theme == "general_feedback":
+            continue
+        comment_id = str(item.get("comment_id", ""))
+        if not comment_id:
+            continue
+        reassigned.setdefault(theme, []).append(comment_id)
+
+    if not reassigned:
+        return analysis
+
+    # Cap new themes
+    existing_keys = {f.theme_key for f in analysis.findings}
+    new_theme_count = sum(1 for t in reassigned if t not in existing_keys)
+    if new_theme_count > _RECLASSIFICATION_MAX_NEW_THEMES:
+        allowed_new: set[str] = set()
+        for theme in reassigned:
+            if theme in existing_keys:
+                continue
+            if len(allowed_new) >= _RECLASSIFICATION_MAX_NEW_THEMES:
+                break
+            allowed_new.add(theme)
+        reassigned = {
+            t: ids for t, ids in reassigned.items() if t in existing_keys or t in allowed_new
+        }
+
+    all_reassigned_ids = {cid for ids in reassigned.values() for cid in ids}
+    updated_findings: list[AnalysisFinding] = []
+    for finding in analysis.findings:
+        if finding.theme_key == "general_feedback":
+            remaining = [
+                cid for cid in finding.evidence_comment_ids if cid not in all_reassigned_ids
+            ]
+            if remaining:
+                updated_findings.append(
+                    AnalysisFinding(
+                        theme_key=finding.theme_key,
+                        theme_label=finding.theme_label,
+                        severity=finding.severity,
+                        comment_count=len(remaining),
+                        issue_marker_count=finding.issue_marker_count,
+                        request_marker_count=finding.request_marker_count,
+                        key_phrases=finding.key_phrases,
+                        evidence_comment_ids=remaining,
+                        quotes=finding.quotes,
+                    )
+                )
+        else:
+            extra_ids = reassigned.get(finding.theme_key, [])
+            if extra_ids:
+                merged_ids = sorted(set(finding.evidence_comment_ids) | set(extra_ids))
+                updated_findings.append(
+                    AnalysisFinding(
+                        theme_key=finding.theme_key,
+                        theme_label=finding.theme_label,
+                        severity=finding.severity,
+                        comment_count=len(merged_ids),
+                        issue_marker_count=finding.issue_marker_count,
+                        request_marker_count=finding.request_marker_count,
+                        key_phrases=finding.key_phrases,
+                        evidence_comment_ids=merged_ids,
+                        quotes=finding.quotes,
+                    )
+                )
+            else:
+                updated_findings.append(finding)
+
+    # Add new themes from reclassification
+    for theme, comment_ids in reassigned.items():
+        if theme in existing_keys:
+            continue
+        updated_findings.append(
+            AnalysisFinding(
+                theme_key=theme,
+                theme_label=theme.replace("_", " "),
+                severity="low",
+                comment_count=len(comment_ids),
+                issue_marker_count=0,
+                request_marker_count=0,
+                key_phrases=[],
+                evidence_comment_ids=sorted(comment_ids),
+                quotes=[],
+            )
+        )
+
+    return ThreadAnalysis(
+        thread_id=analysis.thread_id,
+        source_name=analysis.source_name,
+        title=analysis.title,
+        total_comments=analysis.total_comments,
+        filtered_comment_count=analysis.filtered_comment_count,
+        distinct_comment_count=analysis.distinct_comment_count,
+        duplicate_group_count=analysis.duplicate_group_count,
+        top_phrases=analysis.top_phrases,
+        conversation_structure=analysis.conversation_structure,
+        findings=updated_findings,
+        duplicate_groups=analysis.duplicate_groups,
+        top_quotes=analysis.top_quotes,
+        alignment_check=analysis.alignment_check,
+        provenance=analysis.provenance,
+    )
 
 
 def _try_vocabulary_expansion(

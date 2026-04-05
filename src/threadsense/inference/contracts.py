@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -18,6 +19,7 @@ class InferenceTask(StrEnum):
     REPORT_SUMMARY = "report_summary"
     CORPUS_SYNTHESIS = "corpus_synthesis"
     VOCABULARY_EXPANSION = "vocabulary_expansion"
+    CATCH_ALL_RECLASSIFICATION = "catch_all_reclassification"
 
 
 @dataclass(frozen=True)
@@ -75,6 +77,8 @@ def validate_task_output(
         return validate_corpus_synthesis_output(payload, corpus)
     if task is InferenceTask.VOCABULARY_EXPANSION:
         return validate_vocabulary_expansion_output(payload)
+    if task is InferenceTask.CATCH_ALL_RECLASSIFICATION:
+        return validate_reclassification_output(payload)
     raise SchemaBoundaryError("inference task validator is missing", details={"task": task.value})
 
 
@@ -232,6 +236,42 @@ def _normalize_keyword_map(
             str(k).strip().lower() for k in keywords if isinstance(k, str) and k.strip()
         ][:max_per_theme]
     return normalized
+
+
+_RECLASSIFICATION_THEME_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
+_RECLASSIFICATION_MAX_NEW_THEMES = 5
+_RECLASSIFICATION_MIN_CONFIDENCE = 0.6
+
+
+def validate_reclassification_output(payload: Mapping[str, Any]) -> dict[str, Any]:
+    classifications = payload.get("classifications")
+    if not isinstance(classifications, list):
+        raise SchemaBoundaryError("reclassification output must include classifications list")
+    normalized: list[dict[str, Any]] = []
+    for item in classifications:
+        if not isinstance(item, dict):
+            continue
+        comment_id = str(item.get("comment_id", "")).strip()
+        if not comment_id:
+            continue
+        raw_theme = str(item.get("theme", "general_feedback")).strip().lower()
+        theme = re.sub(r"[^a-z0-9_]", "_", raw_theme).strip("_")
+        if not theme or not _RECLASSIFICATION_THEME_PATTERN.match(theme):
+            theme = "general_feedback"
+        confidence = item.get("confidence", 0.0)
+        if isinstance(confidence, int):
+            confidence = float(confidence)
+        if not isinstance(confidence, float):
+            confidence = 0.0
+        confidence = max(0.0, min(1.0, confidence))
+        normalized.append(
+            {
+                "comment_id": comment_id,
+                "theme": theme,
+                "confidence": confidence,
+            }
+        )
+    return {"classifications": normalized}
 
 
 def required_float(payload: Mapping[str, Any], key: str) -> float:

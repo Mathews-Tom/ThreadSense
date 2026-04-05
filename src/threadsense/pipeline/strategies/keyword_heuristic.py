@@ -101,7 +101,7 @@ class KeywordHeuristicStrategy:
         self._vocabulary = vocabulary
 
     def analyze(self, thread: Thread, contract: AnalysisContract) -> AnalysisResult:
-        signals = [
+        all_signals = [
             signal
             for signal in (
                 build_comment_signal(
@@ -114,6 +114,8 @@ class KeywordHeuristicStrategy:
             )
             if signal is not None
         ]
+        signals = [s for s in all_signals if not is_noise_signal(s)]
+        noise_count = len(all_signals) - len(signals)
         duplicate_clusters = detect_duplicate_clusters(signals, self._duplicate_threshold)
         duplicate_index = build_duplicate_index(duplicate_clusters)
         findings = build_findings(
@@ -132,8 +134,9 @@ class KeywordHeuristicStrategy:
         )
         if contract.abstraction_level is AbstractionLevel.STRATEGIC:
             top_quotes = [quote for quote in top_quotes if quote.score >= 0][:3]
+        empty_text_count = thread.comment_count - len(all_signals)
         return AnalysisResult(
-            filtered_comment_count=thread.comment_count - len(signals),
+            filtered_comment_count=empty_text_count + noise_count,
             distinct_comment_count=count_distinct_comments(signals, duplicate_index),
             duplicate_group_count=len(duplicate_clusters),
             top_phrases=extract_top_phrases(signals, limit=8),
@@ -178,6 +181,50 @@ def build_comment_signal(
 
 
 _URL_PATTERN = re.compile(r"https?://\S+|www\.\S+")
+
+# ---------------------------------------------------------------------------
+# Noise detection — low-signal comments excluded before classification
+# ---------------------------------------------------------------------------
+
+_NOISE_MIN_BODY_LENGTH = 50
+_NOISE_MIN_UNIQUE_TOKENS = 3
+_NOISE_ACK_PATTERNS = frozenset(
+    {
+        "thanks",
+        "thank you",
+        "this",
+        "same",
+        "agreed",
+        "interesting",
+        "cool",
+        "nice",
+    }
+)
+_NOISE_BOT_PATTERN = re.compile(
+    r"remind\s*me.*\d+\s*(day|week|month|hour)"
+    r"|i will be messaging you"
+    r"|i'm a bot"
+    r"|bot account",
+    re.IGNORECASE,
+)
+
+
+def is_noise_signal(signal: CommentSignal) -> bool:
+    """Return True if the signal carries too little content for classification."""
+    if _NOISE_BOT_PATTERN.search(signal.cleaned_text):
+        return True
+    stripped = signal.canonical_text.strip()
+    if stripped in _NOISE_ACK_PATTERNS:
+        return True
+    unique_tokens = len(set(signal.tokens) - STOPWORDS)
+    if (
+        len(signal.cleaned_text) < _NOISE_MIN_BODY_LENGTH
+        and unique_tokens < _NOISE_MIN_UNIQUE_TOKENS
+        and signal.issue_marker_count == 0
+        and signal.request_marker_count == 0
+    ):
+        return True
+    return False
 
 
 def clean_text(text: str) -> str:
