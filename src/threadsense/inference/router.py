@@ -8,7 +8,11 @@ from threadsense.domains import DomainVocabulary
 from threadsense.errors import InferenceBoundaryError, NetworkBoundaryError, SchemaBoundaryError
 from threadsense.inference.contracts import InferenceRequest, InferenceResponse, InferenceTask
 from threadsense.inference.local_runtime import LocalRuntimeClient
-from threadsense.inference.prompts import build_task_request, build_vocabulary_expansion_request
+from threadsense.inference.prompts import (
+    build_reclassification_request,
+    build_task_request,
+    build_vocabulary_expansion_request,
+)
 from threadsense.models.analysis import ThreadAnalysis
 from threadsense.models.canonical import Thread
 from threadsense.models.corpus import CorpusAnalysis
@@ -87,6 +91,27 @@ class InferenceRouter:
             return self._client_factory(self._config).complete(request)
         except (InferenceBoundaryError, NetworkBoundaryError, SchemaBoundaryError) as error:
             return _empty_vocabulary_expansion(str(error))
+
+    def run_reclassification(
+        self,
+        thread: Thread,
+        comment_ids: list[str],
+        existing_themes: dict[str, tuple[str, ...]],
+    ) -> InferenceResponse:
+        if not self._config.runtime.enabled:
+            return _empty_reclassification("runtime_disabled")
+
+        request = build_reclassification_request(
+            thread=thread,
+            comment_ids=comment_ids,
+            existing_themes=existing_themes,
+            required=False,
+            repair_retries=self._config.runtime.repair_retries,
+        )
+        try:
+            return self._client_factory(self._config).complete(request)
+        except (InferenceBoundaryError, NetworkBoundaryError, SchemaBoundaryError) as error:
+            return _empty_reclassification(str(error))
 
     def run_corpus_task(
         self,
@@ -177,6 +202,19 @@ def fallback_response(
         model=None,
         finish_reason=None,
         output=output,
+        used_fallback=True,
+        degraded=True,
+        failure_reason=failure_reason,
+    )
+
+
+def _empty_reclassification(failure_reason: str) -> InferenceResponse:
+    return InferenceResponse(
+        task=InferenceTask.CATCH_ALL_RECLASSIFICATION,
+        provider="deterministic_fallback",
+        model=None,
+        finish_reason=None,
+        output={"classifications": []},
         used_fallback=True,
         degraded=True,
         failure_reason=failure_reason,
