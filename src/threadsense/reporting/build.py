@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from time import time
 
+from threadsense.action_signals import classify_finding_signal
 from threadsense.inference.contracts import InferenceResponse
-from threadsense.models.analysis import ThreadAnalysis
+from threadsense.models.analysis import AnalysisFinding, ThreadAnalysis
 from threadsense.models.report import (
     REPORT_ENGINE_VERSION,
     REPORT_SCHEMA_VERSION,
@@ -11,6 +12,7 @@ from threadsense.models.report import (
     ReportFinding,
     ReportProvenance,
     ThreadReport,
+    validate_report_finding_semantics,
 )
 from threadsense.pipeline.storage import calculate_sha256
 from threadsense.reporting.quality import resolve_coverage_gaps, run_quality_checks
@@ -30,18 +32,7 @@ def build_thread_report(
         top_phrases=analysis.top_phrases[:8],
         executive_summary=summary,
         conversation_structure=analysis.conversation_structure,
-        findings=[
-            ReportFinding(
-                theme_key=finding.theme_key,
-                theme_label=finding.theme_label,
-                severity=finding.severity,
-                comment_count=finding.comment_count,
-                key_phrases=finding.key_phrases,
-                evidence_comment_ids=finding.evidence_comment_ids,
-                quotes=finding.quotes,
-            )
-            for finding in analysis.findings
-        ],
+        findings=[build_report_finding(finding) for finding in analysis.findings],
         caveats=caveats,
         quality_checks=[],
         provenance=ReportProvenance(
@@ -75,17 +66,18 @@ def build_executive_summary(
 ) -> ReportExecutiveSummary:
     if summary_response is None:
         first_finding = analysis.findings[0] if analysis.findings else None
+        if first_finding is None:
+            raise ValueError("deterministic report summary requires at least one finding")
+        first_signal = classify_finding_signal(
+            theme_key=first_finding.theme_key,
+            severity=first_finding.severity,
+            comment_count=first_finding.comment_count,
+            issue_marker_count=first_finding.issue_marker_count,
+            request_marker_count=first_finding.request_marker_count,
+        )
         return ReportExecutiveSummary(
-            headline=(
-                f"{first_finding.theme_label.title()} leads the thread"
-                if first_finding is not None
-                else f"Deterministic report for {analysis.title}"
-            ),
-            summary=(
-                f"Top themes: {', '.join(f.theme_key for f in analysis.findings[:3])}."
-                if analysis.findings
-                else "No findings were available from deterministic analysis."
-            ),
+            headline=f"{first_finding.theme_label.title()} leads the thread",
+            summary=f"Top themes: {', '.join(f.theme_key for f in analysis.findings[:3])}.",
             priority=_default_priority(first_finding.severity if first_finding else None),
             confidence=_default_confidence(first_finding),
             why_now=_default_why_now(first_finding),
@@ -96,8 +88,8 @@ def build_executive_summary(
             next_steps=[
                 f"Review {finding.theme_key} evidence group" for finding in analysis.findings[:3]
             ],
-            recommended_owner=_default_owner(first_finding.theme_key if first_finding else None),
-            action_type=_default_action_type(first_finding.theme_key if first_finding else None),
+            recommended_owner=first_signal.recommended_owner,
+            action_type=first_signal.action_type,
             expected_outcome=_default_expected_outcome(first_finding),
             provider="deterministic_report",
             degraded=False,
@@ -136,6 +128,32 @@ def build_caveats(
     return caveats
 
 
+def build_report_finding(finding: AnalysisFinding) -> ReportFinding:
+    signal = classify_finding_signal(
+        theme_key=finding.theme_key,
+        severity=finding.severity,
+        comment_count=finding.comment_count,
+        issue_marker_count=finding.issue_marker_count,
+        request_marker_count=finding.request_marker_count,
+    )
+    report_finding = ReportFinding(
+        theme_key=finding.theme_key,
+        theme_label=finding.theme_label,
+        severity=finding.severity,
+        comment_count=finding.comment_count,
+        issue_marker_count=finding.issue_marker_count,
+        request_marker_count=finding.request_marker_count,
+        signal_type=signal.signal_type,
+        recommended_owner=signal.recommended_owner,
+        action_type=signal.action_type,
+        key_phrases=finding.key_phrases,
+        evidence_comment_ids=finding.evidence_comment_ids,
+        quotes=finding.quotes,
+    )
+    validate_report_finding_semantics(report_finding)
+    return report_finding
+
+
 def calculate_sha256_path(path: str) -> str:
     from pathlib import Path
 
@@ -170,26 +188,6 @@ def _default_why_now(finding: object | None) -> str:
         f"{getattr(finding, 'theme_label').title()} is the strongest evidence cluster by severity "
         "and supporting comments in this thread."
     )
-
-
-def _default_owner(theme_key: str | None) -> str:
-    if theme_key == "documentation":
-        return "docs"
-    if theme_key in {"performance", "reliability"}:
-        return "engineering"
-    if theme_key in {"workflow", "usability"}:
-        return "product"
-    return "research"
-
-
-def _default_action_type(theme_key: str | None) -> str:
-    if theme_key == "documentation":
-        return "document"
-    if theme_key in {"performance", "reliability"}:
-        return "fix"
-    if theme_key in {"workflow", "usability"}:
-        return "design"
-    return "investigate"
 
 
 def _default_expected_outcome(finding: object | None) -> str:

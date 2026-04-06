@@ -62,6 +62,11 @@ def render_report_markdown(report: ThreadReport) -> str:
                 "",
                 f"- Severity: `{finding.severity}`",
                 f"- Comment Count: `{finding.comment_count}`",
+                f"- Issue Markers: `{finding.issue_marker_count}`",
+                f"- Request Markers: `{finding.request_marker_count}`",
+                f"- Signal Type: `{finding.signal_type}`",
+                f"- Recommended Owner: `{finding.recommended_owner}`",
+                f"- Action Type: `{finding.action_type}`",
                 f"- Key Phrases: {key_phrases}",
                 f"- Evidence IDs: {', '.join(finding.evidence_comment_ids)}",
                 "",
@@ -131,6 +136,11 @@ def render_report_html(report: ThreadReport) -> str:
                 <span class="severity">{escape(finding.severity)}</span>
               </summary>
               <p><strong>Comments:</strong> {finding.comment_count}</p>
+              <p><strong>Issue Markers:</strong> {finding.issue_marker_count}</p>
+              <p><strong>Request Markers:</strong> {finding.request_marker_count}</p>
+              <p><strong>Signal:</strong> {escape(finding.signal_type)}</p>
+              <p><strong>Owner:</strong> {escape(finding.recommended_owner)}</p>
+              <p><strong>Action:</strong> {escape(finding.action_type)}</p>
               <p>
                 <strong>Evidence IDs:</strong>
                 {escape(", ".join(finding.evidence_comment_ids))}
