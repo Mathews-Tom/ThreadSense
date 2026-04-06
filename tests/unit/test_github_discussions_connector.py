@@ -18,6 +18,7 @@ def graphql_fixture() -> dict[str, Any]:
             "repository": {
                 "discussion": {
                     "title": "Better onboarding",
+                    "body": "The onboarding docs need a quickstart and better examples.",
                     "url": "https://github.com/acme/demo/discussions/42",
                     "createdAt": "2026-04-03T10:00:00Z",
                     "author": {"login": "maintainer"},

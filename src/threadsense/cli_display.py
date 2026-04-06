@@ -59,6 +59,9 @@ def emit_payload(payload: dict[str, Any]) -> None:
     if is_run_payload(payload):
         _CONSOLE.print(render_run_panel(payload))
         return
+    if is_research_payload(payload):
+        _CONSOLE.print(render_research_panel(payload))
+        return
     if payload.get("artifact_type") == "api_server":
         _CONSOLE.print(render_api_panel(payload))
         return
@@ -107,6 +110,10 @@ def is_run_payload(payload: dict[str, Any]) -> bool:
     return required_keys.issubset(payload.keys())
 
 
+def is_research_payload(payload: dict[str, Any]) -> bool:
+    return payload.get("artifact_type") == "research"
+
+
 def render_run_panel(payload: dict[str, Any]) -> Panel:
     table = Table(show_header=True, header_style="bold cyan")
     table.add_column("Stage")
@@ -132,6 +139,27 @@ def render_run_panel(payload: dict[str, Any]) -> Panel:
         body.append("\n\n")
         body.append(render_run_summary_text(terminal_summary))
     return Panel(body, title=title, subtitle=subtitle, border_style="green")
+
+
+def render_research_panel(payload: dict[str, Any]) -> Panel:
+    table = Table(show_header=True, header_style="bold cyan")
+    table.add_column("Field")
+    table.add_column("Value")
+    table.add_row("Query", str(payload.get("query", "n/a")))
+    table.add_row("Subreddits", ", ".join(payload.get("subreddits", [])) or "n/a")
+    table.add_row("Time Window", str(payload.get("time_window", "n/a")))
+    table.add_row("Reddit Bucket", str(payload.get("reddit_time_bucket", "n/a")))
+    table.add_row("Discovered", str(payload.get("discovered_thread_count", "n/a")))
+    table.add_row("Selected", str(payload.get("selected_thread_count", "n/a")))
+    table.add_row("Fetched", str(payload.get("fetched_thread_count", "n/a")))
+    table.add_row("Corpus Report", str(payload.get("corpus_report_path", "n/a")))
+    body = Text()
+    body.append(_render_table_text(table))
+    terminal_summary = payload.get("terminal_summary")
+    if isinstance(terminal_summary, dict):
+        body.append("\n\n")
+        body.append(render_research_summary_text(terminal_summary))
+    return Panel(body, title="ThreadSense Research: reddit", border_style="blue")
 
 
 def render_run_summary_text(summary: dict[str, Any]) -> Text:
@@ -162,10 +190,41 @@ def render_run_summary_text(summary: dict[str, Any]) -> Text:
     return Text(text.plain.rstrip())
 
 
+def render_research_summary_text(summary: dict[str, Any]) -> Text:
+    text = Text()
+    text.append("Summary\n", style="bold")
+    text.append(f"{summary.get('headline', 'n/a')}\n\n", style="bold cyan")
+    key_patterns = summary.get("key_patterns", [])
+    if isinstance(key_patterns, list) and key_patterns:
+        text.append("Key Patterns\n", style="bold")
+        for pattern in key_patterns:
+            text.append(f"- {pattern}\n")
+        text.append("\n")
+    recommended_actions = summary.get("recommended_actions", [])
+    if isinstance(recommended_actions, list) and recommended_actions:
+        text.append("Recommended Actions\n", style="bold")
+        for action in recommended_actions:
+            text.append(f"- {action}\n")
+        text.append("\n")
+    text.append(f"Confidence Note: {summary.get('confidence_note', 'n/a')}\n")
+    top_threads = summary.get("top_threads", [])
+    if isinstance(top_threads, list) and top_threads:
+        text.append("\nTop Threads\n", style="bold")
+        for thread in top_threads:
+            if not isinstance(thread, dict):
+                continue
+            text.append(
+                f"- r/{thread.get('subreddit', 'n/a')}: {thread.get('title', 'n/a')} "
+                f"[{thread.get('match_source', 'n/a')}]\n"
+            )
+    return Text(text.plain.rstrip())
+
+
 def _render_table_text(table: Table) -> Text:
     console = Console(width=120, record=True)
-    console.print(table)
-    return Text.from_ansi(console.export_text(clear=False).rstrip())
+    with console.capture() as capture:
+        console.print(table)
+    return Text.from_ansi(capture.get().rstrip())
 
 
 def render_api_panel(payload: dict[str, Any]) -> Panel:

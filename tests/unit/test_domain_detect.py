@@ -23,6 +23,7 @@ def _thread(comments: list[Comment]) -> Thread:
             thread_url="https://example.com/thread",
         ),
         title="Test thread",
+        body=None,
         permalink="https://example.com/thread",
         author=AuthorRef(username="op", source_author_id=None),
         comments=comments,

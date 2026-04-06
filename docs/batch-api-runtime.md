@@ -1,8 +1,18 @@
-# Batch, API, and Runtime Hardening
+# Batch, API, and Runtime Notes
 
-## Batch Manifest
+## Batch Runs
 
-Batch runs consume a JSON manifest with this shape:
+Batch runs execute reproducible multi-thread workflows from a manifest.
+
+Example:
+
+```bash
+uv run threadsense batch run --manifest tests/fixtures/batch/reddit_manifest.json
+```
+
+Batch jobs are still source-thread oriented. They do not replace the dedicated Reddit topic research workflow.
+
+## Batch Manifest Shape
 
 ```json
 {
@@ -28,39 +38,36 @@ Rules:
 
 - `manifest_version` must be `1`
 - `job_id` values must be unique
-- `source_name` is currently `reddit`
-- `report_format` is `json` or `markdown`
-- `with_summary` and `summary_required` control local-runtime summary generation
+- `source_name` must match a supported source
+- `report_format` is `json`, `markdown`, or `html` where supported by the selected workflow
 
-Run a batch job with:
+## Local API Surface
 
-```bash
-uv run threadsense batch run --manifest tests/fixtures/batch/reddit_manifest.json
-```
-
-The batch artifact is written to `.threadsense/batches/<run_name>.json` unless `--output` is provided.
-
-## HTTP Surface
-
-Start the local API with:
+Start the API with:
 
 ```bash
 uv run threadsense serve
 ```
 
-Routes:
+Current routes:
 
+- `GET /v1/healthz`
+- `GET /v1/metrics`
 - `POST /v1/fetch/reddit`
 - `POST /v1/normalize/reddit`
 - `POST /v1/analyze/normalized`
 - `POST /v1/infer/analysis`
 - `POST /v1/report/analysis`
-- `GET /v1/healthz`
-- `GET /v1/metrics`
 
-All write paths still pass through the same fetch, normalize, analyze, infer, and report workflow functions used by the CLI. The API does not bypass artifact validation or provenance capture.
+Important:
 
-## Hard Limits
+- the API is a trusted local surface
+- it is not authenticated
+- it does not yet expose the full `research reddit` workflow
+
+## Runtime Interaction
+
+Batch and API traffic share the same runtime concurrency guard as CLI runs.
 
 Config keys:
 
@@ -76,11 +83,9 @@ Environment overrides:
 - `THREADSENSE_API_MAX_REQUEST_BYTES`
 - `THREADSENSE_RUNTIME_CONCURRENCY`
 
-`runtime_concurrency` is enforced through a shared semaphore around local-runtime inference calls so batch and API traffic cannot overrun the local model backend.
-
 ## Observability
 
-Structured logs emit JSON records with:
+Structured logs emit stage completion and failure records, including:
 
 - `event`
 - `trace_id`
@@ -89,9 +94,15 @@ Structured logs emit JSON records with:
 - `stage`
 - `latency_seconds`
 
-Metrics are exposed in Prometheus text format at `/v1/metrics`:
+Metrics are exposed in Prometheus text format at `/v1/metrics`.
 
-- `threadsense_stage_total`
-- `threadsense_stage_seconds_avg`
+## Relationship To Research Reddit
 
-Labels include stage, source, route, task, format, provider, and outcome where relevant.
+`research reddit` is a discovery-plus-corpus workflow.
+
+It is distinct from batch runs:
+
+- batch runs execute a manifest of already selected threads
+- research runs discover threads first, then create a corpus automatically
+
+Both reuse the same lower-level fetch, normalize, analyze, infer, and reporting functions.

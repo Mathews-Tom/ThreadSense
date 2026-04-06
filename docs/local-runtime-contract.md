@@ -2,72 +2,70 @@
 
 ## Purpose
 
-ThreadSense targets a local OpenAI-compatible chat runtime as the first inference backend. The runtime root may expose an HTML frontend, so application traffic must target the API path explicitly.
+ThreadSense uses a local OpenAI-compatible chat runtime for optional synthesis tasks.
 
-Default endpoint:
+The deterministic pipeline does not require the runtime. The runtime is used for structured summary tasks such as:
+
+- thread analysis summary
+- corpus synthesis
+- readiness probing
+
+## Default Endpoint
 
 - base URL: `http://127.0.0.1:8080`
-- chat API path: `/v1/chat/completions`
-- resolved chat endpoint: `http://127.0.0.1:8080/v1/chat/completions`
+- chat path: `/v1/chat/completions`
+- resolved endpoint: `http://127.0.0.1:8080/v1/chat/completions`
 
-## Request Contract
+## Runtime Tasks
 
-ThreadSense uses a minimal readiness probe request before any higher-level inference tasks are introduced.
+### 1. Readiness probe
 
-```json
-{
-  "model": "local-model",
-  "messages": [
-    {
-      "role": "system",
-      "content": "Return the single token READY."
-    },
-    {
-      "role": "user",
-      "content": "READY"
-    }
-  ],
-  "stream": false,
-  "temperature": 0
-}
-```
+Used by `preflight` to confirm the runtime can answer a minimal deterministic request.
 
-Required request fields:
+### 2. Analysis summary
 
-- `model`: runtime-selected model identifier
-- `messages`: OpenAI-style chat message array
-- `stream`: boolean switch for chunked responses
-- `temperature`: deterministic probe setting
+Used by:
 
-## Response Contract
+- `infer analysis`
+- `report analysis --with-summary`
+- `run ... --with-summary`
 
-ThreadSense currently validates the non-streaming response shape against the OpenAI-compatible chat completion envelope.
+The request includes deterministic findings plus enriched thread context such as:
 
-```json
-{
-  "id": "chatcmpl-local-123",
-  "object": "chat.completion",
-  "created": 1760000000,
-  "model": "local-model",
-  "choices": [
-    {
-      "index": 0,
-      "message": {
-        "role": "assistant",
-        "content": "READY"
-      },
-      "finish_reason": "stop"
-    }
-  ],
-  "usage": {
-    "prompt_tokens": 15,
-    "completion_tokens": 1,
-    "total_tokens": 16
-  }
-}
-```
+- thread title
+- thread body when available
+- top comments
+- conversation structure
+- issue/request marker counts
 
-Validated response fields:
+### 3. Corpus synthesis
+
+Used by:
+
+- `infer corpus`
+- `corpus report --with-summary`
+- `research reddit --with-summary`
+
+The request includes cross-thread findings and trend context and must return structured corpus synthesis fields.
+
+## Request Shape
+
+ThreadSense sends OpenAI-compatible chat completion requests.
+
+Core fields:
+
+- `model`
+- `messages`
+- `stream: false`
+- `temperature`
+
+The actual message content varies by inference task.
+
+## Response Shape
+
+ThreadSense validates the standard non-streaming chat completion envelope.
+
+Expected outer fields:
 
 - `id`
 - `object == "chat.completion"`
@@ -75,29 +73,67 @@ Validated response fields:
 - `choices[0].message.content`
 - `choices[0].finish_reason`
 
-## Streaming Expectations
+The message content must be valid JSON matching the task contract.
 
-Streaming support stays within the same API path and switches on `stream: true`. ThreadSense does not consume streamed chunks yet, but the backend contract is fixed now so later adapters can validate chunk handling without redefining the endpoint.
+## Structured Output Contracts
 
-Expected streamed object types:
+### Analysis summary contract
 
-- `chat.completion.chunk` during chunk delivery
-- terminal chunk with `finish_reason`
+Expected keys include:
 
-## Model Selection
+- `headline`
+- `summary`
+- `priority`
+- `confidence`
+- `why_now`
+- `cited_theme_keys`
+- `cited_comment_ids`
+- `next_steps`
+- `recommended_owner`
+- `action_type`
+- `expected_outcome`
 
-Model selection stays in application configuration, not in business logic. The runtime probe sends the configured model name exactly as resolved by `threadsense.config`.
+### Corpus synthesis contract
 
-## Current Environment Note
+Expected keys include:
 
-During implementation, the root endpoint was observed serving HTML while the API traffic succeeded only when targeted directly at `http://127.0.0.1:8080/v1/chat/completions`.
+- `headline`
+- `key_patterns`
+- `cited_thread_ids`
+- `recommended_actions`
+- `confidence_note`
 
-Known-good local probe result:
+## Required vs Degraded Behavior
 
-- request target: `http://127.0.0.1:8080/v1/chat/completions`
-- HTTP status: `200`
-- configured request model: `local-model`
-- runtime response model: `ggml-org/gemma-4-E4B-it-GGUF:Q8_0`
-- observed latency: about `9.8s`
+ThreadSense supports both strict and optional runtime usage.
 
-The CLI readiness check reports this endpoint explicitly and does not fall back to the root HTML frontend.
+### Required
+
+When `--required` or `--summary-required` is set:
+
+- the command fails if the runtime is unavailable
+- the command fails if the response is invalid
+
+### Degraded
+
+When summary inference is optional:
+
+- the deterministic workflow still completes
+- ThreadSense may use deterministic fallback output where supported
+- the result payload reports the summary provider and degraded state
+
+## Repair Behavior
+
+ThreadSense can retry invalid JSON outputs with a stricter repair instruction.
+
+This keeps the outer request contract stable while tightening schema enforcement for malformed model output.
+
+## Streaming
+
+Streaming is not consumed today.
+
+ThreadSense currently expects non-streaming task responses.
+
+## Operational Note
+
+The runtime root may serve HTML or another non-API surface. ThreadSense always targets the chat completions path explicitly and does not fall back to the root endpoint.

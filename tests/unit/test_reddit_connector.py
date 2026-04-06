@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from pathlib import Path
+from time import time
 from typing import Any
 
 import pytest
@@ -11,12 +12,16 @@ from threadsense.config import RedditConfig
 from threadsense.connectors import SourceConnector
 from threadsense.connectors.reddit import (
     RedditConnector,
+    RedditSearchRequest,
     RedditThreadRequest,
     collect_more_ids,
+    extract_search_matches,
     flatten,
+    map_time_window_to_reddit_bucket,
     normalize_url,
     parse_comment,
     should_retry_error,
+    validate_subreddit_name,
     validate_thread_payload,
 )
 from threadsense.errors import RedditInputError, RedditRequestError, RedditResponseError
@@ -155,3 +160,314 @@ def test_connector_expands_morechildren_from_fixture() -> None:
     assert result.post.id == "jkl012"
     assert result.total_comment_count == 3
     assert result.expanded_more_count == 2
+
+
+def test_extract_post_preserves_selftext() -> None:
+    payload = load_fixture("normal_thread.json")
+    assert isinstance(payload, list)
+
+    connector = RedditConnector(
+        config=RedditConfig(
+            user_agent="threadsense/test",
+            timeout_seconds=15,
+            max_retries=0,
+            backoff_seconds=0.1,
+            request_delay_seconds=0,
+            listing_limit=500,
+        ),
+        transport=lambda url, headers, params, timeout: payload,
+        sleeper=lambda value: None,
+    )
+    result = connector.fetch_thread(
+        RedditThreadRequest(
+            post_url="https://www.reddit.com/r/ThreadSense/comments/abc123/normal_thread",
+        )
+    )
+
+    assert result.post.selftext == "Exploring a second brain workflow with agents."
+
+
+def test_map_time_window_to_reddit_bucket_supports_30_days() -> None:
+    assert map_time_window_to_reddit_bucket("30d") == "month"
+    assert map_time_window_to_reddit_bucket("7d") == "week"
+    assert map_time_window_to_reddit_bucket("all") == "all"
+
+
+def test_validate_subreddit_name_strips_prefix() -> None:
+    assert validate_subreddit_name("r/ClaudeCode") == "ClaudeCode"
+
+
+def test_extract_search_matches_reads_title_and_selftext() -> None:
+    payload = {
+        "data": {
+            "children": [
+                {
+                    "kind": "t3",
+                    "data": {
+                        "id": "abc123",
+                        "title": "Agentic PKM for Claude Code",
+                        "selftext": "I am building a second brain with local agents.",
+                        "subreddit": "ClaudeCode",
+                        "author": "builder",
+                        "permalink": "/r/ClaudeCode/comments/abc123/example/",
+                        "score": 42,
+                        "num_comments": 12,
+                        "created_utc": 1710000000.0,
+                    },
+                }
+            ]
+        }
+    }
+
+    matches = extract_search_matches(payload, "ClaudeCode")
+
+    assert matches[0].title == "Agentic PKM for Claude Code"
+    assert matches[0].selftext == "I am building a second brain with local agents."
+    assert matches[0].thread_url.startswith("https://www.reddit.com/")
+    assert matches[0].normalized_url.endswith(".json")
+
+
+def test_connector_searches_selected_subreddits() -> None:
+    recent = time() - 86400
+    payload_map: dict[tuple[str, str], object] = {
+        (
+            "https://www.reddit.com/r/claudecode/search.json",
+            "second brain",
+        ): {
+            "data": {
+                "children": [
+                    {
+                        "kind": "t3",
+                        "data": {
+                            "id": "abc123",
+                            "title": "Second brain workflow",
+                            "selftext": "Agentic PKM patterns",
+                            "subreddit": "ClaudeCode",
+                            "author": "alpha",
+                            "permalink": "/r/ClaudeCode/comments/abc123/example/",
+                            "score": 10,
+                            "num_comments": 3,
+                            "created_utc": recent,
+                        },
+                    }
+                ]
+            }
+        },
+        (
+            "https://www.reddit.com/r/claudecode/search.json",
+            "agentic PKM",
+        ): {"data": {"children": []}},
+        (
+            "https://www.reddit.com/r/AI_Agents/search.json",
+            "second brain",
+        ): {"data": {"children": []}},
+        (
+            "https://www.reddit.com/r/AI_Agents/search.json",
+            "agentic PKM",
+        ): {
+            "data": {
+                "children": [
+                    {
+                        "kind": "t3",
+                        "data": {
+                            "id": "def456",
+                            "title": "Agentic PKM stack",
+                            "selftext": "Second brain notes",
+                            "subreddit": "AI_Agents",
+                            "author": "beta",
+                            "permalink": "/r/AI_Agents/comments/def456/example/",
+                            "score": 15,
+                            "num_comments": 5,
+                            "created_utc": recent,
+                        },
+                    }
+                ]
+            }
+        },
+    }
+
+    def fake_transport(
+        url: str,
+        headers: Mapping[str, str],
+        params: Mapping[str, str | int | float | bool],
+        timeout: float,
+    ) -> object:
+        del headers, timeout
+        assert params["q"] in {"second brain", "agentic PKM"}
+        assert params["restrict_sr"] == "on"
+        assert params["t"] == "month"
+        return payload_map[(url, str(params["q"]))]
+
+    connector = RedditConnector(
+        config=RedditConfig(
+            user_agent="threadsense/test",
+            timeout_seconds=15,
+            max_retries=0,
+            backoff_seconds=0.1,
+            request_delay_seconds=0,
+            listing_limit=500,
+        ),
+        transport=fake_transport,
+        sleeper=lambda value: None,
+    )
+
+    result = connector.search_threads(
+        RedditSearchRequest(
+            query="second brain OR agentic PKM",
+            subreddits=["claudecode", "AI_Agents"],
+            limit=5,
+            sort="relevance",
+            time_window="30d",
+        )
+    )
+
+    assert result.reddit_time_bucket == "month"
+    assert len(result.matches) == 2
+
+
+def test_connector_searches_or_clauses_as_union() -> None:
+    recent = time() - 86400
+    calls: list[tuple[str, str]] = []
+
+    def fake_transport(
+        url: str,
+        headers: Mapping[str, str],
+        params: Mapping[str, str | int | float | bool],
+        timeout: float,
+    ) -> object:
+        del headers, timeout
+        calls.append((url, str(params["q"])))
+        if str(params["q"]) == "second brain":
+            return {
+                "data": {
+                    "children": [
+                        {
+                            "kind": "t3",
+                            "data": {
+                                "id": "abc123",
+                                "title": "Second brain workflow",
+                                "selftext": "",
+                                "subreddit": "ClaudeCode",
+                                "author": "alpha",
+                                "permalink": "/r/ClaudeCode/comments/abc123/example/",
+                                "score": 10,
+                                "num_comments": 3,
+                                "created_utc": recent,
+                            },
+                        }
+                    ]
+                }
+            }
+        return {
+            "data": {
+                "children": [
+                    {
+                        "kind": "t3",
+                        "data": {
+                            "id": "def456",
+                            "title": "Agentic PKM stack",
+                            "selftext": "",
+                            "subreddit": "ClaudeCode",
+                            "author": "beta",
+                            "permalink": "/r/ClaudeCode/comments/def456/example/",
+                            "score": 8,
+                            "num_comments": 2,
+                            "created_utc": recent,
+                        },
+                    }
+                ]
+            }
+        }
+
+    connector = RedditConnector(
+        config=RedditConfig(
+            user_agent="threadsense/test",
+            timeout_seconds=15,
+            max_retries=0,
+            backoff_seconds=0.1,
+            request_delay_seconds=0,
+            listing_limit=500,
+        ),
+        transport=fake_transport,
+        sleeper=lambda value: None,
+    )
+
+    result = connector.search_threads(
+        RedditSearchRequest(
+            query="second brain OR agentic PKM",
+            subreddits=["ClaudeCode"],
+            limit=5,
+            sort="relevance",
+            time_window="30d",
+        )
+    )
+
+    assert calls == [
+        ("https://www.reddit.com/r/ClaudeCode/search.json", "second brain"),
+        ("https://www.reddit.com/r/ClaudeCode/search.json", "agentic PKM"),
+    ]
+    assert {match.post_id for match in result.matches} == {"abc123", "def456"}
+
+
+def test_connector_filters_search_results_to_requested_window() -> None:
+    recent = time() - 3600
+    stale = time() - (40 * 86400)
+    payload = {
+        "data": {
+            "children": [
+                {
+                    "kind": "t3",
+                    "data": {
+                        "id": "recent1",
+                        "title": "Recent topic thread",
+                        "selftext": "Recent body",
+                        "subreddit": "ClaudeCode",
+                        "author": "alpha",
+                        "permalink": "/r/ClaudeCode/comments/recent1/example/",
+                        "score": 10,
+                        "num_comments": 3,
+                        "created_utc": recent,
+                    },
+                },
+                {
+                    "kind": "t3",
+                    "data": {
+                        "id": "stale1",
+                        "title": "Old topic thread",
+                        "selftext": "Old body",
+                        "subreddit": "ClaudeCode",
+                        "author": "beta",
+                        "permalink": "/r/ClaudeCode/comments/stale1/example/",
+                        "score": 12,
+                        "num_comments": 4,
+                        "created_utc": stale,
+                    },
+                },
+            ]
+        }
+    }
+
+    connector = RedditConnector(
+        config=RedditConfig(
+            user_agent="threadsense/test",
+            timeout_seconds=15,
+            max_retries=0,
+            backoff_seconds=0.1,
+            request_delay_seconds=0,
+            listing_limit=500,
+        ),
+        transport=lambda url, headers, params, timeout: payload,
+        sleeper=lambda value: None,
+    )
+
+    result = connector.search_threads(
+        RedditSearchRequest(
+            query="second brain",
+            subreddits=["ClaudeCode"],
+            limit=5,
+            sort="relevance",
+            time_window="30d",
+        )
+    )
+
+    assert [match.post_id for match in result.matches] == ["recent1"]

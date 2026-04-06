@@ -101,8 +101,8 @@ def test_analyze_thread_file_filters_empty_analysis_text(tmp_path: Path) -> None
         json.dumps(
             {
                 "artifact_kind": "canonical_thread",
-                "schema_version": 1,
-                "normalization_version": "reddit-to-canonical-v1",
+                "schema_version": 2,
+                "normalization_version": "canonical-thread-v2",
                 "thread": {
                     "thread_id": "reddit:test",
                     "source": {
@@ -112,6 +112,7 @@ def test_analyze_thread_file_filters_empty_analysis_text(tmp_path: Path) -> None
                         "thread_url": "https://example.com/thread",
                     },
                     "title": "blank",
+                    "body": None,
                     "permalink": "https://example.com/thread",
                     "author": {"username": "op", "source_author_id": None},
                     "comments": [
@@ -133,8 +134,8 @@ def test_analyze_thread_file_filters_empty_analysis_text(tmp_path: Path) -> None
                         "raw_sha256": "sha",
                         "retrieved_at_utc": 1.0,
                         "normalized_at_utc": 2.0,
-                        "schema_version": 1,
-                        "normalization_version": "reddit-to-canonical-v1",
+                        "schema_version": 2,
+                        "normalization_version": "canonical-thread-v2",
                     },
                 },
             }
@@ -181,6 +182,7 @@ def test_analyze_thread_uses_requested_domain_vocabulary() -> None:
             thread_url="https://example.com/hiring",
         ),
         title="Hiring thread",
+        body=None,
         permalink="https://example.com/hiring",
         author=AuthorRef(username="op", source_author_id=None),
         comments=[

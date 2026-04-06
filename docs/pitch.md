@@ -2,69 +2,69 @@
 
 ## One-Line Positioning
 
-ThreadSense turns noisy community threads into evidence-backed product intelligence.
+ThreadSense turns noisy public discussion threads into evidence-backed product and research intelligence.
 
 ## The Problem
 
-The market has no shortage of raw conversation data. It has a shortage of disciplined ways to turn that data into decisions.
+Teams do not lack raw discussion data. They lack a disciplined way to turn that data into decisions.
 
-Teams trying to learn from Reddit and similar discussion platforms usually end up with one of three bad workflows:
+Typical workflows still look like this:
 
-- manual reading that collapses under volume
-- generic AI summaries with weak evidence traceability
-- social-listening tools built for brand sentiment instead of deep product insight
+- manually search Reddit or community platforms
+- open too many threads
+- copy a few quotes into notes
+- rely on generic summaries with weak evidence chains
+- argue about whether the sample is representative
 
-The result is operationally expensive and strategically weak. Important complaints get buried in long threads. Strong feature requests are misread as isolated anecdotes. Competitive signals are noticed too late or filtered through whoever happened to read the thread first.
+That workflow is slow, non-reproducible, and hard to defend.
 
 ## The Product
 
-ThreadSense is a discussion-intelligence system. It ingests community threads, preserves the underlying evidence, and transforms the conversation into structured outputs that product and research teams can actually use.
+ThreadSense is a local-first discussion intelligence pipeline.
 
-The current repository already demonstrates the first critical layer: reliable Reddit thread ingestion through the public JSON API. The next layers are normalization, deterministic signal extraction, and report generation.
+It already supports:
 
-That matters because the real product is not "a scraper." The product is a repeatable pipeline from discussion source to defensible insight.
+- source connectors for Reddit, Hacker News, and GitHub Discussions
+- canonical normalization of thread data
+- deterministic signal extraction
+- optional local-model synthesis
+- single-thread reports
+- corpus analysis and reporting
+- Reddit topic research across selected subreddits
 
-## What ThreadSense Does
+The product is not “a scraper.” The product is a repeatable path from public thread to defensible insight.
 
-At full maturity, ThreadSense should:
+## Why It Matters
 
-- discover relevant threads for a topic or company
-- ingest full discussions with hierarchy and metadata intact
-- normalize comments into a canonical schema
-- extract repeated pain points, requests, and objections
-- attach every finding to supporting quotes and permalinks
-- generate research outputs for product, market, and competitive work
+Generic scrapers give you raw payloads.
 
-Today, the implemented MVP covers the ingestion foundation:
+Generic AI summaries give you prose.
 
-- accept a Reddit post URL
-- fetch post data and comments
-- parse nested replies
-- expand deferred comment branches
-- emit structured JSON for downstream analysis
+ThreadSense is more useful because it keeps the evidence chain intact while compressing thread volume into structured outputs teams can actually act on.
 
-That is the right starting point. Without reliable ingestion and provenance, every later insight layer is suspect.
+That means:
 
-## Why This Wins
+- explicit source provenance
+- stable schemas
+- deterministic analysis layer
+- optional synthesis on top of evidence
+- persisted artifacts at every stage
 
-ThreadSense sits between two weak categories:
+## Example Outcome
 
-### Generic Scrapers
+Without ThreadSense:
 
-These give you raw data and force you to do the hard analytical work yourself.
+- manually search a topic like `second brain` across Reddit
+- read multiple threads separately
+- try to merge takeaways by hand
 
-### Generic AI Summaries
+With ThreadSense:
 
-These produce fast prose but often lose the evidence chain, coverage boundaries, and repeatability needed for product decisions.
-
-ThreadSense is stronger because it treats discussion analysis as a systems problem:
-
-- acquisition must be reliable
-- schemas must be stable
-- insights must be citation-backed
-- outputs must be reproducible
-
-That combination is harder to fake and more useful in real operating environments.
+- run `research reddit` across selected subreddits
+- deterministically select the best matching threads
+- analyze each thread
+- generate a corpus-level report
+- review a concise terminal summary and a persisted markdown report
 
 ## Who It Is For
 
@@ -72,64 +72,29 @@ Primary users:
 
 - product teams validating pain points and demand
 - founders doing market and competitor research
-- developer relations teams tracking ecosystem friction
-- researchers analyzing technical communities
+- developer relations teams tracking workflow friction
+- researchers studying technical communities
 
-These users do not need vanity dashboards. They need a reliable way to compress thousands of comments into a small set of claims they can defend.
+## Why This Can Win
 
-## Example Outcome
+The moat is not access to comments.
 
-A team wants to understand why developers are frustrated with a competing AI tool.
+The moat is the quality of the pipeline:
 
-Without ThreadSense:
+- reliable acquisition
+- canonical normalization
+- evidence-backed analysis
+- deterministic selection and ranking
+- reproducible reports
 
-- search manually
-- read dozens of long threads
-- copy a few quotes into notes
-- argue over whether the sample is representative
+Anyone can summarize a thread. Fewer systems can do it repeatably, across runs, with preserved evidence and explicit output contracts.
 
-With ThreadSense:
+## Current Product Shape
 
-- ingest the relevant discussions
-- identify repeated complaint clusters
-- quantify how often issues recur
-- review linked evidence for each claim
-- turn the output into a decision memo or product input
+ThreadSense now sits at the point where it can credibly be described as:
 
-The key improvement is not just speed. It is traceable compression of messy public discourse into something a team can act on.
+```text
+single-thread analysis + corpus synthesis + subreddit topic research
+```
 
-## Defensibility
-
-The moat is not access to comments. The moat is the quality of the pipeline.
-
-Potential defensible layers:
-
-- robust ingestion connectors
-- canonical conversation schema
-- evidence-linked extraction quality
-- domain-tuned analysis for product and developer workflows
-- reproducible report generation
-
-Anyone can summarize a thread. Fewer systems can do it repeatably, at scale, with explicit provenance.
-
-## Near-Term Build Plan
-
-The correct sequence is:
-
-1. harden Reddit ingestion and modularize the current script
-2. add canonical thread and comment models
-3. add batch retrieval and source persistence
-4. implement deterministic analysis before heavy AI summarization
-5. generate report formats that preserve evidence
-
-That sequence reduces product risk. It prevents a polished interface from hiding a weak analytical core.
-
-## Closing
-
-ThreadSense should be positioned as an evidence-first research engine for online discussions.
-
-Not a scraper.
-
-Not a generic summarizer.
-
-A system for turning long discussion threads into structured, defensible product intelligence.
+That is a stronger and more useful position than a source-specific ingestion MVP.

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "threadsense"
-version = "0.1.0a0"
+version = "0.2.0"
 description = "Evidence-first discussion intelligence tooling."
 readme = "README.md"
 license = { file = "LICENSE" }

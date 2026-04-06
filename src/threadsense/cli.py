@@ -49,6 +49,7 @@ from threadsense.workflows import (
     normalize_source_thread,
     report_analysis,
     report_corpus,
+    run_reddit_research,
     run_reddit_pipeline,
     run_source_pipeline,
     search_corpora,
@@ -604,6 +605,71 @@ def _build_run_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPa
     _add_auto_domain_argument(run_parser)
 
 
+def _build_research_parser(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    research_parser = subparsers.add_parser(
+        "research",
+        help="Discover and analyze topic discussions across selected communities.",
+    )
+    research_subparsers = research_parser.add_subparsers(dest="source", required=True)
+    reddit_parser = research_subparsers.add_parser(
+        "reddit",
+        help="Research a topic across selected subreddits.",
+    )
+    reddit_parser.add_argument("--query", required=True, help="Topic query to search for.")
+    reddit_parser.add_argument(
+        "--subreddit",
+        action="append",
+        required=True,
+        help="Target subreddit. Repeat for multiple subreddits.",
+    )
+    reddit_parser.add_argument(
+        "--time-window",
+        default="30d",
+        help="Discovery time window such as 7d, 30d, 90d, 1y, or all.",
+    )
+    reddit_parser.add_argument(
+        "--sort",
+        choices=["relevance", "new", "top", "comments"],
+        default="relevance",
+        help="Reddit search sort order.",
+    )
+    reddit_parser.add_argument(
+        "--limit",
+        type=int,
+        default=20,
+        help="Maximum number of selected threads to analyze.",
+    )
+    reddit_parser.add_argument(
+        "--per-subreddit-limit",
+        type=int,
+        default=8,
+        help="Maximum number of selected threads per subreddit.",
+    )
+    reddit_parser.add_argument(
+        "--format",
+        choices=["markdown"],
+        default="markdown",
+        help="Corpus report output format.",
+    )
+    reddit_parser.add_argument(
+        "--expand-more",
+        action="store_true",
+        help="Expand deferred comment branches through morechildren for selected threads.",
+    )
+    reddit_parser.add_argument(
+        "--flat",
+        action="store_true",
+        help="Flatten nested comments in persisted raw artifacts for selected threads.",
+    )
+    _add_config_argument(reddit_parser)
+    _add_no_cache_argument(reddit_parser)
+    _add_report_summary_arguments(reddit_parser)
+    _add_contract_arguments(reddit_parser)
+    _add_auto_domain_argument(reddit_parser)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="threadsense")
     parser.add_argument(
@@ -628,6 +694,7 @@ def build_parser() -> argparse.ArgumentParser:
     _build_batch_parser(subparsers)
     _build_serve_parser(subparsers)
     _build_run_parser(subparsers)
+    _build_research_parser(subparsers)
     return parser
 
 
@@ -1216,6 +1283,53 @@ def run_source_end_to_end(
     return 0
 
 
+def run_reddit_topic_research(
+    config_path: Path | None,
+    query: str,
+    subreddits: list[str],
+    time_window: str,
+    sort: str,
+    limit: int,
+    per_subreddit_limit: int,
+    expand_more: bool,
+    flat: bool,
+    report_format: str,
+    with_summary: bool,
+    summary_required: bool,
+    no_cache: bool,
+    domain: str | None,
+    objective: str | None,
+    abstraction_level: str | None,
+    auto_domain: bool,
+) -> int:
+    logger, config = load_cli_context(config_path)
+    config = disable_cache(config, no_cache)
+    contract = resolve_contract_from_args(config, domain, objective, abstraction_level)
+    with status("Running Reddit research"):
+        payload = run_reddit_research(
+            config=config,
+            logger=logger,
+            trace=cli_trace("cli-research"),
+            query=query,
+            subreddits=subreddits,
+            time_window=time_window,
+            sort=sort,
+            limit=limit,
+            per_subreddit_limit=per_subreddit_limit,
+            expand_more=expand_more,
+            flat=flat,
+            report_format=report_format,
+            with_summary=with_summary,
+            summary_required=summary_required,
+            connector_factory=build_reddit_connector,
+            contract=contract,
+            explicit_domain=DomainType(domain) if domain is not None else None,
+            auto_domain=auto_domain,
+        )
+    emit_payload(payload.to_dict())
+    return 0 if not summary_required or not payload.degraded_summary else 1
+
+
 def run_analysis_diff(
     analysis_path: Path,
     left_version: int,
@@ -1385,6 +1499,26 @@ def _dispatch_command(args: argparse.Namespace) -> int:
                 config_path=args.config,
                 host=args.host,
                 port=args.port,
+            )
+        case ("research", "reddit", _, _, _):
+            return run_reddit_topic_research(
+                config_path=args.config,
+                query=args.query,
+                subreddits=args.subreddit,
+                time_window=args.time_window,
+                sort=args.sort,
+                limit=args.limit,
+                per_subreddit_limit=args.per_subreddit_limit,
+                expand_more=args.expand_more,
+                flat=args.flat,
+                report_format=args.format,
+                with_summary=args.with_summary,
+                summary_required=args.summary_required,
+                no_cache=args.no_cache,
+                domain=args.domain,
+                objective=args.objective,
+                abstraction_level=args.abstraction_level,
+                auto_domain=args.auto_domain,
             )
         case ("run", _, _, _, _):
             return run_source_end_to_end(

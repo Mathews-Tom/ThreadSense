@@ -1,377 +1,188 @@
 # ThreadSense Overview
 
-> Turn discussion threads into evidence-backed product intelligence.
-
-## Summary
-
-ThreadSense is a discussion-intelligence system for extracting structured signals from long-form community conversations. The current repository contains an MVP ingestion path centered on Reddit comment retrieval. The long-term product is a full pipeline that starts with thread discovery, normalizes conversation structure, scores relevance, extracts repeated signals, and emits reports that teams can use for product, market, and competitive decisions.
-
-The reference implementation in [`.docs/reddit_scraper.py`](.docs/reddit_scraper.py) is the anchor for the current design. It is not a generic vision document. It is the concrete baseline the rest of the system should extend.
+ThreadSense is an evidence-first discussion intelligence system for turning public discussion threads into structured, inspectable intelligence.
 
 ## What Exists Today
 
-The current implementation supports a single narrow but important workflow:
+The implemented system supports:
 
-1. Accept a Reddit post URL.
-2. Normalize the URL to Reddit's `.json` endpoint.
-3. Fetch post metadata and top-level comment listings from the public Reddit API.
-4. Parse nested comment trees recursively.
-5. Optionally expand `MoreComments` placeholders through `/api/morechildren.json`.
-6. Optionally flatten the nested comment tree into a linear sequence.
-7. Serialize the result to JSON.
+- source connectors for Reddit, Hacker News, and GitHub Discussions
+- canonical normalization into a shared thread model
+- deterministic analysis with evidence-linked findings
+- optional local-model synthesis for thread and corpus summaries
+- single-thread reporting in Markdown, HTML, and JSON
+- corpus manifest creation, corpus analysis, and corpus reporting
+- Reddit topic research across selected subreddits
+- operator-facing CLI output in JSON, human, and quiet modes
 
-That gives ThreadSense a working ingestion core for one source and one input mode: direct thread analysis from Reddit.
+This is no longer only a single-thread Reddit MVP. The current codebase supports both single-thread analysis and cross-thread Reddit research through the corpus pipeline.
 
-### Current MVP Capabilities
+## Core Workflows
 
-- Public Reddit post ingestion without OAuth or PRAW
-- Recursive parsing of nested comment trees
-- Filtering of deleted or removed comments
-- Preservation of thread structure through `depth`, `parent_id`, and nested `replies`
-- Optional expansion of deferred comment branches
-- Export to JSON for downstream analysis
+### 1. Single-thread analysis
 
-### Current MVP Limits
+Input:
 
-- No query-based discovery
-- No multi-thread aggregation
-- No cross-platform connectors
-- No persistence layer beyond JSON output
-- No ranking, clustering, sentiment, or theme extraction
-- No API service or worker orchestration
-- No caching, retry policy, or batch execution framework
+- one source URL or source-qualified target
 
-This distinction matters. The docs should treat the script as the implemented system boundary and describe the rest as the designed next layer.
+Flow:
 
-## Why ThreadSense Matters
+- fetch
+- normalize
+- analyze
+- optionally synthesize summary
+- generate report
 
-Teams routinely mine Reddit, forums, Discord summaries, GitHub discussions, and community threads for product intelligence. The raw material is valuable, but the operational workflow is weak:
+Output:
 
-- manual reading does not scale
-- screenshots and notes are not reproducible
-- anecdotal summaries lose evidence chains
-- repeated complaints disappear into long threads
-- niche but high-signal viewpoints get buried
+- raw artifact
+- normalized artifact
+- analysis artifact
+- report artifact / rendered report
 
-ThreadSense exists to convert unstructured conversations into a process that is deterministic, inspectable, and extensible.
+### 2. Corpus analysis
 
-The core thesis is straightforward: product and research teams do not need more raw discussion data. They need a system that preserves source evidence while compressing conversation volume into actionable patterns.
+Input:
 
-## Brain Model Strategy
+- a set of analysis artifacts
 
-ThreadSense should treat the LLM layer as a pluggable reasoning backend, not a hardcoded vendor dependency.
+Flow:
 
-The system needs to support two inference modes:
+- build corpus manifest
+- aggregate cross-thread findings
+- detect temporal trends
+- optionally synthesize corpus summary
+- generate corpus report
 
-- cloud-hosted LLMs reached through provider APIs
-- local LLMs executed on infrastructure the operator controls
+Output:
 
-Local inference should explicitly support:
+- manifest
+- corpus analysis artifact
+- corpus markdown report
 
-- Ollama as a local model serving API
-- `llama.cpp` for direct local inference and self-hosted service wrappers
+### 3. Reddit topic research
 
-This matters for three reasons:
+Input:
 
-- privacy-sensitive research workflows may not allow discussion data to leave the local environment
-- cloud inference is operationally simpler for stronger frontier models and burst capacity
-- teams need the ability to choose trade-offs across latency, cost, quality, and data residency
+- topic query
+- explicit subreddit list
 
-The correct design is hybrid. Deterministic ingestion and extraction stay provider-agnostic. The reasoning layer chooses the best available backend for the task.
+Flow:
 
-## Product Direction
+- search selected subreddits
+- split `OR` queries into clause searches
+- apply exact time-window filtering after retrieval
+- rank and select thread candidates deterministically
+- fetch and analyze selected threads
+- build corpus manifest and corpus report
 
-ThreadSense should evolve in four layers.
+Output:
 
-### 1. Ingestion
+- selected thread list
+- corpus manifest path
+- corpus analysis path
+- corpus report path
+- terminal summary in human mode
 
-Acquire discussions from one or more sources while preserving metadata, hierarchy, timestamps, and permalinks.
+## Source Model Strategy
 
-Current state:
+ThreadSense separates source-specific acquisition from canonical normalization.
 
-- implemented for direct Reddit post URLs
+Current source support:
 
-Target state:
+- Reddit
+- Hacker News
+- GitHub Discussions
 
-- query-based Reddit discovery
-- subreddit-scoped retrieval
-- date filtering
-- additional connectors for other public discussion systems
+Each connector preserves enough source metadata for traceability, while normalization maps the result into a canonical `Thread` object with:
 
-### 2. Normalization
+- source metadata
+- thread title
+- top-level thread body when available
+- author metadata
+- normalized comments
+- provenance metadata
 
-Convert source-specific payloads into a stable internal schema so downstream analysis does not care whether a comment originated from Reddit or another platform.
+This lets downstream analysis work against one stable model instead of branching on source-specific payloads.
 
-Current state:
+## Analysis Strategy
 
-- partial normalization through the `Comment` dataclass
+ThreadSense uses a deterministic core with optional inference on top.
 
-Target state:
+### Deterministic layer
 
-- canonical `Thread`, `Comment`, `Author`, and `Source` models
-- explicit provenance fields
-- normalized timestamps, scores, and parent-child relationships
-
-### 3. Analysis
-
-Detect repeated pain points, feature requests, terminology shifts, and emerging themes. This stage should remain evidence-first: every claim must trace back to comments or threads.
-
-Current state:
-
-- not implemented in code
-
-Target state:
-
-- deduplication
-- relevance scoring
-- quote extraction
-- issue/request classification
+- phrase extraction
+- duplicate handling
+- issue/request markers
 - theme grouping
-- confidence scoring
+- severity heuristics
+- deterministic action-signal classification
 
-### 3a. Inference Backends
+### Optional inference layer
 
-Use LLMs only where they add value above deterministic extraction, and keep provider selection outside business logic.
+- analysis summaries
+- corpus synthesis
+- schema repair / validation
+- required vs degraded execution behavior
 
-Current state:
+This keeps retrieval, normalization, and primary evidence extraction reproducible while using the runtime only where synthesis adds value.
 
-- no inference backend is implemented
+## Output Strategy
 
-Target state:
+ThreadSense produces both machine-readable and operator-facing outputs.
 
-- cloud-provider adapter for hosted LLM APIs
-- Ollama adapter for local model serving
-- `llama.cpp` adapter for direct local inference or wrapped HTTP serving
-- task-based routing so lightweight local models can handle extraction or compression while stronger cloud models handle synthesis when allowed
-- configuration-driven model selection per environment and per task
+### Machine-readable
 
-### 4. Reporting
+- JSON payloads from CLI commands
+- persisted raw, normalized, analysis, report, and corpus artifacts
 
-Package results into outputs that humans can act on and machines can consume.
-
-Current state:
-
-- raw JSON export
-
-Target state:
+### Operator-facing
 
 - Markdown reports
-- structured JSON for programmatic use
-- evidence bundles with permalinks
-- summaries tuned for product, research, and competitive analysis workflows
+- HTML thread reports
+- Rich terminal summary panels in human mode
 
-## Intended Users
+Human mode currently includes:
 
-ThreadSense is most useful where discussion threads are a primary source of external truth.
-
-Primary users:
-
-- product managers validating demand or pain points
-- founders researching competitors and underserved segments
-- developer relations teams tracking community friction
-- researchers studying technical discourse
-- analysts building evidence-backed market notes
-
-Secondary users:
-
-- UX researchers
-- technical writers
-- community operators
-- internal strategy teams
-
-## Core Use Cases
-
-### Competitor Friction Analysis
-
-Input:
-
-- a competitor's Reddit thread, launch discussion, or complaint-heavy post
-
-Output:
-
-- repeated complaints
-- representative quotes
-- severity signals based on frequency and score
-
-### Feature Demand Mapping
-
-Input:
-
-- threads discussing a category or workflow
-
-Output:
-
-- clusters of requested capabilities
-- user language describing the need
-- common blockers and edge cases
-
-### Community Sentiment With Evidence
-
-Input:
-
-- threads around a product release or ecosystem event
-
-Output:
-
-- positive and negative themes
-- top supporting comments
-- minority but high-signal viewpoints
-
-### Research Archive Generation
-
-Input:
-
-- a set of URLs or discovered threads
-
-Output:
-
-- normalized thread corpus ready for offline analysis or LLM-assisted synthesis
+- single-thread run summary panel
+- Reddit research summary panel
 
 ## Design Principles
 
-ThreadSense should follow a few non-negotiable rules.
-
 ### Evidence First
 
-Insights without citations are not product intelligence. Every output needs direct links back to comments or threads.
+Every claim should trace back to thread or comment evidence.
 
-### Deterministic Core, AI on Top
+### Deterministic Core, Inference on Top
 
-Retrieval, parsing, normalization, and scoring primitives should be deterministic. LLM-assisted summarization belongs above a stable evidence layer, not instead of it.
+Parsing, normalization, scoring, and selection should stay deterministic.
 
-### Inference Portability
+### Fail Fast at Boundaries
 
-No analysis stage should depend on a single LLM vendor or runtime. The system should be able to switch between cloud APIs and local runtimes without changing the analysis contract.
+Invalid URLs, malformed payloads, unsupported query syntax, and schema inconsistencies should fail explicitly.
 
-### Fail Fast at the Boundary
+### Stable Artifacts
 
-Invalid URLs, malformed payloads, and rate-limit failures should surface explicitly. Hidden fallbacks make research pipelines untrustworthy.
+Each stage persists a separate artifact so operators can inspect and rerun without redoing the entire pipeline.
 
-### Source-Agnostic Internal Model
+### Operator-Friendly Output
 
-Reddit is the current ingestion target, not the long-term system boundary. Internal models should be designed for connector reuse.
+JSON is for machines. Human mode is for operators. Both should expose the same underlying result with different presentation.
 
-### Reproducibility Over Flash
+## Current Limits
 
-A saved corpus, stable schema, and repeatable analysis pipeline are more valuable than a polished dashboard built on brittle extraction logic.
+- Reddit topic research is implemented; equivalent discovery workflows for other sources are not
+- Reddit research query grammar is intentionally limited to simple clause unions
+- corpus reports are currently Markdown only
+- the local API does not yet expose the full Reddit research workflow
+- legacy raw and canonical artifacts must be regenerated when required schema fields are missing
 
-## Current Execution Flow
+## What ThreadSense Is Now
 
-The reference script executes a simple but sound path:
+ThreadSense is best described as:
 
-```mermaid
-flowchart TD
-    A[Reddit Post URL] --> B[normalize_url]
-    B --> C[fetch_json for post listing]
-    C --> D[collect top-level comments]
-    D --> E[parse nested replies recursively]
-    E --> F{expand_more enabled?}
-    F -- no --> G[serialize nested tree]
-    F -- yes --> H[fetch morechildren]
-    H --> I[parse extra comments]
-    I --> G
-    G --> J{flat enabled?}
-    J -- no --> K[nested JSON output]
-    J -- yes --> L[flattened JSON output]
+```text
+multi-source thread analysis + corpus synthesis + subreddit topic research
 ```
 
-This is the actual system behavior today. All higher-level plans should preserve this ingestion path and harden it rather than bypass it.
-
-## System Boundaries
-
-### In Scope Today
-
-- single-thread Reddit ingestion
-- nested comment parsing
-- JSON export suitable for downstream scripts
-
-### Out of Scope Today
-
-- multi-source discovery
-- production API serving
-- background jobs
-- persistent indexing
-- semantic search
-- dashboarding
-- report orchestration
-- cloud or local LLM integration
-
-The docs should keep this separation explicit so future contributors know what is implemented, what is planned, and where to extend the system.
-
-## Primary Risks
-
-### Source Stability Risk
-
-The current scraper uses Reddit's public JSON interface. It is widely used, but it is still an external dependency with policy and shape-change risk.
-
-Mitigation:
-
-- isolate Reddit-specific logic behind a connector boundary
-- validate response shape aggressively
-- keep replayable fixture data for regression testing
-
-### Rate Limiting and Throughput
-
-The current script uses a fixed inter-request delay. That is acceptable for a single-thread CLI path, not for scaled ingestion.
-
-Mitigation:
-
-- introduce bounded retries with explicit backoff
-- cache repeated thread fetches
-- batch multi-thread jobs through worker queues
-
-### Analysis Credibility
-
-Once AI-assisted summarization is added, unsupported claims become the core product risk.
-
-Mitigation:
-
-- require citation-backed outputs
-- separate extracted evidence from generated interpretation
-- attach confidence and coverage indicators to reports
-
-### Inference Deployment Risk
-
-Different LLM backends will produce different output quality, latency, and operational complexity.
-
-Mitigation:
-
-- keep prompt contracts and output schemas stable across providers
-- route privacy-sensitive workloads to local inference
-- evaluate local and cloud models against the same evidence-backed benchmarks
-- reserve cloud escalation for tasks local models cannot meet at the required quality bar
-
-### Sampling Bias
-
-Discussion platforms reflect a specific audience, not the full market.
-
-Mitigation:
-
-- label source coverage explicitly
-- track source mix in every report
-- avoid universal claims from single-community datasets
-
-## Roadmap Shape
-
-The clean expansion path from the current MVP is:
-
-1. Harden Reddit ingestion.
-2. Define canonical internal schemas.
-3. Add thread discovery and batch processing.
-4. Add deterministic extraction and ranking.
-5. Layer report generation on top of evidence bundles.
-6. Introduce APIs, persistence, queues, and observability only after the analysis contract is stable.
-
-That order preserves engineering leverage. It avoids building infrastructure around a weak or unstable data model.
-
-## Success Criteria
-
-ThreadSense is succeeding when it can do all of the following reliably:
-
-- ingest discussion threads without manual repair
-- preserve comment hierarchy and provenance
-- extract repeatable signals across runs
-- attach every claim to source evidence
-- generate outputs that reduce manual research time materially
-
-Until then, the correct framing is not "finished insight engine." It is "a discussion-ingestion MVP with a clear path to a rigorous intelligence pipeline."
+It is not just a scraper, and it is not just a summarizer. It is a reproducible pipeline from source thread to inspectable intelligence.
