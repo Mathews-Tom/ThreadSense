@@ -36,9 +36,15 @@ def test_build_thread_report_uses_local_summary_and_quality_checks(tmp_path: Pat
         output={
             "headline": "Performance and docs dominate the thread",
             "summary": "Latency and onboarding gaps are the main concerns.",
+            "priority": "high",
+            "confidence": 0.81,
+            "why_now": "The highest-signal comments cluster around latency and docs.",
             "cited_theme_keys": ["performance", "documentation"],
             "cited_comment_ids": ["reddit:c3", "reddit:c1"],
             "next_steps": ["Profile search latency", "Expand onboarding quickstart"],
+            "recommended_owner": "engineering",
+            "action_type": "fix",
+            "expected_outcome": "Reduce the main adoption blockers in the thread.",
         },
         used_fallback=False,
         degraded=False,
@@ -52,6 +58,7 @@ def test_build_thread_report_uses_local_summary_and_quality_checks(tmp_path: Pat
     )
 
     assert report.executive_summary.provider == "local_openai_compatible"
+    assert report.executive_summary.priority == "high"
     assert report.findings
     assert report.conversation_structure.max_depth == 0
     assert report.conversation_structure.top_level_count == 7
@@ -91,7 +98,38 @@ def test_render_report_json_round_trips_report_artifact(tmp_path: Path) -> None:
 
     assert loaded.thread_id == report.thread_id
     assert loaded.executive_summary.headline == report.executive_summary.headline
+    assert loaded.executive_summary.action_type == report.executive_summary.action_type
     assert loaded.conversation_structure.max_depth == report.conversation_structure.max_depth
+
+
+def test_load_report_artifact_migrates_v1_summary_contract(tmp_path: Path) -> None:
+    analysis_path = build_analysis_artifact(tmp_path)
+    analysis = load_analysis_artifact_file(analysis_path)
+    report = build_thread_report(
+        analysis=analysis,
+        analysis_artifact_path=str(analysis_path),
+        summary_response=None,
+    )
+    payload = report.to_dict()
+    payload["schema_version"] = 1
+    payload["report_version"] = "report-v1.1"
+    summary_payload = payload["report"]["executive_summary"]
+    del summary_payload["priority"]
+    del summary_payload["confidence"]
+    del summary_payload["why_now"]
+    del summary_payload["recommended_owner"]
+    del summary_payload["action_type"]
+    del summary_payload["expected_outcome"]
+    payload["report"]["provenance"]["schema_version"] = 1
+    payload["report"]["provenance"]["report_version"] = "report-v1.1"
+    report_path = tmp_path / "report-v1.json"
+    report_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    loaded = load_report_artifact_file(report_path)
+
+    assert loaded.executive_summary.priority in {"high", "medium", "low"}
+    assert loaded.executive_summary.action_type
+    assert loaded.provenance.schema_version == 2
 
 
 def test_render_report_html_contains_findings_and_caveats(tmp_path: Path) -> None:
@@ -122,9 +160,15 @@ def test_coverage_gap_auto_resolution_appends_uncovered_themes(tmp_path: Path) -
         output={
             "headline": "Performance leads",
             "summary": "Only performance discussed.",
+            "priority": "medium",
+            "confidence": 0.73,
+            "why_now": "Performance is the clearest issue in the current summary.",
             "cited_theme_keys": ["performance"],
             "cited_comment_ids": ["reddit:c3"],
             "next_steps": ["Profile search latency"],
+            "recommended_owner": "engineering",
+            "action_type": "investigate",
+            "expected_outcome": "Clarify the latency bottleneck before a fix.",
         },
         used_fallback=False,
         degraded=False,
@@ -154,9 +198,15 @@ def test_coverage_gap_resolution_is_noop_when_all_themes_cited(tmp_path: Path) -
         output={
             "headline": "Full coverage",
             "summary": "All themes covered.",
+            "priority": "medium",
+            "confidence": 0.7,
+            "why_now": "The summary already covers the main findings.",
             "cited_theme_keys": all_theme_keys,
             "cited_comment_ids": ["reddit:c1"],
             "next_steps": ["Done"],
+            "recommended_owner": "research",
+            "action_type": "monitor",
+            "expected_outcome": "Keep tracking whether these themes persist.",
         },
         used_fallback=False,
         degraded=False,
@@ -189,6 +239,8 @@ def test_render_report_markdown_includes_metadata_section(tmp_path: Path) -> Non
     assert "## Metadata" in markdown
     assert "Summary Provider:" in markdown
     assert "General Feedback Ratio:" in markdown
+    assert "Recommended Owner:" in markdown
+    assert "Expected Outcome:" in markdown
 
 
 def test_weighted_quote_selection_prefers_dense_comments() -> None:

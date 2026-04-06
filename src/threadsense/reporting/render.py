@@ -20,6 +20,13 @@ def render_report_markdown(report: ThreadReport) -> str:
         "",
         report.executive_summary.summary,
         "",
+        f"- Priority: `{report.executive_summary.priority}`",
+        f"- Confidence: `{report.executive_summary.confidence:.2f}`",
+        f"- Why Now: {report.executive_summary.why_now}",
+        f"- Recommended Owner: `{report.executive_summary.recommended_owner}`",
+        f"- Action Type: `{report.executive_summary.action_type}`",
+        f"- Expected Outcome: {report.executive_summary.expected_outcome}",
+        "",
         "### Next Steps",
     ]
     for step in report.executive_summary.next_steps:
@@ -196,6 +203,18 @@ def render_report_html(report: ThreadReport) -> str:
       <p>{escape(report.executive_summary.summary)}</p>
       <div class="grid">
         <div class="metric">
+          <strong>Priority</strong><br>{escape(report.executive_summary.priority)}
+        </div>
+        <div class="metric">
+          <strong>Confidence</strong><br>{report.executive_summary.confidence:.2f}
+        </div>
+        <div class="metric">
+          <strong>Owner</strong><br>{escape(report.executive_summary.recommended_owner)}
+        </div>
+        <div class="metric">
+          <strong>Action</strong><br>{escape(report.executive_summary.action_type)}
+        </div>
+        <div class="metric">
           <strong>Top Phrases</strong><br>{escape(", ".join(report.top_phrases) or "None")}
         </div>
         <div class="metric">
@@ -208,6 +227,8 @@ def render_report_html(report: ThreadReport) -> str:
           <strong>Consensus</strong><br>{report.conversation_structure.consensus_count}
         </div>
       </div>
+      <p><strong>Why Now:</strong> {escape(report.executive_summary.why_now)}</p>
+      <p><strong>Expected Outcome:</strong> {escape(report.executive_summary.expected_outcome)}</p>
     </section>
     <section><h2>Next Steps</h2><ul>{next_steps}</ul></section>
     <section><h2>Findings</h2>{"".join(finding_cards)}</section>

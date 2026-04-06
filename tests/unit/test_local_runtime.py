@@ -108,6 +108,8 @@ def test_complete_repairs_invalid_json_response() -> None:
 
     assert response.used_fallback is False
     assert response.output["headline"] == "Performance and docs dominate the thread"
+    assert response.output["priority"] == "high"
+    assert response.output["action_type"] == "fix"
 
 
 def test_extract_message_content_reads_chat_message() -> None:

@@ -169,11 +169,17 @@ def fallback_response(
         output = {
             "headline": headline,
             "summary": summary,
+            "priority": _default_priority(first_finding.severity if first_finding else None),
+            "confidence": _default_confidence(first_finding),
+            "why_now": _default_why_now(first_finding),
             "cited_theme_keys": [finding.theme_key for finding in analysis.findings[:3]],
             "cited_comment_ids": first_finding.evidence_comment_ids[:5] if first_finding else [],
             "next_steps": [
                 f"Review {finding.theme_key} evidence group" for finding in analysis.findings[:3]
             ],
+            "recommended_owner": _default_owner(first_finding.theme_key if first_finding else None),
+            "action_type": _default_action_type(first_finding.theme_key if first_finding else None),
+            "expected_outcome": _default_expected_outcome(first_finding),
         }
     elif task is InferenceTask.FINDING_CLASSIFICATION:
         output = {
@@ -272,3 +278,57 @@ def fallback_corpus_response(
         degraded=True,
         failure_reason=failure_reason,
     )
+
+
+def _default_priority(severity: str | None) -> str:
+    if severity in {"high", "medium", "low"}:
+        return severity
+    return "low"
+
+
+def _default_confidence(finding: Any) -> float:
+    if finding is None:
+        return 0.4
+    base = {"high": 0.85, "medium": 0.7, "low": 0.55}.get(finding.severity, 0.5)
+    if finding.comment_count >= 3:
+        base += 0.1
+    elif finding.comment_count == 2:
+        base += 0.05
+    return min(base, 0.95)
+
+
+def _default_why_now(finding: Any) -> str:
+    if finding is None:
+        return (
+            "The thread did not produce enough structured evidence for a stronger recommendation."
+        )
+    return (
+        f"{finding.theme_label.title()} is the strongest evidence cluster by severity "
+        f"and supporting comments in this thread."
+    )
+
+
+def _default_owner(theme_key: str | None) -> str:
+    if theme_key == "documentation":
+        return "docs"
+    if theme_key in {"performance", "reliability"}:
+        return "engineering"
+    if theme_key in {"workflow", "usability"}:
+        return "product"
+    return "research"
+
+
+def _default_action_type(theme_key: str | None) -> str:
+    if theme_key == "documentation":
+        return "document"
+    if theme_key in {"performance", "reliability"}:
+        return "fix"
+    if theme_key in {"workflow", "usability"}:
+        return "design"
+    return "investigate"
+
+
+def _default_expected_outcome(finding: Any) -> str:
+    if finding is None:
+        return "Clarify whether the thread contains a stable action signal."
+    return f"Reduce the most visible {finding.theme_label} friction raised in the thread."

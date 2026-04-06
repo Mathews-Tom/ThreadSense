@@ -13,8 +13,8 @@ from threadsense.models.analysis import (
     quote_from_dict,
 )
 
-REPORT_SCHEMA_VERSION = 1
-REPORT_ENGINE_VERSION = "report-v1.1"
+REPORT_SCHEMA_VERSION = 2
+REPORT_ENGINE_VERSION = "report-v1.2"
 REPORT_ARTIFACT_KIND = "thread_report"
 
 
@@ -22,9 +22,15 @@ REPORT_ARTIFACT_KIND = "thread_report"
 class ReportExecutiveSummary:
     headline: str
     summary: str
+    priority: str
+    confidence: float
+    why_now: str
     cited_theme_keys: list[str]
     cited_comment_ids: list[str]
     next_steps: list[str]
+    recommended_owner: str
+    action_type: str
+    expected_outcome: str
     provider: str
     degraded: bool
 
@@ -95,9 +101,15 @@ def load_report_artifact_file(path: Path) -> ThreadReport:
         executive_summary=ReportExecutiveSummary(
             headline=required_str(summary_data, "headline"),
             summary=required_str(summary_data, "summary"),
+            priority=required_str(summary_data, "priority"),
+            confidence=required_float(summary_data, "confidence"),
+            why_now=required_str(summary_data, "why_now"),
             cited_theme_keys=required_str_list(summary_data, "cited_theme_keys"),
             cited_comment_ids=required_str_list(summary_data, "cited_comment_ids"),
             next_steps=required_str_list(summary_data, "next_steps"),
+            recommended_owner=required_str(summary_data, "recommended_owner"),
+            action_type=required_str(summary_data, "action_type"),
+            expected_outcome=required_str(summary_data, "expected_outcome"),
             provider=required_str(summary_data, "provider"),
             degraded=required_bool(summary_data, "degraded"),
         ),
@@ -126,10 +138,101 @@ def migrate_report_payload(payload: Mapping[str, Any]) -> Mapping[str, Any]:
         )
     if schema_version == REPORT_SCHEMA_VERSION:
         return payload
+    if schema_version == 1:
+        return migrate_report_v1_to_v2(payload)
     raise SchemaBoundaryError(
         "report schema version is unsupported",
         details={"schema_version": schema_version, "supported": [REPORT_SCHEMA_VERSION]},
     )
+
+
+def migrate_report_v1_to_v2(payload: Mapping[str, Any]) -> dict[str, Any]:
+    report_data = nested_object(payload, "report")
+    summary_data = nested_object(report_data, "executive_summary")
+    findings_data = nested_list(report_data, "findings")
+    first_finding = findings_data[0] if findings_data else None
+    priority = _migrated_priority(first_finding)
+    return {
+        "artifact_kind": REPORT_ARTIFACT_KIND,
+        "schema_version": REPORT_SCHEMA_VERSION,
+        "report_version": REPORT_ENGINE_VERSION,
+        "report": {
+            **dict(report_data),
+            "executive_summary": {
+                **dict(summary_data),
+                "priority": priority,
+                "confidence": _migrated_confidence(first_finding),
+                "why_now": _migrated_why_now(first_finding),
+                "recommended_owner": _migrated_owner(first_finding),
+                "action_type": _migrated_action_type(first_finding),
+                "expected_outcome": _migrated_expected_outcome(first_finding),
+            },
+            "provenance": {
+                **dict(nested_object(report_data, "provenance")),
+                "schema_version": REPORT_SCHEMA_VERSION,
+                "report_version": REPORT_ENGINE_VERSION,
+            },
+        },
+    }
+
+
+def _migrated_priority(first_finding: Any) -> str:
+    if isinstance(first_finding, dict):
+        severity = first_finding.get("severity")
+        if severity in {"high", "medium", "low"}:
+            return str(severity)
+    return "low"
+
+
+def _migrated_confidence(first_finding: Any) -> float:
+    if not isinstance(first_finding, dict):
+        return 0.4
+    severity = first_finding.get("severity", "low")
+    comment_count = first_finding.get("comment_count", 0)
+    if not isinstance(comment_count, int):
+        comment_count = 0
+    base = {"high": 0.85, "medium": 0.7, "low": 0.55}.get(severity, 0.5)
+    if comment_count >= 3:
+        base += 0.1
+    elif comment_count == 2:
+        base += 0.05
+    return min(base, 0.95)
+
+
+def _migrated_why_now(first_finding: Any) -> str:
+    if not isinstance(first_finding, dict):
+        return "The report was migrated from an older summary contract without a stronger urgency field."
+    theme_label = str(first_finding.get("theme_label", "the lead finding")).title()
+    return f"{theme_label} was the strongest evidence cluster in the original report artifact."
+
+
+def _migrated_owner(first_finding: Any) -> str:
+    theme_key = first_finding.get("theme_key") if isinstance(first_finding, dict) else None
+    if theme_key == "documentation":
+        return "docs"
+    if theme_key in {"performance", "reliability"}:
+        return "engineering"
+    if theme_key in {"workflow", "usability"}:
+        return "product"
+    return "research"
+
+
+def _migrated_action_type(first_finding: Any) -> str:
+    theme_key = first_finding.get("theme_key") if isinstance(first_finding, dict) else None
+    if theme_key == "documentation":
+        return "document"
+    if theme_key in {"performance", "reliability"}:
+        return "fix"
+    if theme_key in {"workflow", "usability"}:
+        return "design"
+    return "investigate"
+
+
+def _migrated_expected_outcome(first_finding: Any) -> str:
+    if not isinstance(first_finding, dict):
+        return "Preserve report compatibility while the richer contract rolls out."
+    theme_label = str(first_finding.get("theme_label", "reported")).lower()
+    return f"Reduce the most visible {theme_label} friction captured in the original report."
 
 
 def finding_from_dict(payload: Mapping[str, Any]) -> ReportFinding:
