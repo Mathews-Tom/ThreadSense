@@ -10,6 +10,7 @@ from typing import Any
 from rich.console import Console
 from rich.json import JSON
 from rich.panel import Panel
+from rich.text import Text
 from rich.table import Table
 
 from threadsense.errors import ThreadSenseError
@@ -124,7 +125,47 @@ def render_run_panel(payload: dict[str, Any]) -> Panel:
     summary_provider = payload.get("report", {}).get("summary_provider", "n/a")
     title = f"ThreadSense Run: {payload.get('source', 'unknown')}"
     subtitle = f"{payload.get('thread_url', '')}\nsummary provider: {summary_provider}"
-    return Panel(table, title=title, subtitle=subtitle, border_style="green")
+    body = Text()
+    body.append(_render_table_text(table))
+    terminal_summary = payload.get("report", {}).get("terminal_summary")
+    if isinstance(terminal_summary, dict):
+        body.append("\n\n")
+        body.append(render_run_summary_text(terminal_summary))
+    return Panel(body, title=title, subtitle=subtitle, border_style="green")
+
+
+def render_run_summary_text(summary: dict[str, Any]) -> Text:
+    text = Text()
+    text.append("Summary\n", style="bold")
+    text.append(f"{summary.get('headline', 'n/a')}\n\n", style="bold cyan")
+    text.append(f"{summary.get('summary', 'n/a')}\n\n")
+    text.append(f"Priority: {summary.get('priority', 'n/a')}\n")
+    text.append(f"Owner: {summary.get('recommended_owner', 'n/a')}\n")
+    text.append(f"Action: {summary.get('action_type', 'n/a')}\n")
+    next_steps = summary.get("next_steps", [])
+    if isinstance(next_steps, list) and next_steps:
+        text.append("\nNext Steps\n", style="bold")
+        for step in next_steps:
+            text.append(f"- {step}\n")
+    top_findings = summary.get("top_findings", [])
+    if isinstance(top_findings, list) and top_findings:
+        text.append("\nTop Findings\n", style="bold")
+        for finding in top_findings:
+            if not isinstance(finding, dict):
+                continue
+            text.append(
+                f"- {finding.get('theme_label', 'n/a')} "
+                f"[{finding.get('severity', 'n/a')}] -> "
+                f"{finding.get('recommended_owner', 'n/a')}/"
+                f"{finding.get('action_type', 'n/a')}\n"
+            )
+    return Text(text.plain.rstrip())
+
+
+def _render_table_text(table: Table) -> Text:
+    console = Console(width=120, record=True)
+    console.print(table)
+    return Text.from_ansi(console.export_text(clear=False).rstrip())
 
 
 def render_api_panel(payload: dict[str, Any]) -> Panel:
