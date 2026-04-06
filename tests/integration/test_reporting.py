@@ -6,8 +6,14 @@ from pathlib import Path
 import pytest
 
 from threadsense.cli import main
+from threadsense.cli_display import set_output_mode
 from threadsense.config import RedditConfig
 from threadsense.connectors.reddit import RedditConnector, RedditThreadRequest
+
+
+@pytest.fixture(autouse=True)
+def _reset_output_mode() -> None:
+    set_output_mode(None)
 
 
 def build_analysis_artifact(tmp_path: Path) -> Path:
@@ -292,4 +298,6 @@ def test_run_reddit_can_require_a_live_summary(
 
     assert exit_code == 0
     assert payload["report"]["summary_provider"] == "local_openai_compatible"
+    assert payload["report"]["terminal_summary"]["headline"]
+    assert payload["report"]["terminal_summary"]["next_steps"]
     assert Path(payload["report"]["output_path"]).exists()
