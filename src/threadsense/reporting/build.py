@@ -86,6 +86,9 @@ def build_executive_summary(
                 if analysis.findings
                 else "No findings were available from deterministic analysis."
             ),
+            priority=_default_priority(first_finding.severity if first_finding else None),
+            confidence=_default_confidence(first_finding),
+            why_now=_default_why_now(first_finding),
             cited_theme_keys=[finding.theme_key for finding in analysis.findings[:3]],
             cited_comment_ids=(
                 analysis.findings[0].evidence_comment_ids[:5] if analysis.findings else []
@@ -93,6 +96,9 @@ def build_executive_summary(
             next_steps=[
                 f"Review {finding.theme_key} evidence group" for finding in analysis.findings[:3]
             ],
+            recommended_owner=_default_owner(first_finding.theme_key if first_finding else None),
+            action_type=_default_action_type(first_finding.theme_key if first_finding else None),
+            expected_outcome=_default_expected_outcome(first_finding),
             provider="deterministic_report",
             degraded=False,
         )
@@ -101,9 +107,15 @@ def build_executive_summary(
     return ReportExecutiveSummary(
         headline=str(output["headline"]),
         summary=str(output["summary"]),
+        priority=str(output["priority"]),
+        confidence=float(output["confidence"]),
+        why_now=str(output["why_now"]),
         cited_theme_keys=list(output["cited_theme_keys"]),
         cited_comment_ids=list(output["cited_comment_ids"]),
         next_steps=list(output["next_steps"]),
+        recommended_owner=str(output["recommended_owner"]),
+        action_type=str(output["action_type"]),
+        expected_outcome=str(output["expected_outcome"]),
         provider=summary_response.provider,
         degraded=summary_response.degraded,
     )
@@ -128,3 +140,61 @@ def calculate_sha256_path(path: str) -> str:
     from pathlib import Path
 
     return calculate_sha256(Path(path))
+
+
+def _default_priority(severity: str | None) -> str:
+    if severity in {"high", "medium", "low"}:
+        return severity
+    return "low"
+
+
+def _default_confidence(finding: object | None) -> float:
+    if finding is None:
+        return 0.4
+    severity = getattr(finding, "severity", "low")
+    comment_count = getattr(finding, "comment_count", 0)
+    base = {"high": 0.85, "medium": 0.7, "low": 0.55}.get(severity, 0.5)
+    if comment_count >= 3:
+        base += 0.1
+    elif comment_count == 2:
+        base += 0.05
+    return min(base, 0.95)
+
+
+def _default_why_now(finding: object | None) -> str:
+    if finding is None:
+        return (
+            "The thread did not produce enough structured evidence for a stronger recommendation."
+        )
+    return (
+        f"{getattr(finding, 'theme_label').title()} is the strongest evidence cluster by severity "
+        "and supporting comments in this thread."
+    )
+
+
+def _default_owner(theme_key: str | None) -> str:
+    if theme_key == "documentation":
+        return "docs"
+    if theme_key in {"performance", "reliability"}:
+        return "engineering"
+    if theme_key in {"workflow", "usability"}:
+        return "product"
+    return "research"
+
+
+def _default_action_type(theme_key: str | None) -> str:
+    if theme_key == "documentation":
+        return "document"
+    if theme_key in {"performance", "reliability"}:
+        return "fix"
+    if theme_key in {"workflow", "usability"}:
+        return "design"
+    return "investigate"
+
+
+def _default_expected_outcome(finding: object | None) -> str:
+    if finding is None:
+        return "Clarify whether the thread contains a stable action signal."
+    return (
+        f"Reduce the most visible {getattr(finding, 'theme_label')} friction raised in the thread."
+    )
