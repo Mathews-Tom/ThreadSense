@@ -43,13 +43,21 @@ def test_validate_task_output_accepts_analysis_summary_shape() -> None:
         {
             "headline": "Performance dominates",
             "summary": "Latency and docs issues lead the thread.",
+            "priority": "high",
+            "confidence": 0.82,
+            "why_now": "Performance is the strongest evidence cluster.",
             "cited_theme_keys": ["performance", "documentation"],
             "cited_comment_ids": ["reddit:c3", "reddit:c1"],
             "next_steps": ["Profile search", "Expand onboarding docs"],
+            "recommended_owner": "engineering",
+            "action_type": "fix",
+            "expected_outcome": "Reduce the most visible thread friction.",
         },
     )
 
     assert payload["headline"] == "Performance dominates"
+    assert payload["priority"] == "high"
+    assert payload["recommended_owner"] == "engineering"
 
 
 def test_router_returns_deterministic_fallback_when_runtime_is_disabled(tmp_path: Path) -> None:
@@ -128,9 +136,15 @@ def test_validate_task_output_strips_hallucinated_citations(tmp_path: Path) -> N
         {
             "headline": "Test headline",
             "summary": "Test summary",
+            "priority": "medium",
+            "confidence": 0.75,
+            "why_now": "The thread points to a concrete performance issue.",
             "cited_theme_keys": [real_theme, "nonexistent_theme"],
             "cited_comment_ids": [real_comment_id, "reddit:fake_id"],
             "next_steps": ["Review performance"],
+            "recommended_owner": "engineering",
+            "action_type": "investigate",
+            "expected_outcome": "Clarify the scope of the problem.",
         },
         analysis=analysis,
     )
@@ -168,14 +182,21 @@ def test_validate_task_output_without_analysis_preserves_all_citations() -> None
         {
             "headline": "Test headline",
             "summary": "Test summary",
+            "priority": "low",
+            "confidence": 0.55,
+            "why_now": "This is a weak but valid signal.",
             "cited_theme_keys": ["anything", "goes"],
             "cited_comment_ids": ["fake:1", "fake:2"],
             "next_steps": ["Step one"],
+            "recommended_owner": "research",
+            "action_type": "monitor",
+            "expected_outcome": "Track whether the signal becomes stronger.",
         },
     )
 
     assert payload["cited_theme_keys"] == ["anything", "goes"]
     assert payload["cited_comment_ids"] == ["fake:1", "fake:2"]
+    assert payload["action_type"] == "monitor"
 
 
 def test_validate_corpus_synthesis_strips_hallucinated_thread_ids(tmp_path: Path) -> None:

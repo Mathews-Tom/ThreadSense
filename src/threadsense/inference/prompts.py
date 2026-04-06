@@ -64,7 +64,12 @@ def build_analysis_summary_request(
                 content=(
                     "You summarize evidence-backed thread analysis. "
                     "Return only valid JSON with keys "
-                    "headline, summary, cited_theme_keys, cited_comment_ids, next_steps. "
+                    "headline, summary, priority, confidence, why_now, "
+                    "cited_theme_keys, cited_comment_ids, next_steps, "
+                    "recommended_owner, action_type, expected_outcome. "
+                    "priority must be one of high, medium, low. "
+                    "confidence must be a float between 0.0 and 1.0. "
+                    "action_type must be one of fix, investigate, document, design, monitor. "
                     "Do not include markdown fences."
                 ),
             ),
@@ -73,6 +78,7 @@ def build_analysis_summary_request(
                 content=(
                     "Use only the provided deterministic evidence. "
                     "Every cited theme key and comment id must come from the input. "
+                    "Produce an operator-oriented summary with a clear owner, action type, and outcome. "
                     f"Input:\n{render_analysis_payload(analysis)}"
                 ),
             ),
@@ -81,8 +87,12 @@ def build_analysis_summary_request(
         repair_retries=repair_retries,
         repair_instruction=(
             "Your previous response was invalid. Return only valid JSON with keys "
-            "headline, summary, cited_theme_keys, cited_comment_ids, next_steps. "
-            "Use arrays of strings for cited_theme_keys, cited_comment_ids, and next_steps."
+            "headline, summary, priority, confidence, why_now, cited_theme_keys, "
+            "cited_comment_ids, next_steps, recommended_owner, action_type, expected_outcome. "
+            "Use arrays of strings for cited_theme_keys, cited_comment_ids, and next_steps. "
+            "priority must be high, medium, or low. "
+            "confidence must be a float between 0.0 and 1.0. "
+            "action_type must be fix, investigate, document, design, or monitor."
         ),
     )
 

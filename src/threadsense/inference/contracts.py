@@ -88,9 +88,19 @@ def validate_analysis_summary_output(
 ) -> dict[str, Any]:
     headline = required_str(payload, "headline")
     summary = required_str(payload, "summary")
+    priority = required_choice(payload, "priority", {"high", "medium", "low"})
+    confidence = bounded_float(payload, "confidence")
+    why_now = required_str(payload, "why_now")
     cited_theme_keys = required_str_list(payload, "cited_theme_keys")
     cited_comment_ids = required_str_list(payload, "cited_comment_ids")
     next_steps = required_str_list(payload, "next_steps")
+    recommended_owner = normalized_identifier(payload, "recommended_owner")
+    action_type = required_choice(
+        payload,
+        "action_type",
+        {"fix", "investigate", "document", "design", "monitor"},
+    )
+    expected_outcome = required_str(payload, "expected_outcome")
 
     if analysis is not None:
         valid_theme_keys = {finding.theme_key for finding in analysis.findings}
@@ -103,9 +113,15 @@ def validate_analysis_summary_output(
     return {
         "headline": headline,
         "summary": summary,
+        "priority": priority,
+        "confidence": confidence,
+        "why_now": why_now,
         "cited_theme_keys": cited_theme_keys,
         "cited_comment_ids": cited_comment_ids,
         "next_steps": next_steps,
+        "recommended_owner": recommended_owner,
+        "action_type": action_type,
+        "expected_outcome": expected_outcome,
     }
 
 
@@ -284,3 +300,33 @@ def required_float(payload: Mapping[str, Any], key: str) -> float:
             details={"key": key},
         )
     return value
+
+
+def bounded_float(payload: Mapping[str, Any], key: str) -> float:
+    value = required_float(payload, key)
+    if not 0.0 <= value <= 1.0:
+        raise SchemaBoundaryError(
+            "inference output float field is out of range",
+            details={"key": key, "min": 0.0, "max": 1.0},
+        )
+    return value
+
+
+def required_choice(payload: Mapping[str, Any], key: str, choices: set[str]) -> str:
+    value = required_str(payload, key).lower()
+    if value not in choices:
+        raise SchemaBoundaryError(
+            "inference output choice field is invalid",
+            details={"key": key, "choices": sorted(choices)},
+        )
+    return value
+
+
+def normalized_identifier(payload: Mapping[str, Any], key: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "_", required_str(payload, key).lower()).strip("_")
+    if not normalized:
+        raise SchemaBoundaryError(
+            "inference output identifier field is invalid",
+            details={"key": key},
+        )
+    return normalized

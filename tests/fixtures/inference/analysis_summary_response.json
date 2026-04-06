@@ -8,7 +8,7 @@
       "index": 0,
       "message": {
         "role": "assistant",
-        "content": "{\"headline\":\"Performance and docs dominate the thread\",\"summary\":\"The strongest evidence clusters around performance friction and onboarding documentation gaps.\",\"cited_theme_keys\":[\"performance\",\"documentation\"],\"cited_comment_ids\":[\"reddit:c3\",\"reddit:c1\"],\"next_steps\":[\"Profile search latency on large threads\",\"Expand onboarding quickstart coverage\"]}"
+        "content": "{\"headline\":\"Performance and docs dominate the thread\",\"summary\":\"The strongest evidence clusters around performance friction and onboarding documentation gaps.\",\"priority\":\"high\",\"confidence\":0.84,\"why_now\":\"The thread concentrates its highest-signal feedback in performance and onboarding friction.\",\"cited_theme_keys\":[\"performance\",\"documentation\"],\"cited_comment_ids\":[\"reddit:c3\",\"reddit:c1\"],\"next_steps\":[\"Profile search latency on large threads\",\"Expand onboarding quickstart coverage\"],\"recommended_owner\":\"engineering\",\"action_type\":\"fix\",\"expected_outcome\":\"Reduce the main adoption blockers described in the thread.\"}"
       },
       "finish_reason": "stop"
     }
