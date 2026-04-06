@@ -23,7 +23,7 @@ from threadsense.domains import DomainVocabulary, load_domain_vocabulary, merge_
 from threadsense.evaluation import compare_strategies, load_golden_dataset
 from threadsense.inference import InferenceResponse, InferenceRouter, InferenceTask
 from threadsense.models.analysis import AnalysisFinding, ThreadAnalysis
-from threadsense.models.canonical import load_canonical_thread
+from threadsense.models.canonical import Thread, load_canonical_thread
 from threadsense.models.corpus import CorpusAnalysis
 from threadsense.models.results import (
     AnalyzeResult,
@@ -348,12 +348,18 @@ def infer_analysis(
         labels={"task": task.value},
     ):
         analysis = load_analysis_artifact(input_path)
+        thread = (
+            load_analysis_thread_context(analysis)
+            if task is InferenceTask.ANALYSIS_SUMMARY
+            else None
+        )
         with runtime_slot_limit(config.limits.runtime_concurrency):
             started_at = perf_counter()
             response = InferenceRouter(config).run_analysis_task(
                 analysis=analysis,
                 task=task,
                 required=required,
+                thread=thread,
             )
         record_runtime_completion(registry, response, perf_counter() - started_at)
         return InferResult(
@@ -419,12 +425,14 @@ def report_analysis(
         analysis = load_analysis_artifact(input_path)
         summary_response = None
         if with_summary:
+            thread = load_analysis_thread_context(analysis)
             with runtime_slot_limit(config.limits.runtime_concurrency):
                 started_at = perf_counter()
                 summary_response = InferenceRouter(config).run_analysis_task(
                     analysis=analysis,
                     task=InferenceTask.ANALYSIS_SUMMARY,
                     required=summary_required,
+                    thread=thread,
                 )
             record_runtime_completion(registry, summary_response, perf_counter() - started_at)
 
@@ -791,6 +799,10 @@ def record_runtime_completion(
         )
 
 
+def load_analysis_thread_context(analysis: ThreadAnalysis) -> Thread:
+    return load_normalized_artifact(Path(analysis.provenance.normalized_artifact_path))
+
+
 @contextmanager
 def runtime_slot_limit(concurrency_limit: int) -> Any:
     limiter = threading.BoundedSemaphore(concurrency_limit)
@@ -860,7 +872,8 @@ def _merge_reclassifications(
     """Move reclassified comments from general_feedback to their assigned themes."""
     reassigned: dict[str, list[str]] = {}
     for item in classifications:
-        confidence = float(item.get("confidence", 0.0))
+        raw_confidence = item.get("confidence", 0.0)
+        confidence = float(raw_confidence) if isinstance(raw_confidence, int | float) else 0.0
         if confidence < _RECLASSIFICATION_CONFIDENCE:
             continue
         theme = str(item.get("theme", "general_feedback"))

@@ -8,6 +8,7 @@ import pytest
 from threadsense.cli import main
 from threadsense.config import RedditConfig
 from threadsense.connectors.reddit import RedditConnector, RedditThreadRequest
+from threadsense.inference import InferenceResponse, InferenceTask
 from threadsense.models.canonical import load_canonical_thread
 from threadsense.pipeline.analyze import analyze_thread
 
@@ -147,3 +148,71 @@ def test_end_to_end_fetch_normalize_analyze_and_infer(
     assert analysis_path.exists()
     assert infer_report["provider"] == "local_openai_compatible"
     assert infer_report["output"]["headline"]
+
+
+def test_infer_analysis_loads_thread_context_for_summary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    analysis_path = build_analysis_artifact(tmp_path)
+    captured: dict[str, object] = {}
+
+    def fake_run_analysis_task(
+        self: object,
+        analysis: object,
+        task: InferenceTask,
+        required: bool,
+        thread: object | None = None,
+    ) -> InferenceResponse:
+        captured["task"] = task.value
+        captured["required"] = required
+        captured["thread"] = thread
+        return InferenceResponse(
+            task=task,
+            provider="test_runtime",
+            model="test-model",
+            finish_reason="stop",
+            output={
+                "headline": "Performance dominates",
+                "summary": "Latency issues lead the thread.",
+                "priority": "high",
+                "confidence": 0.8,
+                "why_now": "Performance is the strongest cluster.",
+                "cited_theme_keys": ["performance"],
+                "cited_comment_ids": ["reddit:c3"],
+                "next_steps": ["Profile search latency"],
+                "recommended_owner": "engineering",
+                "action_type": "fix",
+                "expected_outcome": "Reduce the highest-friction thread bottleneck.",
+            },
+            used_fallback=False,
+            degraded=False,
+            failure_reason=None,
+        )
+
+    monkeypatch.setattr(
+        "threadsense.workflows.InferenceRouter.run_analysis_task",
+        fake_run_analysis_task,
+    )
+
+    exit_code = main(
+        [
+            "infer",
+            "analysis",
+            "--input",
+            str(analysis_path),
+            "--task",
+            "analysis_summary",
+            "--required",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["provider"] == "test_runtime"
+    assert captured["task"] == "analysis_summary"
+    assert captured["required"] is True
+    thread = captured["thread"]
+    assert thread is not None
+    assert getattr(thread, "title") == "Deterministic analysis fixture thread"
