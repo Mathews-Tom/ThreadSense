@@ -112,6 +112,44 @@ class InferResult:
 
 
 @dataclass(frozen=True)
+class ReportFindingSummary:
+    theme_label: str
+    severity: str
+    action_type: str
+    recommended_owner: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "theme_label": self.theme_label,
+            "severity": self.severity,
+            "action_type": self.action_type,
+            "recommended_owner": self.recommended_owner,
+        }
+
+
+@dataclass(frozen=True)
+class RunTerminalSummary:
+    headline: str
+    summary: str
+    priority: str
+    recommended_owner: str
+    action_type: str
+    next_steps: list[str]
+    top_findings: list[ReportFindingSummary]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "headline": self.headline,
+            "summary": self.summary,
+            "priority": self.priority,
+            "recommended_owner": self.recommended_owner,
+            "action_type": self.action_type,
+            "next_steps": self.next_steps,
+            "top_findings": [finding.to_dict() for finding in self.top_findings],
+        }
+
+
+@dataclass(frozen=True)
 class ReportResult:
     status: str
     artifact_type: str
@@ -123,9 +161,10 @@ class ReportResult:
     summary_provider: str | None
     degraded_summary: bool
     quality_check_count: int
+    terminal_summary: RunTerminalSummary | None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "status": self.status,
             "artifact_type": self.artifact_type,
             "input_path": str(self.input_path),
@@ -137,6 +176,9 @@ class ReportResult:
             "degraded_summary": self.degraded_summary,
             "quality_check_count": self.quality_check_count,
         }
+        if self.terminal_summary is not None:
+            payload["terminal_summary"] = self.terminal_summary.to_dict()
+        return payload
 
 
 @dataclass(frozen=True)

@@ -25,6 +25,7 @@ from threadsense.inference import InferenceResponse, InferenceRouter, InferenceT
 from threadsense.models.analysis import AnalysisFinding, ThreadAnalysis
 from threadsense.models.canonical import Thread, load_canonical_thread
 from threadsense.models.corpus import CorpusAnalysis
+from threadsense.models.report import ThreadReport
 from threadsense.models.results import (
     AnalyzeResult,
     CorpusAnalyzeResult,
@@ -35,7 +36,9 @@ from threadsense.models.results import (
     InferResult,
     NormalizeResult,
     PipelineResult,
+    ReportFindingSummary,
     ReportResult,
+    RunTerminalSummary,
 )
 from threadsense.observability import (
     DEFAULT_METRICS,
@@ -471,7 +474,28 @@ def report_analysis(
             summary_provider=report.provenance.summary_provider,
             degraded_summary=report.executive_summary.degraded,
             quality_check_count=len(report.quality_checks),
+            terminal_summary=build_terminal_summary(report),
         )
+
+
+def build_terminal_summary(report: ThreadReport) -> RunTerminalSummary:
+    return RunTerminalSummary(
+        headline=report.executive_summary.headline,
+        summary=report.executive_summary.summary,
+        priority=report.executive_summary.priority,
+        recommended_owner=report.executive_summary.recommended_owner,
+        action_type=report.executive_summary.action_type,
+        next_steps=report.executive_summary.next_steps[:3],
+        top_findings=[
+            ReportFindingSummary(
+                theme_label=finding.theme_label,
+                severity=finding.severity,
+                action_type=finding.action_type,
+                recommended_owner=finding.recommended_owner,
+            )
+            for finding in report.findings[:3]
+        ],
+    )
 
 
 def run_reddit_pipeline(
