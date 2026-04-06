@@ -44,6 +44,7 @@ class GitHubDiscussion:
     repo: str
     number: int
     title: str
+    body: str | None
     author: str
     url: str
     created_utc: float
@@ -79,7 +80,7 @@ class GitHubDiscussionsResult:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "artifact_version": 1,
+            "artifact_version": 2,
             "source": self.source_name,
             "requested_url": self.requested_url,
             "normalized_url": self.normalized_url,
@@ -89,6 +90,7 @@ class GitHubDiscussionsResult:
                 "repo": self.discussion.repo,
                 "number": self.discussion.number,
                 "title": self.discussion.title,
+                "body": self.discussion.body,
                 "author": self.discussion.author,
                 "url": self.discussion.url,
                 "created_utc": self.discussion.created_utc,
@@ -181,6 +183,7 @@ def build_discussion_query() -> str:
       repository(owner: $owner, name: $repo) {
         discussion(number: $number) {
           title
+          body
           url
           createdAt
           author { login }
@@ -262,6 +265,7 @@ def parse_discussion(payload: JsonObject, owner: str, repo: str, number: int) ->
         repo=repo,
         number=number,
         title=str(discussion.get("title", "")),
+        body=optional_discussion_body(discussion),
         author=str(author.get("login", "[deleted]")),
         url=str(discussion.get("url", "")),
         created_utc=parse_timestamp(str(discussion.get("createdAt", ""))),
@@ -315,6 +319,17 @@ def extract_rate_limit_remaining(payload: JsonObject) -> int | None:
         return None
     remaining = rate_limit.get("remaining")
     return remaining if isinstance(remaining, int) else None
+
+
+def optional_discussion_body(discussion: Mapping[str, Any]) -> str | None:
+    if "body" not in discussion:
+        raise RedditRequestError("github discussion body is missing")
+    value = discussion.get("body")
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise RedditRequestError("github discussion body is invalid")
+    return value
 
 
 def parse_timestamp(value: str) -> float:

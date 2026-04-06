@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
+from collections import Counter
 from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
@@ -15,11 +17,14 @@ from threadsense.connectors.github_discussions import GitHubDiscussionsConnector
 from threadsense.connectors.hackernews import HackerNewsConnector
 from threadsense.connectors.reddit import (
     RedditConnector,
+    RedditSearchMatch,
+    RedditSearchRequest,
     RedditThreadRequest,
 )
 from threadsense.connectors.registry import SourceRegistry
 from threadsense.contracts import AnalysisContract, DomainType
 from threadsense.domains import DomainVocabulary, load_domain_vocabulary, merge_vocabulary_expansion
+from threadsense.errors import AnalysisBoundaryError
 from threadsense.evaluation import compare_strategies, load_golden_dataset
 from threadsense.inference import InferenceResponse, InferenceRouter, InferenceTask
 from threadsense.models.analysis import AnalysisFinding, ThreadAnalysis
@@ -36,6 +41,10 @@ from threadsense.models.results import (
     InferResult,
     NormalizeResult,
     PipelineResult,
+    RedditResearchResult,
+    ResearchSelectedThreadSummary,
+    ResearchTerminalSummary,
+    ResearchThreadMatchResult,
     ReportFindingSummary,
     ReportResult,
     RunTerminalSummary,
@@ -498,6 +507,40 @@ def build_terminal_summary(report: ThreadReport) -> RunTerminalSummary:
     )
 
 
+def build_corpus_terminal_summary(
+    corpus: CorpusAnalysis,
+    summary_response: InferenceResponse | None,
+) -> ResearchTerminalSummary:
+    if summary_response is not None:
+        output = summary_response.output
+        return ResearchTerminalSummary(
+            headline=str(output["headline"]),
+            key_patterns=list(output["key_patterns"][:3]),
+            recommended_actions=list(output["recommended_actions"][:3]),
+            confidence_note=str(output["confidence_note"]),
+            top_threads=[],
+        )
+
+    top_findings = corpus.cross_thread_findings[:3]
+    return ResearchTerminalSummary(
+        headline=(
+            f"{top_findings[0].theme_label.title()} is the strongest cross-thread pattern"
+            if top_findings
+            else f"Corpus report for {corpus.name}"
+        ),
+        key_patterns=[
+            f"{finding.theme_label} spans {finding.thread_count} threads"
+            for finding in top_findings
+        ],
+        recommended_actions=[
+            f"Review the {finding.theme_key} pattern across {finding.thread_count} threads"
+            for finding in top_findings
+        ],
+        confidence_note=("Generated from deterministic corpus findings without runtime synthesis."),
+        top_threads=[],
+    )
+
+
 def run_reddit_pipeline(
     *,
     config: AppConfig,
@@ -562,6 +605,191 @@ def run_reddit_pipeline(
         normalize=normalize_result,
         analyze=analyze_result,
         report=report_result,
+    )
+
+
+def run_reddit_research(
+    *,
+    config: AppConfig,
+    logger: logging.Logger,
+    trace: TraceContext,
+    query: str,
+    subreddits: list[str],
+    time_window: str,
+    sort: str,
+    limit: int,
+    per_subreddit_limit: int,
+    expand_more: bool,
+    flat: bool,
+    report_format: str,
+    with_summary: bool,
+    summary_required: bool,
+    connector_factory: RedditConnectorFactory,
+    contract: AnalysisContract | None = None,
+    explicit_domain: DomainType | None = None,
+    auto_domain: bool = False,
+    registry: MetricsRegistry = DEFAULT_METRICS,
+) -> RedditResearchResult:
+    validate_research_query(query)
+    if report_format != "markdown":
+        raise AnalysisBoundaryError(
+            "reddit research currently supports markdown corpus reports only",
+            details={"report_format": report_format},
+        )
+    if limit <= 0:
+        raise AnalysisBoundaryError(
+            "reddit research limit must be greater than zero",
+            details={"limit": limit},
+        )
+    if per_subreddit_limit <= 0:
+        raise AnalysisBoundaryError(
+            "reddit research per-subreddit limit must be greater than zero",
+            details={"per_subreddit_limit": per_subreddit_limit},
+        )
+    if per_subreddit_limit > limit:
+        raise AnalysisBoundaryError(
+            "reddit research per-subreddit limit must not exceed the global limit",
+            details={"limit": limit, "per_subreddit_limit": per_subreddit_limit},
+        )
+    with observe_stage(
+        registry=registry,
+        logger=logger,
+        trace=trace,
+        stage="research_discover",
+        labels={"source": "reddit"},
+    ):
+        connector = connector_factory(config)
+        search_result = connector.search_threads(
+            RedditSearchRequest(
+                query=query,
+                subreddits=subreddits,
+                limit=per_subreddit_limit,
+                sort=sort,
+                time_window=time_window,
+            )
+        )
+    selected_matches = select_reddit_research_matches(
+        matches=search_result.matches,
+        query=query,
+        limit=limit,
+        per_subreddit_limit=per_subreddit_limit,
+    )
+    if not selected_matches:
+        raise AnalysisBoundaryError(
+            "reddit research did not find any matching threads",
+            details={"query": query, "subreddits": subreddits},
+        )
+
+    analysis_paths: list[Path] = []
+    for match in selected_matches:
+        fetch_result = fetch_reddit_thread(
+            config=config,
+            logger=logger,
+            trace=trace,
+            url=match.thread_url,
+            output_path=None,
+            expand_more=expand_more,
+            flat=flat,
+            connector_factory=connector_factory,
+            registry=registry,
+        )
+        normalize_result = normalize_reddit_thread(
+            config=config,
+            logger=logger,
+            trace=trace,
+            input_path=fetch_result.output_path,
+            output_path=None,
+            registry=registry,
+        )
+        analyze_result = analyze_normalized_thread(
+            config=config,
+            logger=logger,
+            trace=trace,
+            input_path=normalize_result.output_path,
+            output_path=None,
+            contract=contract,
+            auto_domain=auto_domain,
+            registry=registry,
+        )
+        analysis_paths.append(analyze_result.output_path)
+
+    corpus_create = create_corpus_from_analysis_paths(
+        config=config,
+        logger=logger,
+        trace=trace,
+        name=build_reddit_research_name(query, subreddits, time_window),
+        description=build_reddit_research_description(query, subreddits, time_window, sort),
+        domain=resolve_research_domain(analysis_paths, explicit_domain=explicit_domain),
+        analysis_paths=analysis_paths,
+        source_filter="reddit",
+        output_path=None,
+        registry=registry,
+    )
+    corpus_analysis = analyze_corpus(
+        config=config,
+        logger=logger,
+        trace=trace,
+        manifest_path=corpus_create.manifest_path,
+        output_path=None,
+        registry=registry,
+    )
+    corpus_report = report_corpus(
+        config=config,
+        logger=logger,
+        trace=trace,
+        manifest_path=corpus_create.manifest_path,
+        output_path=None,
+        with_summary=with_summary,
+        summary_required=summary_required,
+        registry=registry,
+    )
+    research_summary = None
+    if corpus_report.terminal_summary is not None:
+        research_summary = ResearchTerminalSummary(
+            headline=corpus_report.terminal_summary.headline,
+            key_patterns=corpus_report.terminal_summary.key_patterns,
+            recommended_actions=corpus_report.terminal_summary.recommended_actions,
+            confidence_note=corpus_report.terminal_summary.confidence_note,
+            top_threads=[
+                ResearchSelectedThreadSummary(
+                    subreddit=match.subreddit,
+                    title=match.title,
+                    match_source=match_source_for_query(match, query),
+                )
+                for match in selected_matches[:3]
+            ],
+        )
+    return RedditResearchResult(
+        status="ready",
+        artifact_type="research",
+        query=query,
+        subreddits=subreddits,
+        time_window=time_window,
+        reddit_time_bucket=search_result.reddit_time_bucket,
+        sort=sort,
+        discovered_thread_count=len(search_result.matches),
+        selected_thread_count=len(selected_matches),
+        fetched_thread_count=len(analysis_paths),
+        failed_thread_count=0,
+        selected_threads=[
+            ResearchThreadMatchResult(
+                post_id=match.post_id,
+                subreddit=match.subreddit,
+                title=match.title,
+                thread_url=match.thread_url,
+                score=match.score,
+                num_comments=match.num_comments,
+                match_source=match_source_for_query(match, query),
+            )
+            for match in selected_matches
+        ],
+        manifest_path=corpus_create.manifest_path,
+        corpus_analysis_path=corpus_analysis.output_path,
+        corpus_report_path=corpus_report.output_path,
+        corpus_id=corpus_report.corpus_id,
+        summary_provider=corpus_report.summary_provider,
+        degraded_summary=corpus_report.degraded_summary,
+        terminal_summary=research_summary,
     )
 
 
@@ -644,17 +872,43 @@ def create_corpus(
     output_path: Path | None,
     registry: MetricsRegistry = DEFAULT_METRICS,
 ) -> CorpusCreateResult:
+    return create_corpus_from_analysis_paths(
+        config=config,
+        logger=logger,
+        trace=trace,
+        name=name,
+        description=description,
+        domain=DomainType(domain),
+        analysis_paths=sorted(analysis_dir.rglob("*.json")),
+        source_filter=source_filter,
+        output_path=output_path,
+        registry=registry,
+    )
+
+
+def create_corpus_from_analysis_paths(
+    *,
+    config: AppConfig,
+    logger: logging.Logger,
+    trace: TraceContext,
+    name: str,
+    description: str,
+    domain: DomainType,
+    analysis_paths: list[Path],
+    source_filter: str | None,
+    output_path: Path | None,
+    registry: MetricsRegistry = DEFAULT_METRICS,
+) -> CorpusCreateResult:
     with observe_stage(
         registry=registry,
         logger=logger,
         trace=trace,
         stage="corpus_create",
     ):
-        analysis_paths = sorted(analysis_dir.rglob("*.json"))
         manifest = build_corpus_manifest(
             name=name,
             description=description,
-            domain=DomainType(domain),
+            domain=domain,
             analysis_paths=analysis_paths,
             source_filter=source_filter,
         )
@@ -753,6 +1007,7 @@ def report_corpus(
             corpus_id=corpus.corpus_id,
             summary_provider=summary_response.provider if summary_response is not None else None,
             degraded_summary=summary_response.degraded if summary_response is not None else False,
+            terminal_summary=build_corpus_terminal_summary(corpus, summary_response),
         )
 
 
@@ -835,6 +1090,179 @@ def runtime_slot_limit(concurrency_limit: int) -> Any:
         yield
     finally:
         limiter.release()
+
+
+def select_reddit_research_matches(
+    *,
+    matches: list[RedditSearchMatch],
+    query: str,
+    limit: int,
+    per_subreddit_limit: int,
+) -> list[RedditSearchMatch]:
+    matching = [match for match in matches if is_query_match(match, query)]
+    ranked_by_subreddit: dict[str, list[RedditSearchMatch]] = {}
+    for subreddit in sorted({match.subreddit for match in matching}):
+        subreddit_matches = [match for match in matching if match.subreddit == subreddit]
+        subreddit_matches.sort(
+            key=lambda match: research_match_sort_key(match, query), reverse=True
+        )
+        ranked_by_subreddit[subreddit] = subreddit_matches[:per_subreddit_limit]
+
+    deduped: dict[str, RedditSearchMatch] = {}
+    for match_list in ranked_by_subreddit.values():
+        for match in match_list:
+            existing = deduped.get(match.post_id)
+            if existing is None or research_match_sort_key(match, query) > research_match_sort_key(
+                existing, query
+            ):
+                deduped[match.post_id] = match
+    selected = sorted(
+        deduped.values(),
+        key=lambda match: research_match_sort_key(match, query),
+        reverse=True,
+    )
+    return selected[:limit]
+
+
+def is_query_match(match: RedditSearchMatch, query: str) -> bool:
+    return any(query_match_components(query, match.title, match.selftext))
+
+
+def research_match_sort_key(
+    match: RedditSearchMatch, query: str
+) -> tuple[int, int, int, int, int, int, float]:
+    title_phrase_hits, title_term_hits, selftext_phrase_hits, selftext_term_hits = (
+        query_match_components(
+            query,
+            match.title,
+            match.selftext,
+        )
+    )
+    return (
+        title_phrase_hits,
+        title_term_hits,
+        selftext_phrase_hits,
+        selftext_term_hits,
+        match.score,
+        match.num_comments,
+        match.created_utc,
+    )
+
+
+def match_source_for_query(match: RedditSearchMatch, query: str) -> str:
+    title_phrase_hits, title_term_hits, selftext_phrase_hits, selftext_term_hits = (
+        query_match_components(
+            query,
+            match.title,
+            match.selftext,
+        )
+    )
+    if title_phrase_hits:
+        return "title_phrase"
+    if title_term_hits:
+        return "title_terms"
+    if selftext_phrase_hits:
+        return "selftext_phrase"
+    if selftext_term_hits:
+        return "selftext_terms"
+    raise AnalysisBoundaryError(
+        "selected reddit research match does not satisfy the local query match requirement",
+        details={"post_id": match.post_id, "query": query},
+    )
+
+
+def query_match_components(query: str, title: str, selftext: str) -> tuple[int, int, int, int]:
+    title_text = title.lower()
+    selftext_text = selftext.lower()
+    title_tokens = set(tokenize_query_text(title_text))
+    selftext_tokens = set(tokenize_query_text(selftext_text))
+    title_phrase_hits = 0
+    title_term_hits = 0
+    selftext_phrase_hits = 0
+    selftext_term_hits = 0
+    for clause in parse_query_clauses(query):
+        if contains_query_clause(title_text, clause):
+            title_phrase_hits += 1
+            continue
+        if contains_query_clause(selftext_text, clause):
+            selftext_phrase_hits += 1
+            continue
+        terms = [term for term in clause.split() if term]
+        if terms and all(term in title_tokens for term in terms):
+            title_term_hits += 1
+            continue
+        if terms and all(term in selftext_tokens for term in terms):
+            selftext_term_hits += 1
+    return title_phrase_hits, title_term_hits, selftext_phrase_hits, selftext_term_hits
+
+
+def parse_query_clauses(query: str) -> list[str]:
+    clauses = [
+        clause.strip().lower() for clause in re.split(r"\s+or\s+|\|", query, flags=re.IGNORECASE)
+    ]
+    return [clause for clause in clauses if clause]
+
+
+def validate_research_query(query: str) -> None:
+    if not query.strip():
+        raise AnalysisBoundaryError("reddit research query must not be empty")
+    if re.search(r"[():\"']", query):
+        raise AnalysisBoundaryError(
+            "reddit research query uses unsupported advanced search syntax",
+            details={"query": query},
+        )
+
+
+def contains_query_clause(text: str, clause: str) -> bool:
+    pattern = r"(?<!\w)" + r"\s+".join(re.escape(part) for part in clause.split()) + r"(?!\w)"
+    return re.search(pattern, text) is not None
+
+
+def tokenize_query_text(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9_]+", text)
+
+
+def resolve_research_domain(
+    analysis_paths: list[Path],
+    *,
+    explicit_domain: DomainType | None,
+) -> DomainType:
+    if explicit_domain is not None:
+        return explicit_domain
+    domains: list[str] = []
+    for path in analysis_paths:
+        analysis = load_analysis_artifact(path)
+        domain = analysis.provenance.contract.get("domain")
+        if not isinstance(domain, str) or not domain:
+            raise AnalysisBoundaryError(
+                "research corpus domain is missing from analysis provenance",
+                details={"analysis_path": str(path)},
+            )
+        domains.append(domain)
+    if len(set(domains)) != 1:
+        raise AnalysisBoundaryError(
+            "research corpus domain is inconsistent across selected analyses",
+            details={"domains": sorted(set(domains))},
+        )
+    return DomainType(Counter(domains).most_common(1)[0][0])
+
+
+def build_reddit_research_name(query: str, subreddits: list[str], time_window: str) -> str:
+    communities = "-".join(name.lower() for name in subreddits)
+    return f"reddit-research-{query}-{communities}-{time_window}"
+
+
+def build_reddit_research_description(
+    query: str,
+    subreddits: list[str],
+    time_window: str,
+    sort: str,
+) -> str:
+    communities = ", ".join(subreddits)
+    return (
+        f"Topic research for '{query}' across {communities} over {time_window} "
+        f"using Reddit sort={sort}."
+    )
 
 
 def build_source_registry(config: AppConfig) -> SourceRegistry:

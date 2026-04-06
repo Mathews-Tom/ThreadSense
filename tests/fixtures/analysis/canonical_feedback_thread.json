@@ -1,7 +1,7 @@
 {
   "artifact_kind": "canonical_thread",
-  "schema_version": 1,
-  "normalization_version": "reddit-to-canonical-v1",
+  "schema_version": 2,
+  "normalization_version": "canonical-thread-v2",
   "thread": {
     "thread_id": "reddit:analysis123",
     "source": {
@@ -11,6 +11,7 @@
       "thread_url": "https://www.reddit.com/r/ClaudeCode/comments/analysis123/example/"
     },
     "title": "Deterministic analysis fixture thread",
+    "body": null,
     "permalink": "https://www.reddit.com/r/ClaudeCode/comments/analysis123/example/",
     "author": {
       "username": "op",
@@ -122,8 +123,8 @@
       "raw_sha256": "fixture-sha",
       "retrieved_at_utc": 1710000000.0,
       "normalized_at_utc": 1710000007.0,
-      "schema_version": 1,
-      "normalization_version": "reddit-to-canonical-v1"
+      "schema_version": 2,
+      "normalization_version": "canonical-thread-v2"
     }
   }
 }

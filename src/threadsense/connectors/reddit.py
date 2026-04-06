@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field
@@ -50,10 +51,58 @@ class RedditComment:
 class RedditPost:
     id: str
     title: str
+    selftext: str
     subreddit: str
     author: str
     permalink: str
     num_comments: int
+
+
+@dataclass(frozen=True)
+class RedditSearchRequest:
+    query: str
+    subreddits: list[str]
+    limit: int
+    sort: str
+    time_window: str
+
+
+@dataclass(frozen=True)
+class RedditSearchMatch:
+    post_id: str
+    title: str
+    selftext: str
+    subreddit: str
+    author: str
+    permalink: str
+    thread_url: str
+    normalized_url: str
+    score: int
+    num_comments: int
+    created_utc: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class RedditSearchResult:
+    query: str
+    subreddits: list[str]
+    sort: str
+    time_window: str
+    reddit_time_bucket: str
+    matches: list[RedditSearchMatch]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "query": self.query,
+            "subreddits": self.subreddits,
+            "sort": self.sort,
+            "time_window": self.time_window,
+            "reddit_time_bucket": self.reddit_time_bucket,
+            "matches": [match.to_dict() for match in self.matches],
+        }
 
 
 @dataclass(frozen=True)
@@ -91,7 +140,7 @@ class RedditThreadResult:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "artifact_version": 1,
+            "artifact_version": 2,
             "source": "reddit",
             "requested_url": self.requested_url,
             "normalized_url": self.normalized_url,
@@ -158,6 +207,46 @@ class RedditConnector:
             cache_status=cache_status,
             raw_thread_payload=payload_list,
             raw_morechildren_payloads=raw_morechildren_payloads,
+        )
+
+    def search_threads(self, search_request: RedditSearchRequest) -> RedditSearchResult:
+        if not search_request.query.strip():
+            raise RedditInputError("reddit search query must not be empty")
+        if not search_request.subreddits:
+            raise RedditInputError("reddit search requires at least one subreddit")
+        if search_request.limit <= 0:
+            raise RedditInputError("reddit search limit must be greater than zero")
+        reddit_time_bucket = map_time_window_to_reddit_bucket(search_request.time_window)
+        requested_at_utc = time()
+        matches: list[RedditSearchMatch] = []
+        query_clauses = split_search_query_clauses(search_request.query)
+        for subreddit in search_request.subreddits:
+            subreddit_name = validate_subreddit_name(subreddit)
+            for query_clause in query_clauses:
+                payload = self._get_cached_json(
+                    f"https://www.reddit.com/r/{subreddit_name}/search.json",
+                    params={
+                        "q": query_clause,
+                        "restrict_sr": "on",
+                        "sort": search_request.sort,
+                        "t": reddit_time_bucket,
+                        "limit": search_request.limit,
+                    },
+                )
+                matches.extend(
+                    filter_matches_by_time_window(
+                        extract_search_matches(payload, subreddit_name),
+                        time_window=search_request.time_window,
+                        requested_at_utc=requested_at_utc,
+                    )
+                )
+        return RedditSearchResult(
+            query=search_request.query,
+            subreddits=[validate_subreddit_name(name) for name in search_request.subreddits],
+            sort=search_request.sort,
+            time_window=search_request.time_window,
+            reddit_time_bucket=reddit_time_bucket,
+            matches=matches,
         )
 
     def fetch(self, request: FetchRequest) -> RawArtifact:
@@ -336,6 +425,7 @@ def extract_post(post_listing: JsonObject) -> RedditPost:
     return RedditPost(
         id=_schema.required_str(post_data, "id"),
         title=_schema.required_str(post_data, "title"),
+        selftext=required_present_str(post_data, "selftext"),
         subreddit=_schema.optional_str(post_data, "subreddit", ""),
         author=_schema.optional_str(post_data, "author", "[deleted]"),
         permalink=f"https://reddit.com{_schema.optional_str(post_data, 'permalink', '')}",
@@ -343,8 +433,155 @@ def extract_post(post_listing: JsonObject) -> RedditPost:
     )
 
 
+def extract_search_matches(payload: Any, expected_subreddit: str) -> list[RedditSearchMatch]:
+    if not isinstance(payload, dict):
+        raise RedditResponseError("reddit search payload must be an object")
+    children = _schema.nested_list(payload, "data", "children")
+    matches: list[RedditSearchMatch] = []
+    for child in children:
+        if _schema.required_str(child, "kind") != "t3":
+            continue
+        post_data = _schema.nested_object(child, "data")
+        permalink = _schema.required_str(post_data, "permalink")
+        thread_url = build_thread_url(permalink)
+        match = RedditSearchMatch(
+            post_id=_schema.required_str(post_data, "id"),
+            title=_schema.required_str(post_data, "title"),
+            selftext=required_present_str(post_data, "selftext"),
+            subreddit=_schema.required_str(post_data, "subreddit"),
+            author=_schema.required_str(post_data, "author"),
+            permalink=permalink,
+            thread_url=thread_url,
+            normalized_url=normalize_url(thread_url),
+            score=_schema.required_int(post_data, "score"),
+            num_comments=_schema.required_int(post_data, "num_comments"),
+            created_utc=_schema.required_float(post_data, "created_utc"),
+        )
+        if match.subreddit.lower() != expected_subreddit.lower():
+            raise RedditResponseError(
+                "reddit search result subreddit does not match requested subreddit",
+                details={
+                    "expected_subreddit": expected_subreddit,
+                    "actual_subreddit": match.subreddit,
+                    "post_id": match.post_id,
+                },
+            )
+        matches.append(match)
+    return matches
+
+
 def extract_comment_listing(comment_listing: JsonObject) -> list[JsonObject]:
     return _schema.nested_list(comment_listing, "data", "children")
+
+
+def map_time_window_to_reddit_bucket(time_window: str) -> str:
+    normalized = time_window.strip().lower()
+    if normalized == "all":
+        return "all"
+    match = re.fullmatch(r"(\d+)([dwmy])", normalized)
+    if match is None:
+        raise RedditInputError(
+            "reddit time window must use forms like 1d, 7d, 30d, 12m, or all",
+            details={"time_window": time_window},
+        )
+    amount = int(match.group(1))
+    unit = match.group(2)
+    if amount <= 0:
+        raise RedditInputError(
+            "reddit time window must be greater than zero",
+            details={"time_window": time_window},
+        )
+    if unit == "d":
+        if amount <= 1:
+            return "day"
+        if amount <= 7:
+            return "week"
+        if amount <= 30:
+            return "month"
+        if amount <= 365:
+            return "year"
+        return "all"
+    if unit == "w":
+        if amount <= 1:
+            return "week"
+        if amount <= 4:
+            return "month"
+        if amount <= 52:
+            return "year"
+        return "all"
+    if unit == "m":
+        if amount <= 1:
+            return "month"
+        if amount <= 12:
+            return "year"
+        return "all"
+    if unit == "y":
+        return "year" if amount <= 1 else "all"
+    raise RedditInputError(
+        "reddit time window unit is unsupported",
+        details={"time_window": time_window},
+    )
+
+
+def validate_subreddit_name(subreddit: str) -> str:
+    normalized = subreddit.strip().removeprefix("r/")
+    if not normalized or not re.fullmatch(r"[A-Za-z0-9_]+", normalized):
+        raise RedditInputError(
+            "reddit subreddit name is invalid",
+            details={"subreddit": subreddit},
+        )
+    return normalized
+
+
+def build_thread_url(permalink: str) -> str:
+    return f"https://www.reddit.com{permalink}" if permalink.startswith("/") else permalink
+
+
+def required_present_str(payload: Mapping[str, Any], key: str) -> str:
+    if key not in payload:
+        raise RedditResponseError("reddit string field is missing", details={"key": key})
+    value = payload[key]
+    if not isinstance(value, str):
+        raise RedditResponseError("reddit string field is invalid", details={"key": key})
+    return value
+
+
+def filter_matches_by_time_window(
+    matches: list[RedditSearchMatch],
+    *,
+    time_window: str,
+    requested_at_utc: float,
+) -> list[RedditSearchMatch]:
+    cutoff_utc = time_window_cutoff_utc(time_window, requested_at_utc)
+    if cutoff_utc is None:
+        return matches
+    return [match for match in matches if match.created_utc >= cutoff_utc]
+
+
+def time_window_cutoff_utc(time_window: str, requested_at_utc: float) -> float | None:
+    normalized = time_window.strip().lower()
+    if normalized == "all":
+        return None
+    match = re.fullmatch(r"(\d+)([dwmy])", normalized)
+    if match is None:
+        raise RedditInputError(
+            "reddit time window must use forms like 1d, 7d, 30d, 12m, or all",
+            details={"time_window": time_window},
+        )
+    amount = int(match.group(1))
+    unit = match.group(2)
+    seconds_per_unit = {
+        "d": 86400,
+        "w": 7 * 86400,
+        "m": 30 * 86400,
+        "y": 365 * 86400,
+    }
+    return requested_at_utc - (amount * seconds_per_unit[unit])
+
+
+def split_search_query_clauses(query: str) -> list[str]:
+    clauses = [clause.strip() for clause in re.split(r"\s+OR\s+|\|", query, flags=re.IGNORECASE)]
+    return [clause for clause in clauses if clause]
 
 
 def extract_morechildren_things(payload: Any) -> list[JsonObject]:

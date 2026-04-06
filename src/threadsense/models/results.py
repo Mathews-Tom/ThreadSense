@@ -232,9 +232,10 @@ class CorpusReportResult:
     corpus_id: str
     summary_provider: str | None
     degraded_summary: bool
+    terminal_summary: ResearchTerminalSummary | None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "status": self.status,
             "input_path": str(self.input_path),
             "output_path": str(self.output_path),
@@ -243,6 +244,111 @@ class CorpusReportResult:
             "summary_provider": self.summary_provider,
             "degraded_summary": self.degraded_summary,
         }
+        if self.terminal_summary is not None:
+            payload["terminal_summary"] = self.terminal_summary.to_dict()
+        return payload
+
+
+@dataclass(frozen=True)
+class ResearchSelectedThreadSummary:
+    subreddit: str
+    title: str
+    match_source: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "subreddit": self.subreddit,
+            "title": self.title,
+            "match_source": self.match_source,
+        }
+
+
+@dataclass(frozen=True)
+class ResearchTerminalSummary:
+    headline: str
+    key_patterns: list[str]
+    recommended_actions: list[str]
+    confidence_note: str
+    top_threads: list[ResearchSelectedThreadSummary]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "headline": self.headline,
+            "key_patterns": self.key_patterns,
+            "recommended_actions": self.recommended_actions,
+            "confidence_note": self.confidence_note,
+            "top_threads": [thread.to_dict() for thread in self.top_threads],
+        }
+
+
+@dataclass(frozen=True)
+class ResearchThreadMatchResult:
+    post_id: str
+    subreddit: str
+    title: str
+    thread_url: str
+    score: int
+    num_comments: int
+    match_source: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "post_id": self.post_id,
+            "subreddit": self.subreddit,
+            "title": self.title,
+            "thread_url": self.thread_url,
+            "score": self.score,
+            "num_comments": self.num_comments,
+            "match_source": self.match_source,
+        }
+
+
+@dataclass(frozen=True)
+class RedditResearchResult:
+    status: str
+    artifact_type: str
+    query: str
+    subreddits: list[str]
+    time_window: str
+    reddit_time_bucket: str
+    sort: str
+    discovered_thread_count: int
+    selected_thread_count: int
+    fetched_thread_count: int
+    failed_thread_count: int
+    selected_threads: list[ResearchThreadMatchResult]
+    manifest_path: Path
+    corpus_analysis_path: Path
+    corpus_report_path: Path
+    corpus_id: str
+    summary_provider: str | None
+    degraded_summary: bool
+    terminal_summary: ResearchTerminalSummary | None
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = {
+            "status": self.status,
+            "artifact_type": self.artifact_type,
+            "query": self.query,
+            "subreddits": self.subreddits,
+            "time_window": self.time_window,
+            "reddit_time_bucket": self.reddit_time_bucket,
+            "sort": self.sort,
+            "discovered_thread_count": self.discovered_thread_count,
+            "selected_thread_count": self.selected_thread_count,
+            "fetched_thread_count": self.fetched_thread_count,
+            "failed_thread_count": self.failed_thread_count,
+            "selected_threads": [thread.to_dict() for thread in self.selected_threads],
+            "manifest_path": str(self.manifest_path),
+            "corpus_analysis_path": str(self.corpus_analysis_path),
+            "corpus_report_path": str(self.corpus_report_path),
+            "corpus_id": self.corpus_id,
+            "summary_provider": self.summary_provider,
+            "degraded_summary": self.degraded_summary,
+        }
+        if self.terminal_summary is not None:
+            payload["terminal_summary"] = self.terminal_summary.to_dict()
+        return payload
 
 
 @dataclass(frozen=True)

@@ -360,6 +360,7 @@ def _make_thread_with_comments() -> Thread:
             thread_url="https://example.com",
         ),
         title="Test enrichment thread",
+        body="Top-level post body about docs and performance requests.",
         permalink="https://example.com",
         author=AuthorRef(username="op", source_author_id=None),
         comments=[
@@ -404,6 +405,7 @@ def test_render_analysis_payload_includes_thread_context(tmp_path: Path) -> None
     assert "top_comments" in payload_with
     assert len(payload_with["top_comments"]) <= 3
     assert payload_with["thread_context"]["question_frame"] == thread.title
+    assert payload_with["thread_context"]["post_body"] == thread.body
     assert payload_with["conversation_structure"]["top_level_count"] == 5
     assert "issue_marker_count" in payload_with["findings"][0]
     assert "request_marker_count" in payload_with["findings"][0]
@@ -427,6 +429,7 @@ def test_build_analysis_summary_request_embeds_rich_context() -> None:
     assert "analysis_overview" in request.messages[1].content
     assert "issue_marker_count" in request.messages[1].content
     assert "question_frame" in request.messages[1].content
+    assert "post_body" in request.messages[1].content
 
 
 # ---------------------------------------------------------------------------

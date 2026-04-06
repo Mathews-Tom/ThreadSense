@@ -9,8 +9,8 @@ from typing import Any
 from threadsense.errors import SchemaBoundaryError
 from threadsense.schema_utils import SchemaReader
 
-CANONICAL_SCHEMA_VERSION = 1
-CANONICAL_NORMALIZATION_VERSION = "reddit-to-canonical-v1"
+CANONICAL_SCHEMA_VERSION = 2
+CANONICAL_NORMALIZATION_VERSION = "canonical-thread-v2"
 CANONICAL_ARTIFACT_KIND = "canonical_thread"
 
 _schema = SchemaReader(SchemaBoundaryError, "canonical")
@@ -58,6 +58,7 @@ class Thread:
     thread_id: str
     source: SourceRef
     title: str
+    body: str | None
     permalink: str
     author: AuthorRef
     comments: list[Comment]
@@ -90,6 +91,7 @@ def load_canonical_thread(path: Path) -> Thread:
             thread_url=_schema.required_str(source_data, "thread_url"),
         ),
         title=_schema.required_str(thread_data, "title"),
+        body=required_nullable_str(thread_data, "body"),
         permalink=_schema.required_str(thread_data, "permalink"),
         author=AuthorRef(
             username=_schema.required_str(author_data, "username"),
@@ -140,6 +142,17 @@ def comment_from_dict(thread_id: str, payload: Mapping[str, Any]) -> Comment:
         depth=_schema.required_int(payload, "depth"),
         permalink=_schema.required_str(payload, "permalink"),
     )
+
+
+def required_nullable_str(payload: Mapping[str, Any], key: str) -> str | None:
+    if key not in payload:
+        raise SchemaBoundaryError("canonical string field is missing", details={"key": key})
+    value = payload[key]
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise SchemaBoundaryError("canonical string field is invalid", details={"key": key})
+    return value
 
 
 def read_json_file(path: Path) -> dict[str, Any]:

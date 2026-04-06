@@ -69,10 +69,12 @@ def normalize_reddit_artifact(raw_artifact: Mapping[str, Any], raw_artifact_path
             "normalized comment count does not match raw artifact",
             details={"expected": comment_count, "actual": len(comments)},
         )
+    post_body = required_present_nullable_str(post, "selftext")
     return Thread(
         thread_id=thread_id,
         source=source,
         title=_schema.required_str(post, "title"),
+        body=post_body,
         permalink=_schema.required_str(post, "permalink"),
         author=author,
         comments=comments,
@@ -123,10 +125,12 @@ def normalize_hackernews_artifact(
             "normalized comment count does not match raw artifact",
             details={"expected": comment_count, "actual": len(comments)},
         )
+    story_body = required_present_nullable_str(story, "body")
     return Thread(
         thread_id=thread_id,
         source=source,
         title=_schema.required_str(story, "title"),
+        body=story_body,
         permalink=_schema.required_str(story, "permalink"),
         author=author,
         comments=comments,
@@ -225,10 +229,12 @@ def normalize_github_discussions_artifact(
         normalization_version=CANONICAL_NORMALIZATION_VERSION,
     )
     comment_count = _schema.required_int(raw_artifact, "total_comment_count")
+    discussion_body = required_present_nullable_str(discussion, "body")
     return Thread(
         thread_id=thread_id,
         source=source,
         title=_schema.required_str(discussion, "title"),
+        body=discussion_body,
         permalink=_schema.required_str(discussion, "url"),
         author=author,
         comments=comments,
@@ -287,3 +293,23 @@ def flatten_raw_comment_payloads(comments: list[Mapping[str, Any]]) -> list[Mapp
             )
         queue = replies + queue
     return flattened
+
+
+def required_present_str(payload: Mapping[str, Any], key: str) -> str:
+    if key not in payload:
+        raise SchemaBoundaryError("raw artifact string field is missing", details={"key": key})
+    value = payload[key]
+    if not isinstance(value, str):
+        raise SchemaBoundaryError("raw artifact string field is invalid", details={"key": key})
+    return value
+
+
+def required_present_nullable_str(payload: Mapping[str, Any], key: str) -> str | None:
+    if key not in payload:
+        raise SchemaBoundaryError("raw artifact string field is missing", details={"key": key})
+    value = payload[key]
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise SchemaBoundaryError("raw artifact string field is invalid", details={"key": key})
+    return value

@@ -287,6 +287,7 @@ def render_analysis_summary_payload(analysis: ThreadAnalysis, thread: Thread) ->
         "permalink": thread.permalink,
         "author": thread.author.username,
         "question_frame": thread.title,
+        "post_body": thread.body,
     }
     payload["top_comments"] = [
         {

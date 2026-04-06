@@ -38,6 +38,7 @@ class HackerNewsComment:
 class HackerNewsStory:
     id: int
     title: str
+    body: str | None
     author: str
     score: int
     created_utc: float
@@ -69,7 +70,7 @@ class HackerNewsThreadResult:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "artifact_version": 1,
+            "artifact_version": 2,
             "source": self.source_name,
             "requested_url": self.requested_url,
             "normalized_url": self.normalized_url,
@@ -77,6 +78,7 @@ class HackerNewsThreadResult:
             "story": {
                 "id": self.story.id,
                 "title": self.story.title,
+                "body": self.story.body,
                 "author": self.story.author,
                 "score": self.story.score,
                 "created_utc": self.story.created_utc,
@@ -111,6 +113,7 @@ class HackerNewsConnector:
         story = HackerNewsStory(
             id=story_id,
             title=str(story_payload.get("title", "")),
+            body=optional_story_body(story_payload),
             author=str(story_payload.get("by", "[deleted]")),
             score=int(story_payload.get("score", 0)),
             created_utc=float(story_payload.get("time", 0.0)),
@@ -293,6 +296,15 @@ def flatten_comments(comments: list[HackerNewsComment]) -> list[HackerNewsCommen
 def clean_html(text: str) -> str:
     stripped = re.sub(r"<[^>]+>", " ", text)
     return re.sub(r"\s+", " ", unescape(stripped)).strip()
+
+
+def optional_story_body(payload: Mapping[str, Any]) -> str | None:
+    value = payload.get("text")
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise RedditRequestError("hackernews story body is invalid")
+    return clean_html(value)
 
 
 def comment_to_dict(comment: HackerNewsComment) -> dict[str, Any]:

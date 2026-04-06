@@ -61,6 +61,7 @@ def test_normalize_and_reload_persisted_thread(tmp_path: Path) -> None:
     raw_loaded = load_raw_artifact(raw_path)
     normalized_loaded = load_normalized_artifact(normalized_path)
     assert raw_loaded["post"]["id"] == normalized_loaded.source.source_thread_id
+    assert normalized_loaded.body == raw_loaded["post"]["selftext"]
     assert normalized_loaded.comment_count == raw_loaded["total_comment_count"]
 
 

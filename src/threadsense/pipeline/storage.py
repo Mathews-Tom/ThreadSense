@@ -110,7 +110,7 @@ def load_raw_artifact(path: Path) -> dict[str, Any]:
     payload = read_json(path)
     artifact_version = payload.get("artifact_version")
     source = payload.get("source")
-    if artifact_version != 1 or not isinstance(source, str) or not source:
+    if artifact_version != 2 or not isinstance(source, str) or not source:
         raise SchemaBoundaryError(
             "raw artifact metadata is invalid",
             details={"artifact_version": artifact_version, "source": source},
