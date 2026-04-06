@@ -12,7 +12,11 @@ from threadsense.domains import load_domain_vocabulary, merge_vocabulary_expansi
 from threadsense.errors import InferenceBoundaryError
 from threadsense.inference import InferenceRouter, InferenceTask
 from threadsense.inference.contracts import validate_task_output
-from threadsense.inference.prompts import render_analysis_payload
+from threadsense.inference.prompts import (
+    build_analysis_summary_request,
+    render_analysis_payload,
+    render_analysis_summary_payload,
+)
 from threadsense.inference.router import InferenceClient
 from threadsense.models.analysis import load_analysis_artifact_file
 from threadsense.models.canonical import (
@@ -63,6 +67,7 @@ def test_validate_task_output_accepts_analysis_summary_shape() -> None:
 def test_router_returns_deterministic_fallback_when_runtime_is_disabled(tmp_path: Path) -> None:
     analysis_path = load_analysis_fixture(tmp_path)
     analysis = load_analysis_artifact_file(analysis_path)
+    thread = load_canonical_thread(Path(analysis.provenance.normalized_artifact_path))
     config = load_config(
         env={
             "THREADSENSE_RUNTIME_ENABLED": "false",
@@ -74,6 +79,7 @@ def test_router_returns_deterministic_fallback_when_runtime_is_disabled(tmp_path
         analysis=analysis,
         task=InferenceTask.ANALYSIS_SUMMARY,
         required=False,
+        thread=thread,
     )
 
     assert response.used_fallback is True
@@ -97,6 +103,7 @@ def test_router_fails_when_runtime_is_disabled_for_required_task(tmp_path: Path)
 def test_router_falls_back_when_client_errors_for_optional_task(tmp_path: Path) -> None:
     analysis_path = load_analysis_fixture(tmp_path)
     analysis = load_analysis_artifact_file(analysis_path)
+    thread = load_canonical_thread(Path(analysis.provenance.normalized_artifact_path))
     config = load_config(env={})
 
     class FailingClient:
@@ -113,10 +120,24 @@ def test_router_falls_back_when_client_errors_for_optional_task(tmp_path: Path) 
         analysis=analysis,
         task=InferenceTask.ANALYSIS_SUMMARY,
         required=False,
+        thread=thread,
     )
 
     assert response.degraded is True
     assert response.failure_reason == "inference_error: runtime failed"
+
+
+def test_router_rejects_summary_request_without_thread_context(tmp_path: Path) -> None:
+    analysis_path = load_analysis_fixture(tmp_path)
+    analysis = load_analysis_artifact_file(analysis_path)
+    config = load_config(env={})
+
+    with pytest.raises(InferenceBoundaryError, match="thread context is required"):
+        InferenceRouter(config).run_analysis_task(
+            analysis=analysis,
+            task=InferenceTask.ANALYSIS_SUMMARY,
+            required=False,
+        )
 
 
 def test_validate_task_output_strips_hallucinated_citations(tmp_path: Path) -> None:
@@ -373,13 +394,39 @@ def test_render_analysis_payload_includes_thread_context(tmp_path: Path) -> None
     analysis = analyze_thread(thread, canonical_path)
 
     payload_without = json.loads(render_analysis_payload(analysis))
-    payload_with = json.loads(render_analysis_payload(analysis, thread=thread))
+    payload_with = json.loads(render_analysis_summary_payload(analysis, thread))
 
+    assert "analysis_overview" in payload_without
+    assert "conversation_structure" in payload_without
+    assert "thread_context" not in payload_without
     assert "top_comments" not in payload_without
+    assert "thread_context" in payload_with
     assert "top_comments" in payload_with
     assert len(payload_with["top_comments"]) <= 3
-    assert "conversation_structure" in payload_with
-    assert payload_with["conversation_structure"]["total_comments"] == 5
+    assert payload_with["thread_context"]["question_frame"] == thread.title
+    assert payload_with["conversation_structure"]["top_level_count"] == 5
+    assert "issue_marker_count" in payload_with["findings"][0]
+    assert "request_marker_count" in payload_with["findings"][0]
+    assert isinstance(payload_with["findings"][0]["quotes"][0], dict)
+
+
+def test_build_analysis_summary_request_embeds_rich_context() -> None:
+    canonical_path = Path("tests/fixtures/analysis/canonical_feedback_thread.json")
+    thread = load_canonical_thread(canonical_path)
+    analysis = analyze_thread(thread, canonical_path)
+
+    request = build_analysis_summary_request(
+        analysis=analysis,
+        thread=thread,
+        required=True,
+        repair_retries=1,
+    )
+
+    assert "Use the thread title and top comments" in request.messages[0].content
+    assert "thread_context" in request.messages[1].content
+    assert "analysis_overview" in request.messages[1].content
+    assert "issue_marker_count" in request.messages[1].content
+    assert "question_frame" in request.messages[1].content
 
 
 # ---------------------------------------------------------------------------

@@ -89,6 +89,7 @@ def test_complete_repairs_invalid_json_response() -> None:
     )
     request = build_analysis_summary_request(
         analysis=analysis,
+        thread=thread,
         required=True,
         repair_retries=1,
     )
