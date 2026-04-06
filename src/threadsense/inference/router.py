@@ -48,7 +48,10 @@ class InferenceRouter:
         analysis: ThreadAnalysis,
         task: InferenceTask,
         required: bool,
+        thread: Thread | None = None,
     ) -> InferenceResponse:
+        if task is InferenceTask.ANALYSIS_SUMMARY and thread is None:
+            raise InferenceBoundaryError("thread context is required for analysis summary")
         if not self._config.runtime.enabled:
             if required:
                 raise InferenceBoundaryError("local inference is disabled by configuration")
@@ -57,6 +60,7 @@ class InferenceRouter:
         request = build_task_request(
             task=task,
             analysis=analysis,
+            thread=thread,
             corpus=None,
             required=required,
             repair_retries=self._config.runtime.repair_retries,

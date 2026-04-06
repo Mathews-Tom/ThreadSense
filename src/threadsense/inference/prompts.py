@@ -12,6 +12,7 @@ def build_task_request(
     task: InferenceTask,
     *,
     analysis: ThreadAnalysis | None = None,
+    thread: Thread | None = None,
     corpus: CorpusAnalysis | None = None,
     required: bool,
     repair_retries: int,
@@ -19,8 +20,11 @@ def build_task_request(
     if task is InferenceTask.ANALYSIS_SUMMARY:
         if analysis is None:
             raise ValueError("analysis payload is required for analysis summary")
+        if thread is None:
+            raise ValueError("thread payload is required for analysis summary")
         return build_analysis_summary_request(
             analysis=analysis,
+            thread=thread,
             required=required,
             repair_retries=repair_retries,
         )
@@ -53,6 +57,7 @@ def build_task_request(
 
 def build_analysis_summary_request(
     analysis: ThreadAnalysis,
+    thread: Thread,
     required: bool,
     repair_retries: int,
 ) -> InferenceRequest:
@@ -63,6 +68,11 @@ def build_analysis_summary_request(
                 role="system",
                 content=(
                     "You summarize evidence-backed thread analysis. "
+                    "Use the thread title and top comments to explain what the discussion is about. "
+                    "Prioritize only the most decision-relevant findings. "
+                    "Distinguish issues, requests, and mixed signals using the provided marker counts. "
+                    "Convert findings into concrete owner-oriented actions instead of generic review steps. "
+                    "If evidence is mixed, prefer investigate over fix. "
                     "Return only valid JSON with keys "
                     "headline, summary, priority, confidence, why_now, "
                     "cited_theme_keys, cited_comment_ids, next_steps, "
@@ -78,8 +88,10 @@ def build_analysis_summary_request(
                 content=(
                     "Use only the provided deterministic evidence. "
                     "Every cited theme key and comment id must come from the input. "
-                    "Produce an operator-oriented summary with a clear owner, action type, and outcome. "
-                    f"Input:\n{render_analysis_payload(analysis)}"
+                    "Treat the thread title as the discussion framing when no separate post body is present. "
+                    "Prefer actions a product, engineering, docs, or research owner could execute this week. "
+                    "Do not restate a finding as a next step without making it actionable. "
+                    f"Input:\n{render_analysis_summary_payload(analysis, thread)}"
                 ),
             ),
         ],
@@ -197,39 +209,96 @@ def build_corpus_synthesis_request(
 
 def render_analysis_payload(
     analysis: ThreadAnalysis,
-    thread: Thread | None = None,
 ) -> str:
     payload: dict[str, object] = {
         "thread_id": analysis.thread_id,
         "title": analysis.title,
+        "source_name": analysis.source_name,
         "top_phrases": analysis.top_phrases[:8],
+        "analysis_overview": {
+            "total_comments": analysis.total_comments,
+            "filtered_comment_count": analysis.filtered_comment_count,
+            "distinct_comment_count": analysis.distinct_comment_count,
+            "duplicate_group_count": analysis.duplicate_group_count,
+        },
+        "conversation_structure": {
+            "max_depth": analysis.conversation_structure.max_depth,
+            "top_level_count": analysis.conversation_structure.top_level_count,
+            "reply_chain_count": analysis.conversation_structure.reply_chain_count,
+            "longest_chain_length": analysis.conversation_structure.longest_chain_length,
+            "controversy_count": analysis.conversation_structure.controversy_count,
+            "consensus_count": analysis.conversation_structure.consensus_count,
+            "monologue_count": analysis.conversation_structure.monologue_count,
+            "top_engagement_subtrees": [
+                {
+                    "root_comment_id": subtree.root_comment_id,
+                    "root_author": subtree.root_author,
+                    "subtree_size": subtree.subtree_size,
+                    "max_depth_below": subtree.max_depth_below,
+                    "engagement_score": subtree.engagement_score,
+                }
+                for subtree in analysis.conversation_structure.top_engagement_subtrees[:3]
+            ],
+        },
         "findings": [
             {
                 "theme_key": finding.theme_key,
                 "theme_label": finding.theme_label,
                 "severity": finding.severity,
                 "comment_count": finding.comment_count,
+                "issue_marker_count": finding.issue_marker_count,
+                "request_marker_count": finding.request_marker_count,
                 "key_phrases": finding.key_phrases[:5],
-                "evidence_comment_ids": finding.evidence_comment_ids,
-                "quotes": [quote.body_excerpt for quote in finding.quotes[:2]],
+                "evidence_comment_ids": finding.evidence_comment_ids[:5],
+                "quotes": [
+                    {
+                        "comment_id": quote.comment_id,
+                        "author": quote.author,
+                        "score": quote.score,
+                        "body_excerpt": quote.body_excerpt,
+                        "permalink": quote.permalink,
+                    }
+                    for quote in finding.quotes[:2]
+                ],
             }
             for finding in analysis.findings[:5]
         ],
     }
-    if thread is not None:
-        top_level = [c for c in thread.comments if c.parent_comment_id is None]
-        top_comments = sorted(top_level, key=lambda c: c.score, reverse=True)[:3]
-        payload["top_comments"] = [
-            {"author": c.author.username, "body": c.body[:300], "score": c.score}
-            for c in top_comments
-        ]
-        payload["conversation_structure"] = {
-            "total_comments": analysis.total_comments,
-            "max_depth": analysis.conversation_structure.max_depth,
-            "top_level_count": analysis.conversation_structure.top_level_count,
-            "consensus_count": analysis.conversation_structure.consensus_count,
-            "controversy_count": analysis.conversation_structure.controversy_count,
+    if analysis.alignment_check is not None:
+        payload["alignment"] = {
+            "domain": analysis.alignment_check.domain,
+            "domain_fit_score": analysis.alignment_check.domain_fit_score,
+            "general_feedback_ratio": analysis.alignment_check.general_feedback_ratio,
+            "suggested_domain": analysis.alignment_check.suggested_domain,
+            "warning": analysis.alignment_check.warning,
         }
+    return json.dumps(payload, indent=2)
+
+
+def render_analysis_summary_payload(analysis: ThreadAnalysis, thread: Thread) -> str:
+    payload = json.loads(render_analysis_payload(analysis))
+    top_level = [comment for comment in thread.comments if comment.parent_comment_id is None]
+    top_comments = sorted(top_level, key=lambda comment: comment.score, reverse=True)[:3]
+    payload["thread_context"] = {
+        "source_name": thread.source.source_name,
+        "community": thread.source.community,
+        "source_thread_id": thread.source.source_thread_id,
+        "thread_url": thread.source.thread_url,
+        "permalink": thread.permalink,
+        "author": thread.author.username,
+        "question_frame": thread.title,
+    }
+    payload["top_comments"] = [
+        {
+            "comment_id": comment.comment_id,
+            "author": comment.author.username,
+            "score": comment.score,
+            "depth": comment.depth,
+            "body_excerpt": comment.body[:300],
+            "permalink": comment.permalink,
+        }
+        for comment in top_comments
+    ]
     return json.dumps(payload, indent=2)
 
 
