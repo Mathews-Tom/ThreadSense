@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 
 import pytest
+from rich.console import Console
 
 from threadsense.cli_display import (
     OutputMode,
     emit_error,
     emit_payload,
+    render_run_panel,
     resolve_output_mode,
     set_output_mode,
     use_rich_output,
@@ -59,6 +61,69 @@ class TestEmitPayloadJson:
         emit_payload(payload)
         captured = capsys.readouterr()
         assert json.loads(captured.out) == payload
+
+
+class TestRenderRunPanel:
+    def test_run_panel_includes_terminal_summary_when_present(self) -> None:
+        panel = render_run_panel(
+            {
+                "status": "ready",
+                "source": "reddit",
+                "thread_url": "https://example.com/thread",
+                "fetch": {"status": "ok", "output_path": "/tmp/f.json"},
+                "normalize": {"status": "ok", "output_path": "/tmp/n.json"},
+                "analyze": {"status": "ok", "output_path": "/tmp/a.json"},
+                "report": {
+                    "status": "ok",
+                    "output_path": "/tmp/r.md",
+                    "summary_provider": "local_openai_compatible",
+                    "terminal_summary": {
+                        "headline": "Performance and docs dominate the thread",
+                        "summary": "Latency and onboarding are the main blockers.",
+                        "priority": "high",
+                        "recommended_owner": "engineering",
+                        "action_type": "fix",
+                        "next_steps": ["Profile search latency", "Expand onboarding docs"],
+                        "top_findings": [
+                            {
+                                "theme_label": "performance",
+                                "severity": "high",
+                                "recommended_owner": "engineering",
+                                "action_type": "fix",
+                            }
+                        ],
+                    },
+                },
+            }
+        )
+
+        console = Console(record=True, width=120)
+        console.print(panel)
+        rendered = console.export_text(clear=False)
+        assert "Summary" in rendered
+        assert "Performance and docs dominate the thread" in rendered
+        assert "Next Steps" in rendered
+        assert "Top Findings" in rendered
+
+    def test_run_panel_keeps_stage_table_without_terminal_summary(self) -> None:
+        panel = render_run_panel(
+            {
+                "status": "ready",
+                "source": "reddit",
+                "thread_url": "https://example.com/thread",
+                "fetch": {"status": "ok", "output_path": "/tmp/f.json"},
+                "normalize": {"status": "ok", "output_path": "/tmp/n.json"},
+                "analyze": {"status": "ok", "output_path": "/tmp/a.json"},
+                "report": {"status": "ok", "output_path": "/tmp/r.md", "summary_provider": "none"},
+            }
+        )
+
+        console = Console(record=True, width=120)
+        console.print(panel)
+        rendered = console.export_text(clear=False)
+        assert "fetch" in rendered
+        assert "report" in rendered
+        assert "Summary" not in rendered
 
     def test_json_mode_suppresses_rich_for_run_payload(
         self, capsys: pytest.CaptureFixture[str]
