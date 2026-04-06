@@ -1,10 +1,26 @@
 # ThreadSense Usage
 
-This document is the detailed operator reference for the current CLI and local API.
+This document is the command reference for the current CLI.
+
+## Global Option
+
+All commands support:
+
+```bash
+--output-format json|human|quiet
+```
+
+Modes:
+
+- `json`: machine-readable payloads
+- `human`: Rich tables and summary panels
+- `quiet`: status-only output
+
+See [output-modes.md](output-modes.md) for details.
 
 ## Command Overview
 
-ThreadSense exposes these top-level CLI commands:
+Top-level commands:
 
 - `preflight`
 - `fetch`
@@ -13,22 +29,26 @@ ThreadSense exposes these top-level CLI commands:
 - `infer`
 - `report`
 - `inspect`
+- `replay`
+- `diff`
+- `corpus`
+- `evaluate`
 - `batch`
 - `serve`
 - `run`
+- `research`
 
-## Happy Path
+## Happy Paths
 
-Run the full workflow for one Reddit thread:
+### Single-thread run
 
 ```bash
 uv run threadsense run reddit <reddit-url> \
+  [--format markdown|html|json] \
   [--with-summary] \
   [--summary-required] \
-  [--format markdown|json] \
   [--expand-more] \
-  [--flat] \
-  [--config threadsense.toml]
+  [--flat]
 ```
 
 Example:
@@ -41,178 +61,286 @@ uv run threadsense run reddit \
   --summary-required
 ```
 
-This command:
+### Topic research across subreddits
 
-1. fetches the Reddit thread
-2. persists the raw artifact
-3. normalizes it
-4. analyzes it
-5. optionally runs local-model summarization
-6. writes the final report
+```bash
+uv run threadsense research reddit \
+  --query "second brain OR agentic PKM" \
+  --subreddit ClaudeCode \
+  --subreddit LocalLLaMA \
+  --subreddit AI_Agents \
+  [--time-window 30d] \
+  [--limit 20] \
+  [--per-subreddit-limit 8] \
+  [--sort relevance] \
+  [--with-summary]
+```
 
-It prints a single JSON payload containing the fetch, normalize, analyze, and report outputs.
+Force human-mode summary output:
+
+```bash
+uv run threadsense --output-format human research reddit \
+  --query "second brain OR agentic PKM" \
+  --subreddit ClaudeCode \
+  --subreddit LocalLLaMA \
+  --subreddit AI_Agents \
+  --limit 5 \
+  --per-subreddit-limit 3 \
+  --with-summary
+```
 
 ## `preflight`
 
-Validate configuration and optionally probe the local runtime.
+Validate config and optionally probe the local runtime.
 
 ```bash
 uv run threadsense preflight [--config threadsense.toml] [--skip-runtime]
 ```
 
-Examples:
+## `fetch`
 
-```bash
-uv run threadsense preflight
-uv run threadsense preflight --skip-runtime
-```
-
-Output:
-
-- config summary
-- enabled sources
-- runtime endpoint
-- optional runtime probe result
-
-## `fetch reddit`
-
-Fetch one Reddit thread and persist the raw artifact.
+### `fetch reddit`
 
 ```bash
 uv run threadsense fetch reddit <reddit-url> \
   [--output path/to/raw.json] \
   [--expand-more] \
-  [--flat] \
-  [--config threadsense.toml]
+  [--flat]
 ```
 
 Notes:
 
-- `--expand-more` expands deferred comment branches through Reddit `morechildren`
+- `--expand-more` expands Reddit `morechildren`
 - `--flat` flattens nested comments in the persisted raw artifact
-- without `--output`, the raw artifact is written to the configured storage root
 
-## `normalize reddit`
-
-Normalize one raw Reddit artifact into the canonical thread schema.
+### `fetch hn`
 
 ```bash
-uv run threadsense normalize reddit \
-  --input path/to/raw.json \
-  [--output path/to/normalized.json] \
-  [--config threadsense.toml]
+uv run threadsense fetch hn <hackernews-item-url> [--output path/to/raw.json]
 ```
 
-Without `--output`, the normalized artifact is written to the configured normalized store path.
+### `fetch github-discussions`
 
-## `analyze normalized`
+```bash
+uv run threadsense fetch github-discussions <discussion-url> [--output path/to/raw.json]
+```
+
+## `normalize`
+
+Normalize one raw artifact into the canonical thread schema.
+
+### `normalize reddit`
+
+```bash
+uv run threadsense normalize reddit --input path/to/raw.json [--output path/to/normalized.json]
+```
+
+### `normalize hn`
+
+```bash
+uv run threadsense normalize hn --input path/to/raw.json [--output path/to/normalized.json]
+```
+
+### `normalize github-discussions`
+
+```bash
+uv run threadsense normalize github-discussions --input path/to/raw.json [--output path/to/normalized.json]
+```
+
+## `analyze`
 
 Run deterministic analysis for one canonical thread artifact.
 
 ```bash
 uv run threadsense analyze normalized \
   --input path/to/normalized.json \
-  [--output path/to/analysis.json] \
-  [--config threadsense.toml]
+  [--output path/to/analysis.json]
 ```
 
-Without `--output`, the analysis artifact is written to the configured analysis store path.
+Contract-related options are also supported:
 
-## `infer analysis`
+- `--domain`
+- `--objective`
+- `--abstraction-level`
+- `--auto-domain`
 
-Run a local inference task against one persisted analysis artifact.
+## `infer`
+
+### `infer analysis`
 
 ```bash
 uv run threadsense infer analysis \
   --input path/to/analysis.json \
   [--task analysis_summary] \
-  [--required] \
-  [--config threadsense.toml]
+  [--required]
 ```
 
-Current tasks come from the inference contract in [src/threadsense/inference/contracts.py](src/threadsense/inference/contracts.py).
+### `infer corpus`
+
+```bash
+uv run threadsense infer corpus \
+  --input path/to/corpus-analysis.json \
+  [--required]
+```
 
 Behavior:
 
-- without `--required`, local inference may fall back to deterministic output
-- with `--required`, the command fails if the local runtime is unavailable or invalid
+- without `--required`, local inference may degrade to deterministic output where supported
+- with `--required`, the command fails if the local runtime is unavailable or returns invalid output
 
-## `report analysis`
+## `report`
 
-Generate a report from one analysis artifact.
+### `report analysis`
 
 ```bash
 uv run threadsense report analysis \
   --input path/to/analysis.json \
-  [--format markdown|json] \
+  [--format markdown|html|json] \
   [--output path/to/report.md] \
   [--with-summary] \
-  [--summary-required] \
-  [--config threadsense.toml]
+  [--summary-required]
 ```
 
-Behavior:
+Single-thread reports support:
 
-- `--format markdown` writes a Markdown report
-- `--format json` writes a structured JSON report artifact
-- `--with-summary` requests local-model summary generation
-- `--summary-required` fails instead of degrading to deterministic summary output
+- Markdown
+- HTML
+- JSON report artifacts
+
+Summary-capable reports include richer executive-summary fields such as priority, owner, action type, and expected outcome.
 
 ## `inspect`
 
 Inspect persisted artifacts without rerunning the pipeline.
 
-Normalized artifact:
-
 ```bash
 uv run threadsense inspect normalized --input path/to/normalized.json
-```
-
-Analysis artifact:
-
-```bash
 uv run threadsense inspect analysis --input path/to/analysis.json
-```
-
-Report artifact:
-
-```bash
 uv run threadsense inspect report --input path/to/report.json
 ```
 
-These commands print compact JSON summaries of the selected artifact.
+## `replay`
+
+Replay one analysis artifact through the analysis stack.
+
+```bash
+uv run threadsense replay --input path/to/analysis.json
+```
+
+## `diff`
+
+Compare two analysis artifacts.
+
+```bash
+uv run threadsense diff --left path/to/a.json --right path/to/b.json
+```
+
+## `corpus`
+
+### `corpus create`
+
+```bash
+uv run threadsense corpus create \
+  --name corpus-name \
+  --description "corpus description" \
+  --domain developer_tools \
+  --analysis-dir .threadsense/analysis/reddit
+```
+
+### `corpus analyze`
+
+```bash
+uv run threadsense corpus analyze --input path/to/manifest.json
+```
+
+### `corpus report`
+
+```bash
+uv run threadsense corpus report \
+  --input path/to/manifest.json \
+  [--with-summary] \
+  [--summary-required]
+```
+
+### `corpus search`
+
+```bash
+uv run threadsense corpus search --input path/to/manifest.json --query "workflow"
+```
+
+## `research`
+
+### `research reddit`
+
+Discover and analyze topic discussions across selected subreddits.
+
+```bash
+uv run threadsense research reddit \
+  --query "second brain OR agentic PKM" \
+  --subreddit ClaudeCode \
+  --subreddit LocalLLaMA \
+  --subreddit AI_Agents \
+  [--time-window 30d] \
+  [--sort relevance|new|top|comments] \
+  [--limit 20] \
+  [--per-subreddit-limit 8] \
+  [--format markdown] \
+  [--expand-more] \
+  [--flat] \
+  [--with-summary] \
+  [--summary-required]
+```
+
+Important behavior:
+
+- default `--time-window` is `30d`
+- time window is enforced exactly after retrieval
+- Reddit still uses a coarse internal bucket such as `month`
+- `--format` currently supports `markdown` only for this workflow
+- the result includes selected thread metadata plus corpus artifact paths
+
+Supported query syntax:
+
+- `OR`
+- `|`
+
+Unsupported query syntax:
+
+- quotes
+- parentheses
+- `title:`
+- `selftext:`
+- negation-style advanced Reddit syntax
+
+See [research-reddit.md](research-reddit.md) for the full workflow and ranking behavior.
+
+## `evaluate`
+
+Run golden-dataset evaluation.
+
+```bash
+uv run threadsense evaluate --dataset path/to/dataset.json --strategies keyword_heuristic hybrid
+```
 
 ## `batch run`
 
-Execute a reproducible multi-thread workflow from a manifest.
+Execute a reproducible batch workflow from a manifest.
 
 ```bash
-uv run threadsense batch run \
-  --manifest tests/fixtures/batch/reddit_manifest.json \
-  [--output path/to/batch-run.json] \
-  [--config threadsense.toml]
+uv run threadsense batch run --manifest tests/fixtures/batch/reddit_manifest.json
 ```
 
-The manifest shape is documented in [docs/batch-api-runtime.md](docs/batch-api-runtime.md).
-
-Without `--output`, the batch artifact is written to:
-
-```text
-.threadsense/batches/<run-name>.json
-```
+See [batch-api-runtime.md](batch-api-runtime.md).
 
 ## `serve`
 
-Run the local HTTP API surface.
+Run the local HTTP API.
 
 ```bash
-uv run threadsense serve \
-  [--config threadsense.toml] \
-  [--host 127.0.0.1] \
-  [--port 8090]
+uv run threadsense serve [--host 127.0.0.1] [--port 8090]
 ```
 
-Default routes:
+Current routes:
 
 - `GET /v1/healthz`
 - `GET /v1/metrics`
@@ -222,73 +350,25 @@ Default routes:
 - `POST /v1/infer/analysis`
 - `POST /v1/report/analysis`
 
-Important:
+## Artifacts
 
-- this API is intended for trusted local use
-- it is not authenticated
-- it is path-oriented and not a hardened public service contract
+See [artifacts.md](artifacts.md) for the full artifact inventory.
 
-## Configuration
+Common paths:
 
-Default config file:
-
-- [threadsense.toml](threadsense.toml)
-
-Important config sections:
-
-- `[runtime]`
-- `[reddit]`
-- `[storage]`
-- `[batch]`
-- `[api]`
-- `[limits]`
-
-Common environment overrides:
-
-- `THREADSENSE_RUNTIME_ENABLED`
-- `THREADSENSE_RUNTIME_BASE_URL`
-- `THREADSENSE_RUNTIME_CHAT_PATH`
-- `THREADSENSE_RUNTIME_MODEL`
-- `THREADSENSE_REDDIT_TIMEOUT`
-- `THREADSENSE_REDDIT_REQUEST_DELAY`
-- `THREADSENSE_STORAGE_ROOT`
-- `THREADSENSE_BATCH_MAX_WORKERS`
-- `THREADSENSE_BATCH_MAX_JOBS`
-- `THREADSENSE_API_PORT`
-- `THREADSENSE_RUNTIME_CONCURRENCY`
-
-## Artifact Layout
-
-Default storage root:
-
-```text
-.threadsense
-```
-
-Default structure:
-
-- `.threadsense/raw/reddit/<thread-id>.json`
-- `.threadsense/normalized/reddit/<thread-id>.json`
-- `.threadsense/analysis/reddit/<thread-id>.json`
-- `.threadsense/reports/reddit/<thread-id>.json`
-- `.threadsense/reports/reddit/<thread-id>.md`
-- `.threadsense/batches/<run-name>.json`
-
-## Validation
-
-Run the local validation stack:
-
-```bash
-uv run ruff check
-uv run ruff format --check .
-uv run mypy --strict src tests
-uv run pytest
-./scripts/validate.sh
-```
+- `.threadsense/raw/<source>/...`
+- `.threadsense/normalized/<source>/...`
+- `.threadsense/analysis/<source>/...`
+- `.threadsense/reports/<source>/...`
+- `.threadsense/corpora/<corpus-id>/...`
 
 ## Related Docs
 
-- [README.md](README.md)
-- [docs/local-runtime-contract.md](docs/local-runtime-contract.md)
-- [docs/batch-api-runtime.md](docs/batch-api-runtime.md)
-- [.docs/2026-04-04-system-enhancement-analysis.md](.docs/2026-04-04-system-enhancement-analysis.md)
+- [README.md](../README.md)
+- [research-reddit.md](research-reddit.md)
+- [output-modes.md](output-modes.md)
+- [artifacts.md](artifacts.md)
+- [overview.md](overview.md)
+- [system-design.md](system-design.md)
+- [local-runtime-contract.md](local-runtime-contract.md)
+- [batch-api-runtime.md](batch-api-runtime.md)
