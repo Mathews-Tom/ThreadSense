@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from threadsense.inference.contracts import InferenceResponse, InferenceTask
 from threadsense.models.analysis import load_analysis_artifact_file
 from threadsense.models.canonical import load_canonical_thread
@@ -60,6 +62,9 @@ def test_build_thread_report_uses_local_summary_and_quality_checks(tmp_path: Pat
     assert report.executive_summary.provider == "local_openai_compatible"
     assert report.executive_summary.priority == "high"
     assert report.findings
+    assert report.findings[0].issue_marker_count is not None
+    assert report.findings[0].issue_marker_count >= 0
+    assert report.findings[0].action_type
     assert report.conversation_structure.max_depth == 0
     assert report.conversation_structure.top_level_count == 7
     assert report.provenance.analysis_artifact_path == str(analysis_path)
@@ -80,6 +85,8 @@ def test_render_report_markdown_contains_permalinks_and_sections(tmp_path: Path)
     assert "# Deterministic analysis fixture thread" in markdown
     assert "## Conversation Structure" in markdown
     assert "## Findings" in markdown
+    assert "Issue Markers:" in markdown
+    assert "Signal Type:" in markdown
     assert "https://reddit.com/comments/analysis123/c3" in markdown
 
 
@@ -99,10 +106,11 @@ def test_render_report_json_round_trips_report_artifact(tmp_path: Path) -> None:
     assert loaded.thread_id == report.thread_id
     assert loaded.executive_summary.headline == report.executive_summary.headline
     assert loaded.executive_summary.action_type == report.executive_summary.action_type
+    assert loaded.findings[0].signal_type == report.findings[0].signal_type
     assert loaded.conversation_structure.max_depth == report.conversation_structure.max_depth
 
 
-def test_load_report_artifact_migrates_v1_summary_contract(tmp_path: Path) -> None:
+def test_load_report_artifact_migrates_older_summary_contracts(tmp_path: Path) -> None:
     analysis_path = build_analysis_artifact(tmp_path)
     analysis = load_analysis_artifact_file(analysis_path)
     report = build_thread_report(
@@ -129,7 +137,76 @@ def test_load_report_artifact_migrates_v1_summary_contract(tmp_path: Path) -> No
 
     assert loaded.executive_summary.priority in {"high", "medium", "low"}
     assert loaded.executive_summary.action_type
-    assert loaded.provenance.schema_version == 2
+    assert loaded.provenance.schema_version == 3
+    assert loaded.findings[0].signal_type == "issue"
+    assert loaded.findings[0].recommended_owner == "engineering"
+    assert loaded.findings[0].issue_marker_count == 2
+
+
+def test_build_thread_report_classifies_finding_actions(tmp_path: Path) -> None:
+    analysis_path = build_analysis_artifact(tmp_path)
+    analysis = load_analysis_artifact_file(analysis_path)
+
+    report = build_thread_report(
+        analysis=analysis,
+        analysis_artifact_path=str(analysis_path),
+        summary_response=None,
+    )
+
+    findings = {finding.theme_key: finding for finding in report.findings}
+
+    assert findings["performance"].signal_type == "issue"
+    assert findings["performance"].recommended_owner == "engineering"
+    assert findings["performance"].action_type == "investigate"
+    assert findings["documentation"].signal_type == "mixed"
+    assert findings["documentation"].recommended_owner == "docs"
+    assert findings["documentation"].action_type == "document"
+    assert findings["workflow"].signal_type == "request"
+    assert findings["workflow"].recommended_owner == "product"
+    assert findings["workflow"].action_type == "design"
+    assert findings["reliability"].signal_type == "issue"
+    assert findings["reliability"].recommended_owner == "engineering"
+    assert findings["reliability"].action_type == "investigate"
+
+
+def test_load_report_artifact_rejects_invalid_action_signal_state(tmp_path: Path) -> None:
+    analysis_path = build_analysis_artifact(tmp_path)
+    analysis = load_analysis_artifact_file(analysis_path)
+    report = build_thread_report(
+        analysis=analysis,
+        analysis_artifact_path=str(analysis_path),
+        summary_response=None,
+    )
+    payload = report.to_dict()
+    payload["report"]["findings"][0]["signal_type"] = "discussion"
+    report_path = tmp_path / "invalid-report.json"
+    report_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(Exception, match="deterministic action signal|signal_type"):
+        load_report_artifact_file(report_path)
+
+
+def test_load_report_artifact_rejects_migration_when_analysis_hash_mismatches(
+    tmp_path: Path,
+) -> None:
+    analysis_path = build_analysis_artifact(tmp_path)
+    analysis = load_analysis_artifact_file(analysis_path)
+    report = build_thread_report(
+        analysis=analysis,
+        analysis_artifact_path=str(analysis_path),
+        summary_response=None,
+    )
+    payload = report.to_dict()
+    payload["schema_version"] = 2
+    payload["report_version"] = "report-v1.2"
+    payload["report"]["provenance"]["schema_version"] = 2
+    payload["report"]["provenance"]["report_version"] = "report-v1.2"
+    payload["report"]["provenance"]["analysis_sha256"] = "bad-sha"
+    report_path = tmp_path / "migrate-report.json"
+    report_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(Exception, match="hash mismatch"):
+        load_report_artifact_file(report_path)
 
 
 def test_render_report_html_contains_findings_and_caveats(tmp_path: Path) -> None:
@@ -147,6 +224,8 @@ def test_render_report_html_contains_findings_and_caveats(tmp_path: Path) -> Non
     assert "Next Steps" in html
     assert "Findings" in html
     assert "Caveats" in html
+    assert "Issue Markers:" in html
+    assert "Action:" in html
 
 
 def test_coverage_gap_auto_resolution_appends_uncovered_themes(tmp_path: Path) -> None:
