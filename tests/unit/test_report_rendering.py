@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from threadsense.inference.contracts import InferenceResponse, InferenceTask
 from threadsense.models.analysis import load_analysis_artifact_file
 from threadsense.models.canonical import load_canonical_thread
@@ -165,6 +167,46 @@ def test_build_thread_report_classifies_finding_actions(tmp_path: Path) -> None:
     assert findings["reliability"].signal_type == "issue"
     assert findings["reliability"].recommended_owner == "engineering"
     assert findings["reliability"].action_type == "investigate"
+
+
+def test_load_report_artifact_rejects_invalid_action_signal_state(tmp_path: Path) -> None:
+    analysis_path = build_analysis_artifact(tmp_path)
+    analysis = load_analysis_artifact_file(analysis_path)
+    report = build_thread_report(
+        analysis=analysis,
+        analysis_artifact_path=str(analysis_path),
+        summary_response=None,
+    )
+    payload = report.to_dict()
+    payload["report"]["findings"][0]["signal_type"] = "discussion"
+    report_path = tmp_path / "invalid-report.json"
+    report_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(Exception, match="deterministic action signal|signal_type"):
+        load_report_artifact_file(report_path)
+
+
+def test_load_report_artifact_rejects_migration_when_analysis_hash_mismatches(
+    tmp_path: Path,
+) -> None:
+    analysis_path = build_analysis_artifact(tmp_path)
+    analysis = load_analysis_artifact_file(analysis_path)
+    report = build_thread_report(
+        analysis=analysis,
+        analysis_artifact_path=str(analysis_path),
+        summary_response=None,
+    )
+    payload = report.to_dict()
+    payload["schema_version"] = 2
+    payload["report_version"] = "report-v1.2"
+    payload["report"]["provenance"]["schema_version"] = 2
+    payload["report"]["provenance"]["report_version"] = "report-v1.2"
+    payload["report"]["provenance"]["analysis_sha256"] = "bad-sha"
+    report_path = tmp_path / "migrate-report.json"
+    report_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(Exception, match="hash mismatch"):
+        load_report_artifact_file(report_path)
 
 
 def test_render_report_html_contains_findings_and_caveats(tmp_path: Path) -> None:
