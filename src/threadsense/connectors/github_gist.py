@@ -21,6 +21,7 @@ RestTransport = Callable[[str, Mapping[str, str], float], tuple[Any, httpx.Heade
 
 _GIST_PATH_WITH_OWNER = re.compile(r"^/([^/]+)/([0-9a-fA-F]+)$")
 _GIST_PATH_BARE = re.compile(r"^/([0-9a-fA-F]+)$")
+_RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 
 
 @dataclass(frozen=True)
@@ -145,7 +146,7 @@ class GitHubGistConnector:
         timeout = request.timeout_seconds or self._config.timeout_seconds
 
         gist_url = f"{self._config.base_url.rstrip('/')}/gists/{gist_id}"
-        raw_gist, gist_headers = self._transport(gist_url, headers, timeout)
+        raw_gist, gist_headers = self._request_with_retry(gist_url, headers, timeout)
         if not isinstance(raw_gist, dict):
             raise GitHubRequestError("github gist response must decode to an object")
         rate_limit = _extract_rate_limit(gist_headers)
@@ -160,6 +161,8 @@ class GitHubGistConnector:
             delay=self._config.request_delay_seconds,
             transport=self._transport,
             sleeper=self._sleeper,
+            max_retries=self._config.max_retries,
+            backoff_seconds=self._config.backoff_seconds,
         )
 
         result = GitHubGistResult(
@@ -177,6 +180,22 @@ class GitHubGistConnector:
             self._cache.put(cache_key, result.to_dict())
 
         return result
+
+    def _request_with_retry(
+        self,
+        url: str,
+        headers: dict[str, str],
+        timeout: float,
+    ) -> tuple[Any, httpx.Headers]:
+        return _request_with_retry_standalone(
+            self._transport,
+            url,
+            headers,
+            timeout,
+            self._config.max_retries,
+            self._config.backoff_seconds,
+            self._sleeper,
+        )
 
     def normalize(self, raw_artifact: Mapping[str, Any], raw_artifact_path: Path) -> Any:
         from threadsense.pipeline import normalize as _norm_mod
@@ -307,6 +326,39 @@ def _parse_gist(payload: dict[str, Any], gist_id: str) -> GitHubGistInfo:
     )
 
 
+def _should_retry(err: GitHubRequestError) -> bool:
+    status_code = err.details.get("status_code")
+    return isinstance(status_code, int) and status_code in _RETRYABLE_STATUS_CODES
+
+
+def _request_with_retry_standalone(
+    transport: RestTransport,
+    url: str,
+    headers: dict[str, str],
+    timeout: float,
+    max_retries: int,
+    backoff_seconds: float,
+    sleeper: Callable[[float], None],
+) -> tuple[Any, httpx.Headers]:
+    attempts = max_retries + 1
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return transport(url, headers, timeout)
+        except GitHubRequestError as err:
+            if attempt == attempts or not _should_retry(err):
+                raise
+            last_error = err
+        except NetworkBoundaryError as err:
+            if attempt == attempts:
+                raise
+            last_error = err
+        sleeper(backoff_seconds * attempt)
+    if last_error is not None:
+        raise last_error
+    raise GitHubRequestError("github gist transport failed without an error")
+
+
 def _fetch_all_comments(
     *,
     base_url: str,
@@ -317,6 +369,8 @@ def _fetch_all_comments(
     delay: float,
     transport: RestTransport,
     sleeper: Callable[[float], None],
+    max_retries: int = 0,
+    backoff_seconds: float = 1.0,
 ) -> list[GitHubGistComment]:
     comments: list[GitHubGistComment] = []
     page = 1
@@ -326,7 +380,9 @@ def _fetch_all_comments(
             sleeper(delay)
 
         url = f"{base_url.rstrip('/')}/gists/{gist_id}/comments?per_page={per_page}&page={page}"
-        payload, _ = transport(url, headers, timeout)
+        payload, _ = _request_with_retry_standalone(
+            transport, url, headers, timeout, max_retries, backoff_seconds, sleeper
+        )
 
         if not isinstance(payload, list):
             raise GitHubRequestError(

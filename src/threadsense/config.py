@@ -105,6 +105,8 @@ class GitHubGistConfig(BaseModel):
     timeout_seconds: float = 15
     comments_per_page: int = 100
     request_delay_seconds: float = 0.5
+    max_retries: int = 2
+    backoff_seconds: float = 1.0
 
     @field_validator("token")
     @classmethod

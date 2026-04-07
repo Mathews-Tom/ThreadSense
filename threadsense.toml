@@ -38,6 +38,8 @@ token = ""
 timeout_seconds = 15
 comments_per_page = 100
 request_delay_seconds = 0.5
+max_retries = 2
+backoff_seconds = 1.0
 
 [cache]
 enabled = true
