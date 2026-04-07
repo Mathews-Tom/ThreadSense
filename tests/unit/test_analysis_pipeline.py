@@ -165,6 +165,9 @@ def test_load_domain_vocabulary_matches_default_developer_tools_rules() -> None:
         "tutorial",
         "readme",
         "wiki",
+        "curriculum",
+        "cheatsheet",
+        "reference",
     )
     assert "architecture" in vocabulary.theme_rules
     assert "tooling" in vocabulary.theme_rules

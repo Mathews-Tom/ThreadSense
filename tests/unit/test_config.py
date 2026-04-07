@@ -21,7 +21,12 @@ def test_load_config_uses_defaults_when_no_file_exists(monkeypatch: pytest.Monke
     assert config.runtime.chat_endpoint == "http://127.0.0.1:11434/v1/chat/completions"
     assert config.runtime.timeout_seconds == 120.0
     assert config.runtime.repair_retries == 1
-    assert config.source_policy.enabled_sources == ("reddit", "hackernews")
+    assert config.source_policy.enabled_sources == (
+        "reddit",
+        "hackernews",
+        "github_discussions",
+        "github_gist",
+    )
     assert config.reddit.listing_limit == 500
     assert config.reddit.timeout_seconds == 15.0
     assert config.hackernews.base_url == "https://hacker-news.firebaseio.com/v0"
