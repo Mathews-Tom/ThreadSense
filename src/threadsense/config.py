@@ -50,7 +50,7 @@ class RuntimeConfig(BaseModel):
 class SourcePolicyConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    enabled_sources: tuple[str, ...] = ("reddit", "hackernews")
+    enabled_sources: tuple[str, ...] = ("reddit", "hackernews", "github_discussions", "github_gist")
 
     @field_validator("enabled_sources", mode="before")
     @classmethod
@@ -95,6 +95,28 @@ class GitHubConfig(BaseModel):
     @classmethod
     def validate_token(cls, v: str) -> str:
         return v.strip()
+
+
+class GitHubGistConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    base_url: str = "https://api.github.com"
+    token: str = ""
+    timeout_seconds: float = 15
+    comments_per_page: int = 100
+    request_delay_seconds: float = 0.5
+
+    @field_validator("token")
+    @classmethod
+    def validate_token(cls, v: str) -> str:
+        return v.strip()
+
+    @field_validator("comments_per_page")
+    @classmethod
+    def validate_comments_per_page(cls, v: int) -> int:
+        if v < 1 or v > 100:
+            raise ValueError("comments_per_page must be between 1 and 100")
+        return v
 
 
 class CacheConfig(BaseModel):
@@ -194,6 +216,7 @@ class AppConfig(BaseModel):
     reddit: RedditConfig = RedditConfig()
     hackernews: HackerNewsConfig = HackerNewsConfig()
     github: GitHubConfig = GitHubConfig()
+    github_gist: GitHubGistConfig = GitHubGistConfig()
     cache: CacheConfig = CacheConfig()
     storage: StorageConfig = StorageConfig()
     batch: BatchConfig = BatchConfig()
@@ -227,6 +250,11 @@ _ENV_MAP: dict[str, tuple[str, ...]] = {
     "THREADSENSE_GITHUB_BASE_URL": ("github", "base_url"),
     "THREADSENSE_GITHUB_TOKEN": ("github", "token"),
     "THREADSENSE_GITHUB_TIMEOUT": ("github", "timeout_seconds"),
+    "THREADSENSE_GITHUB_GIST_BASE_URL": ("github_gist", "base_url"),
+    "THREADSENSE_GITHUB_GIST_TOKEN": ("github_gist", "token"),
+    "THREADSENSE_GITHUB_GIST_TIMEOUT": ("github_gist", "timeout_seconds"),
+    "THREADSENSE_GITHUB_GIST_COMMENTS_PER_PAGE": ("github_gist", "comments_per_page"),
+    "THREADSENSE_GITHUB_GIST_REQUEST_DELAY": ("github_gist", "request_delay_seconds"),
     "THREADSENSE_CACHE_ENABLED": ("cache", "enabled"),
     "THREADSENSE_CACHE_TTL_SECONDS": ("cache", "ttl_seconds"),
     "THREADSENSE_CACHE_DIR": ("cache", "cache_dir"),
@@ -262,6 +290,7 @@ _TOML_SECTION_MAP: dict[str, str] = {
     "reddit": "reddit",
     "hackernews": "hackernews",
     "github": "github",
+    "github_gist": "github_gist",
     "cache": "cache",
     "storage": "storage",
     "batch": "batch",

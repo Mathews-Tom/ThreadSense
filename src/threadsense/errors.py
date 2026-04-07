@@ -78,3 +78,13 @@ class RedditRequestError(ThreadSenseError):
 class RedditResponseError(ThreadSenseError):
     def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
         super().__init__(message=message, code="reddit_response_error", details=details or {})
+
+
+class GitHubInputError(ThreadSenseError):
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message=message, code="github_input_error", details=details or {})
+
+
+class GitHubRequestError(ThreadSenseError):
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message=message, code="github_request_error", details=details or {})
