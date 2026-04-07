@@ -43,7 +43,7 @@ Top-level commands:
 ### Single-thread run
 
 ```bash
-uv run threadsense run reddit <reddit-url> \
+uv run threadsense run [<source>] <url> \
   [--format markdown|html|json] \
   [--with-summary] \
   [--summary-required] \
@@ -51,7 +51,9 @@ uv run threadsense run reddit <reddit-url> \
   [--flat]
 ```
 
-Example:
+Source can be `reddit`, `hn`, `github-discussions`, `gist`, or omitted for auto-detection.
+
+Examples:
 
 ```bash
 uv run threadsense run reddit \
@@ -59,6 +61,12 @@ uv run threadsense run reddit \
   --format markdown \
   --with-summary \
   --summary-required
+```
+
+```bash
+uv run threadsense run gist \
+  "https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f" \
+  --format markdown
 ```
 
 ### Topic research across subreddits
@@ -125,6 +133,20 @@ uv run threadsense fetch hn <hackernews-item-url> [--output path/to/raw.json]
 uv run threadsense fetch github-discussions <discussion-url> [--output path/to/raw.json]
 ```
 
+### `fetch github-gist`
+
+```bash
+uv run threadsense fetch github-gist <gist-url> [--output path/to/raw.json]
+```
+
+Aliases: `fetch gist`
+
+Notes:
+
+- Authentication is optional. Public gists work without a token (60 req/hr rate limit).
+- Set `THREADSENSE_GITHUB_GIST_TOKEN` for authenticated access (5,000 req/hr).
+- Comments are paginated at 100/page automatically.
+
 ## `normalize`
 
 Normalize one raw artifact into the canonical thread schema.
@@ -146,6 +168,19 @@ uv run threadsense normalize hn --input path/to/raw.json [--output path/to/norma
 ```bash
 uv run threadsense normalize github-discussions --input path/to/raw.json [--output path/to/normalized.json]
 ```
+
+### `normalize github-gist`
+
+```bash
+uv run threadsense normalize github-gist --input path/to/raw.json [--output path/to/normalized.json]
+```
+
+Aliases: `normalize gist`
+
+Notes:
+
+- Gist comments are flat — all normalized to `depth=0` with no `parent_comment_id`.
+- Multi-file gists are concatenated into a single body, each file prefixed with its filename.
 
 ## `analyze`
 

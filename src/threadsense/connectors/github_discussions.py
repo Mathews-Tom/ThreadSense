@@ -13,11 +13,12 @@ import httpx
 
 from threadsense.config import GitHubConfig
 from threadsense.connectors import FetchRequest, RawArtifact
+from threadsense.connectors.cache import FetchCache
 from threadsense.errors import (
     ConfigurationError,
+    GitHubInputError,
+    GitHubRequestError,
     NetworkBoundaryError,
-    RedditInputError,
-    RedditRequestError,
 )
 
 JsonObject = dict[str, Any]
@@ -36,6 +37,10 @@ class GitHubDiscussionComment:
     parent_node_id: str | None
     url: str
     replies: tuple[GitHubDiscussionComment, ...]
+    is_answer: bool
+    is_minimized: bool
+    minimized_reason: str | None
+    author_association: str
 
 
 @dataclass(frozen=True)
@@ -48,6 +53,10 @@ class GitHubDiscussion:
     author: str
     url: str
     created_utc: float
+    category: str | None
+    is_answered: bool
+    labels: tuple[str, ...]
+    locked: bool
 
 
 @dataclass(frozen=True)
@@ -94,6 +103,10 @@ class GitHubDiscussionsResult:
                 "author": self.discussion.author,
                 "url": self.discussion.url,
                 "created_utc": self.discussion.created_utc,
+                "category": self.discussion.category,
+                "is_answered": self.discussion.is_answered,
+                "labels": list(self.discussion.labels),
+                "locked": self.discussion.locked,
             },
             "comments": [comment_to_dict(comment) for comment in self.comments],
             "total_comment_count": self.total_comment_count,
@@ -110,37 +123,186 @@ class GitHubDiscussionsConnector:
         self,
         config: GitHubConfig,
         transport: GraphQlTransport | None = None,
+        cache: FetchCache | None = None,
     ) -> None:
         self._config = config
         self._transport = transport or send_graphql_request
+        self._cache = cache
 
     def fetch(self, request: FetchRequest) -> RawArtifact:
         if not self._config.token:
             raise ConfigurationError("github token is required for github discussions fetch")
         normalized_url, owner, repo, number = normalize_url(request.url)
+        cache_key = f"graphql:{owner}/{repo}/discussions/{number}"
+
+        if self._cache is not None:
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                discussion = parse_discussion(cached, owner, repo, number)
+                comments = parse_comments(cached)
+                return GitHubDiscussionsResult(
+                    requested_url=request.url,
+                    fetched_at_utc=time(),
+                    discussion=discussion,
+                    comments=comments,
+                    total_comment_count=len(flatten_comments(comments)),
+                    cache_status="hit",
+                    rate_limit_remaining=extract_rate_limit_remaining(cached),
+                    raw_payload=cached,
+                )
+
         headers = {
             "Authorization": f"Bearer {self._config.token}",
             "Content-Type": "application/json",
         }
-        query = build_discussion_query()
-        payload = self._transport(
-            self._config.base_url,
-            headers,
-            {"query": query, "variables": {"owner": owner, "repo": repo, "number": number}},
-            self._config.timeout_seconds,
-        )
+        payload = self._fetch_all_pages(headers, owner, repo, number)
         discussion = parse_discussion(payload, owner, repo, number)
         comments = parse_comments(payload)
+
+        if self._cache is not None:
+            self._cache.put(cache_key, payload)
+
+        cache_status = "disabled" if self._cache is None else "miss"
         return GitHubDiscussionsResult(
             requested_url=request.url,
             fetched_at_utc=time(),
             discussion=discussion,
             comments=comments,
             total_comment_count=len(flatten_comments(comments)),
-            cache_status="disabled",
+            cache_status=cache_status,
             rate_limit_remaining=extract_rate_limit_remaining(payload),
             raw_payload=payload,
         )
+
+    def _fetch_all_pages(
+        self,
+        headers: dict[str, str],
+        owner: str,
+        repo: str,
+        number: int,
+    ) -> JsonObject:
+        comment_cursor: str | None = None
+        all_comment_nodes: list[JsonObject] = []
+        base_payload: JsonObject = {}
+
+        while True:
+            query = build_discussion_query(comment_cursor=comment_cursor)
+            variables: JsonObject = {"owner": owner, "repo": repo, "number": number}
+            if comment_cursor is not None:
+                variables["commentCursor"] = comment_cursor
+
+            payload = self._transport(
+                self._config.base_url,
+                headers,
+                {"query": query, "variables": variables},
+                self._config.timeout_seconds,
+            )
+
+            discussion_data = payload.get("data", {}).get("repository", {}).get("discussion", {})
+            comments_data = discussion_data.get("comments", {})
+            comment_nodes = comments_data.get("nodes", [])
+            if isinstance(comment_nodes, list):
+                all_comment_nodes.extend(comment_nodes)
+
+            if not base_payload:
+                base_payload = payload
+            else:
+                # Merge comment nodes into base payload
+                base_discussion = (
+                    base_payload.get("data", {}).get("repository", {}).get("discussion", {})
+                )
+                base_discussion["comments"]["nodes"] = all_comment_nodes
+                base_discussion["comments"]["totalCount"] = comments_data.get("totalCount", 0)
+
+            page_info = comments_data.get("pageInfo", {})
+            if not page_info.get("hasNextPage", False):
+                break
+
+            comment_cursor = page_info.get("endCursor")
+            if not comment_cursor:
+                break
+
+            remaining = extract_rate_limit_remaining(payload)
+            if remaining is not None and remaining < 10:
+                break
+
+        # Paginate replies for each comment that has more pages
+        self._fetch_remaining_replies(headers, owner, repo, number, all_comment_nodes)
+
+        # Ensure base payload reflects all accumulated nodes
+        base_discussion = base_payload.get("data", {}).get("repository", {}).get("discussion", {})
+        if base_discussion:
+            base_discussion.setdefault("comments", {})["nodes"] = all_comment_nodes
+
+        return base_payload
+
+    def _fetch_remaining_replies(
+        self,
+        headers: dict[str, str],
+        owner: str,
+        repo: str,
+        number: int,
+        comment_nodes: list[JsonObject],
+    ) -> None:
+        for node in comment_nodes:
+            if not isinstance(node, dict):
+                continue
+            replies_data = node.get("replies", {})
+            page_info = replies_data.get("pageInfo", {})
+            if not page_info.get("hasNextPage", False):
+                continue
+
+            reply_cursor = page_info.get("endCursor")
+            if not reply_cursor:
+                continue
+
+            comment_id = str(node.get("id", ""))
+            all_reply_nodes = list(replies_data.get("nodes", []))
+
+            while reply_cursor:
+                query = build_reply_pagination_query()
+                variables: JsonObject = {
+                    "owner": owner,
+                    "repo": repo,
+                    "number": number,
+                    "commentId": comment_id,
+                    "replyCursor": reply_cursor,
+                }
+                payload = self._transport(
+                    self._config.base_url,
+                    headers,
+                    {"query": query, "variables": variables},
+                    self._config.timeout_seconds,
+                )
+
+                discussion_data = (
+                    payload.get("data", {}).get("repository", {}).get("discussion", {})
+                )
+                comments_data = discussion_data.get("comments", {})
+                target_nodes = comments_data.get("nodes", [])
+                if isinstance(target_nodes, list) and target_nodes:
+                    target_comment = target_nodes[0]
+                    if isinstance(target_comment, dict):
+                        new_replies = target_comment.get("replies", {}).get("nodes", [])
+                        if isinstance(new_replies, list):
+                            all_reply_nodes.extend(new_replies)
+
+                        reply_page_info = target_comment.get("replies", {}).get("pageInfo", {})
+                        if not reply_page_info.get("hasNextPage", False):
+                            break
+                        reply_cursor = reply_page_info.get("endCursor")
+                        if not reply_cursor:
+                            break
+                    else:
+                        break
+                else:
+                    break
+
+                remaining = extract_rate_limit_remaining(payload)
+                if remaining is not None and remaining < 10:
+                    break
+
+            node["replies"]["nodes"] = all_reply_nodes
 
     def normalize(self, raw_artifact: Mapping[str, Any], raw_artifact_path: Path) -> Any:
         from threadsense.pipeline.normalize import normalize_github_discussions_artifact
@@ -150,7 +312,7 @@ class GitHubDiscussionsConnector:
     def supports_url(self, url: str) -> bool:
         try:
             normalize_url(url)
-        except RedditInputError:
+        except GitHubInputError:
             return False
         return True
 
@@ -158,13 +320,13 @@ class GitHubDiscussionsConnector:
 def normalize_url(url: str) -> tuple[str, str, str, int]:
     parsed = parse.urlparse(url)
     if parsed.scheme not in {"http", "https"} or parsed.netloc != "github.com":
-        raise RedditInputError(
+        raise GitHubInputError(
             "github discussions URL must target github.com",
             details={"url": url},
         )
     match = _DISCUSSION_PATH.match(parsed.path.rstrip("/"))
     if match is None:
-        raise RedditInputError(
+        raise GitHubInputError(
             "github discussions URL must target an owner/repo discussion path",
             details={"url": url},
         )
@@ -177,25 +339,81 @@ def normalize_url(url: str) -> tuple[str, str, str, int]:
     )
 
 
-def build_discussion_query() -> str:
-    return """
-    query Discussion($owner: String!, $repo: String!, $number: Int!) {
-      repository(owner: $owner, name: $repo) {
-        discussion(number: $number) {
+def build_discussion_query(
+    *,
+    comment_cursor: str | None = None,
+) -> str:
+    comment_after = f', after: "{comment_cursor}"' if comment_cursor else ""
+    return f"""
+    query Discussion($owner: String!, $repo: String!, $number: Int!) {{
+      repository(owner: $owner, name: $repo) {{
+        discussion(number: $number) {{
           title
           body
           url
           createdAt
-          author { login }
-          comments(first: 100) {
-            nodes {
+          author {{ login }}
+          category {{ name }}
+          isAnswered
+          locked
+          labels(first: 10) {{ nodes {{ name }} }}
+          comments(first: 100{comment_after}) {{
+            totalCount
+            pageInfo {{ hasNextPage endCursor }}
+            nodes {{
               id
               body
               createdAt
               url
-              reactions { totalCount }
-              author { login }
-              replies(first: 100) {
+              reactions {{ totalCount }}
+              author {{ login }}
+              authorAssociation
+              isAnswer
+              isMinimized
+              minimizedReason
+              replies(first: 100) {{
+                totalCount
+                pageInfo {{ hasNextPage endCursor }}
+                nodes {{
+                  id
+                  body
+                  createdAt
+                  url
+                  reactions {{ totalCount }}
+                  author {{ login }}
+                  authorAssociation
+                  isMinimized
+                  minimizedReason
+                }}
+              }}
+            }}
+          }}
+        }}
+      }}
+      rateLimit {{
+        remaining
+      }}
+    }}
+    """
+
+
+def build_reply_pagination_query() -> str:
+    return """
+    query ReplyPagination(
+      $owner: String!
+      $repo: String!
+      $number: Int!
+      $commentId: ID!
+      $replyCursor: String!
+    ) {
+      repository(owner: $owner, name: $repo) {
+        discussion(number: $number) {
+          comments(first: 1) {
+            nodes {
+              id
+              replies(first: 100, after: $replyCursor) {
+                totalCount
+                pageInfo { hasNextPage endCursor }
                 nodes {
                   id
                   body
@@ -203,6 +421,9 @@ def build_discussion_query() -> str:
                   url
                   reactions { totalCount }
                   author { login }
+                  authorAssociation
+                  isMinimized
+                  minimizedReason
                 }
               }
             }
@@ -228,7 +449,7 @@ def send_graphql_request(
             response.raise_for_status()
             parsed = response.json()
     except httpx.HTTPStatusError as http_error:
-        raise RedditRequestError(
+        raise GitHubRequestError(
             "github discussions request failed",
             details={
                 "status_code": http_error.response.status_code,
@@ -246,20 +467,26 @@ def send_graphql_request(
             details={"url": url, "reason": str(connect_error)},
         ) from connect_error
     except json.JSONDecodeError as decode_error:
-        raise RedditRequestError(
+        raise GitHubRequestError(
             "github discussions response body is not valid JSON",
             details={"url": url},
         ) from decode_error
     if not isinstance(parsed, dict):
-        raise RedditRequestError("github discussions response must decode to an object")
+        raise GitHubRequestError("github discussions response must decode to an object")
     return parsed
 
 
 def parse_discussion(payload: JsonObject, owner: str, repo: str, number: int) -> GitHubDiscussion:
     discussion = payload.get("data", {}).get("repository", {}).get("discussion")
     if not isinstance(discussion, dict):
-        raise RedditRequestError("github discussion payload is invalid")
+        raise GitHubRequestError("github discussion payload is invalid")
     author = discussion.get("author") or {}
+    category_data = discussion.get("category") or {}
+    category_name = category_data.get("name") if isinstance(category_data, dict) else None
+    labels_data = discussion.get("labels", {}).get("nodes", [])
+    label_names = tuple(
+        str(label.get("name", "")) for label in labels_data if isinstance(label, dict)
+    )
     return GitHubDiscussion(
         owner=owner,
         repo=repo,
@@ -269,6 +496,10 @@ def parse_discussion(payload: JsonObject, owner: str, repo: str, number: int) ->
         author=str(author.get("login", "[deleted]")),
         url=str(discussion.get("url", "")),
         created_utc=parse_timestamp(str(discussion.get("createdAt", ""))),
+        category=category_name,
+        is_answered=bool(discussion.get("isAnswered", False)),
+        labels=label_names,
+        locked=bool(discussion.get("locked", False)),
     )
 
 
@@ -310,6 +541,10 @@ def parse_comment(
         parent_node_id=parent_node_id,
         url=str(payload.get("url", "")),
         replies=replies,
+        is_answer=bool(payload.get("isAnswer", False)),
+        is_minimized=bool(payload.get("isMinimized", False)),
+        minimized_reason=payload.get("minimizedReason"),
+        author_association=str(payload.get("authorAssociation", "NONE")),
     )
 
 
@@ -323,12 +558,12 @@ def extract_rate_limit_remaining(payload: JsonObject) -> int | None:
 
 def optional_discussion_body(discussion: Mapping[str, Any]) -> str | None:
     if "body" not in discussion:
-        raise RedditRequestError("github discussion body is missing")
+        raise GitHubRequestError("github discussion body is missing")
     value = discussion.get("body")
     if value is None:
         return None
     if not isinstance(value, str):
-        raise RedditRequestError("github discussion body is invalid")
+        raise GitHubRequestError("github discussion body is invalid")
     return value
 
 
@@ -359,4 +594,8 @@ def comment_to_dict(comment: GitHubDiscussionComment) -> dict[str, Any]:
         "parent_node_id": comment.parent_node_id,
         "url": comment.url,
         "replies": [comment_to_dict(reply) for reply in comment.replies],
+        "is_answer": comment.is_answer,
+        "is_minimized": comment.is_minimized,
+        "minimized_reason": comment.minimized_reason,
+        "author_association": comment.author_association,
     }

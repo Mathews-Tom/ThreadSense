@@ -4,6 +4,7 @@ from threadsense.config import AppConfig
 from threadsense.connectors import SourceConnector
 from threadsense.connectors.cache import FetchCache
 from threadsense.connectors.github_discussions import GitHubDiscussionsConnector
+from threadsense.connectors.github_gist import GitHubGistConnector
 from threadsense.connectors.hackernews import HackerNewsConnector
 from threadsense.connectors.reddit import RedditConnector
 from threadsense.errors import AnalysisBoundaryError
@@ -44,4 +45,8 @@ class SourceRegistry:
         if "hackernews" in enabled or "hn" in enabled:
             self._connectors["hackernews"] = HackerNewsConnector(config.hackernews, cache=cache)
         if "github_discussions" in enabled:
-            self._connectors["github_discussions"] = GitHubDiscussionsConnector(config.github)
+            self._connectors["github_discussions"] = GitHubDiscussionsConnector(
+                config.github, cache=cache
+            )
+        if "github_gist" in enabled or "gist" in enabled:
+            self._connectors["github_gist"] = GitHubGistConnector(config.github_gist, cache=cache)

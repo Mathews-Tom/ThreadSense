@@ -212,9 +212,9 @@
     },
     "provenance": {
       "normalized_artifact_path": "tests/fixtures/analysis/canonical_feedback_thread.json",
-      "normalized_sha256": "820370cf44df8bd0b44529c350f0b706c9387c5017b5a8a34bdfa50fb7b2c2cd",
+      "normalized_sha256": "14c03e8f652d078cace5645732772a3fa35843ef21fe518cd9677f5b81d91268",
       "source_thread_id": "analysis123",
-      "analyzed_at_utc": 1775355077.157415,
+      "analyzed_at_utc": 1775539199.688725,
       "schema_version": 1,
       "analysis_version": "hybrid-v2",
       "contract": {
@@ -222,7 +222,7 @@
         "objective": "general_survey",
         "abstraction_level": "operational",
         "schema_version": "1.0",
-        "created_at_utc": 1775355077.1568031
+        "created_at_utc": 1775539199.6881778
       },
       "contract_schema_version": "1.0"
     }

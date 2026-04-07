@@ -1,19 +1,19 @@
 [meta]
 domain = "developer_tools"
-version = "1.1"
+version = "1.2"
 
 [themes]
-documentation = ["doc", "docs", "guide", "guides", "onboarding", "quickstart", "tutorial", "readme", "wiki"]
+documentation = ["doc", "docs", "guide", "guides", "onboarding", "quickstart", "tutorial", "readme", "wiki", "curriculum", "cheatsheet", "reference"]
 performance = ["fast", "lag", "latency", "performance", "slow", "speed", "memory", "gpu", "cpu", "token", "tokens"]
 reliability = ["bug", "broken", "crash", "error", "fail", "failure", "retry", "flaky", "timeout"]
-workflow = ["automation", "batch", "dashboard", "export", "workflow", "pipeline", "tagging", "capture", "ingest"]
+workflow = ["automation", "batch", "dashboard", "export", "workflow", "pipeline", "tagging", "capture", "ingest", "fork", "clone", "merge"]
 usability = ["confusing", "discover", "discoverability", "hard", "ux", "ui", "setup", "config", "configuration"]
 architecture = ["architecture", "stack", "server", "database", "self-hosted", "graph", "embedding", "vector", "schema", "api", "mcp", "plugin"]
-tooling = ["obsidian", "notion", "vault", "repo", "github", "extension", "integration", "framework", "library"]
+tooling = ["obsidian", "notion", "vault", "repo", "github", "gist", "extension", "integration", "framework", "library"]
 
 [markers]
 issue = ["bug", "broken", "confusing", "crash", "error", "fail", "issue", "lag", "slow"]
-request = ["can you", "could you", "please", "should", "would love", "need", "want"]
+request = ["can you", "could you", "please", "should", "would love", "need", "want", "feature request", "enhancement", "rfc", "proposal"]
 
 [severity]
 levels = ["low", "medium", "high"]
