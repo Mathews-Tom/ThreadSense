@@ -1,19 +1,26 @@
 # ThreadSense
 
-ThreadSense is an evidence-first discussion intelligence system for turning public discussion threads into structured, inspectable product and research intelligence.
+**Discussion intelligence, not scraping.** ThreadSense is a reproducible pipeline that turns public discussion threads into structured, evidence-backed product and research intelligence.
 
-It combines:
+## Why ThreadSense
 
-- source connectors for Reddit, Hacker News, and GitHub Discussions
-- canonical normalization into a stable thread model
-- deterministic analysis with evidence-linked findings
-- optional local-model synthesis through an OpenAI-compatible runtime
-- report generation for single threads and cross-thread corpora
-- operator-facing CLI output in JSON, human, and quiet modes
+Scrapers give you raw payloads. AI summarizers give you prose. Neither gives you a defensible basis for decisions.
 
-## What You Can Do
+ThreadSense keeps the evidence chain intact at every stage:
 
-### Analyze one thread end to end
+1. **Acquire** — source connectors fetch threads from Reddit, Hacker News, and GitHub Discussions
+2. **Normalize** — source-specific payloads are mapped into a canonical thread model with provenance metadata
+3. **Analyze** — deterministic extraction identifies issues, feature requests, themes, and sentiment — each linked to the comment that produced it
+4. **Synthesize** — optional local-model inference adds summaries on top of the deterministic evidence layer
+5. **Report** — structured outputs in Markdown, HTML, or JSON, with full traceability from finding back to source comment
+
+Every stage produces a persisted, inspectable artifact. Rerun any stage independently. Diff results across runs. Audit exactly where a finding came from.
+
+## What This Enables
+
+### Single-thread analysis
+
+Feed a discussion URL. Get structured findings — issues, requests, themes, severity — with every claim linked to the comment that produced it.
 
 ```bash
 uv run threadsense run reddit \
@@ -23,7 +30,9 @@ uv run threadsense run reddit \
   --summary-required
 ```
 
-### Research a topic across selected subreddits
+### Cross-thread research
+
+Search a topic across multiple subreddits. ThreadSense deterministically selects, ranks, and analyzes matching threads, then synthesizes a corpus-level report.
 
 ```bash
 uv run threadsense --output-format human research reddit \
@@ -36,47 +45,38 @@ uv run threadsense --output-format human research reddit \
   --with-summary
 ```
 
-This workflow:
+### Domain-aware analysis
 
-1. searches the selected subreddits
-2. ranks and selects matching threads deterministically
-3. fetches and analyzes each selected thread
-4. builds a corpus manifest and corpus analysis
-5. writes a corpus markdown report
-6. prints a compact terminal summary in human mode
+The analysis layer uses a contract system with domain-specific vocabularies (developer tools, product feedback, hiring, research, financial markets, gaming). Each domain defines its own theme keywords, issue markers, and severity calibration — so analysis adapts to context rather than applying one-size-fits-all heuristics.
 
-## Core Features
+## Architecture
 
-- Reddit thread ingestion through the public JSON API
-- Reddit topic research across selected subreddits
-- canonical thread artifacts with top-level thread body support
-- deterministic issue/request/theme extraction
-- optional local-runtime summaries for thread reports and corpus reports
-- Markdown, HTML, and JSON report outputs for single-thread runs
-- Markdown corpus reports for topic research and corpus reporting
-- terminal summaries for single-thread `run` and `research reddit` in human mode
+```text
+fetch → normalize → analyze → [optional inference] → report
+         ↓              ↓              ↓                ↓
+     raw artifact   canonical     analysis         report artifact
+                    artifact      artifact
+```
 
-## Supported Sources
+- **Deterministic core** — parsing, normalization, scoring, and selection are reproducible across runs
+- **Inference on top** — LLM synthesis is optional and layered over deterministic evidence, never a substitute for it
+- **Stable artifacts** — each stage persists a separate JSON artifact with `schema_version` and SHA256 provenance
+- **Fail fast** — invalid URLs, malformed payloads, and schema inconsistencies surface immediately
 
-Implemented connector support:
+## Sources and Discovery
 
-- Reddit
-- Hacker News
-- GitHub Discussions
-
-Current research discovery support:
-
-- Reddit only
+| Capability      | Reddit | Hacker News | GitHub Discussions |
+| --------------- | :----: | :---------: | :----------------: |
+| Thread analysis |  yes   |     yes     |        yes         |
+| Topic research  |  yes   |      —      |         —          |
 
 ## Output Modes
 
-ThreadSense supports three output modes:
-
-- `json`: machine-readable payloads
-- `human`: Rich terminal panels and summaries
-- `quiet`: status-only output
-
-Force human mode explicitly when you want the terminal summary panels:
+| Mode    | Purpose                                          |
+| ------- | ------------------------------------------------ |
+| `json`  | Machine-readable payloads for downstream tooling |
+| `human` | Rich terminal panels and summaries for operators |
+| `quiet` | Status-only output for scripts and CI            |
 
 ```bash
 uv run threadsense --output-format human research reddit ...
@@ -84,30 +84,27 @@ uv run threadsense --output-format human research reddit ...
 
 See [docs/output-modes.md](docs/output-modes.md) for details.
 
+## Who This Is For
+
+- **Product teams** validating pain points and feature demand from community discussions
+- **Founders** doing market and competitor research across technical communities
+- **DevRel teams** tracking developer workflow friction and tooling sentiment
+- **Researchers** studying technical communities with reproducible methodology
+
 ## Quickstart
 
-### 1. Install dependencies
-
 ```bash
+# 1. Install
 uv sync
-```
 
-### 2. Validate your local setup
-
-```bash
+# 2. Validate local setup
 uv run threadsense preflight
-```
 
-### 3. Run a single-thread workflow
-
-```bash
+# 3. Analyze a single thread
 uv run threadsense run reddit \
   "https://www.reddit.com/r/ClaudeCode/comments/1ro0qbl/anyone_actually_built_a_second_brain_that_isnt/"
-```
 
-### 4. Run topic research
-
-```bash
+# 4. Research a topic across subreddits
 uv run threadsense research reddit \
   --query "second brain OR agentic PKM" \
   --subreddit ClaudeCode \
@@ -115,79 +112,59 @@ uv run threadsense research reddit \
   --subreddit AI_Agents
 ```
 
-## Research Query Notes
+## CLI Commands
 
-`research reddit` supports a deliberately narrow query style so local deterministic matching stays aligned with retrieval:
+| Command           | Purpose                                             |
+| ----------------- | --------------------------------------------------- |
+| `run`             | End-to-end single-thread pipeline                   |
+| `research reddit` | Cross-subreddit topic research and corpus synthesis |
+| `fetch`           | Acquire raw thread data                             |
+| `normalize`       | Map raw data to canonical model                     |
+| `analyze`         | Deterministic evidence extraction                   |
+| `infer`           | LLM-assisted synthesis                              |
+| `report`          | Generate output reports                             |
+| `corpus`          | Build and analyze cross-thread corpora              |
+| `inspect`         | Examine persisted artifacts                         |
+| `batch run`       | Process multiple threads                            |
+| `preflight`       | Validate local environment                          |
+| `serve`           | Local API server                                    |
 
-- supported: `OR`, `|`
-- unsupported: quotes, parentheses, `title:`, `selftext:`, negation-style advanced Reddit syntax
+Full command reference: [docs/usage.md](docs/usage.md)
 
-Example supported query:
+## Artifact Storage
+
+Every pipeline run produces inspectable artifacts under `.threadsense/`:
 
 ```text
-second brain OR agentic PKM
+.threadsense/
+├── raw/<source>/          # Source payloads as fetched
+├── normalized/<source>/   # Canonical thread model
+├── analysis/<source>/     # Evidence-linked findings
+├── reports/<source>/      # Rendered reports
+├── corpora/<corpus-id>/   # Manifest, analysis, and report
+└── batches/               # Batch run metadata
 ```
 
-This is executed as a union of clause searches, then deterministically filtered and ranked locally.
+Details: [docs/artifacts.md](docs/artifacts.md)
 
-See [docs/research-reddit.md](docs/research-reddit.md) for the full workflow.
+## Local Runtime
 
-## Main CLI Workflows
+ThreadSense runs without a local model for deterministic analysis. Summaries and synthesis require a local OpenAI-compatible endpoint (default: `http://127.0.0.1:8080/v1/chat/completions`).
 
-- `preflight`
-- `fetch`
-- `normalize`
-- `analyze`
-- `infer`
-- `report`
-- `inspect`
-- `corpus`
-- `batch run`
-- `research reddit`
-- `serve`
-- `run`
+Details: [docs/local-runtime-contract.md](docs/local-runtime-contract.md)
 
-The detailed command reference lives in [docs/usage.md](docs/usage.md).
+## Documentation
 
-## Artifacts
-
-ThreadSense persists separate artifacts for each stage so runs are inspectable and rerunnable.
-
-Typical layout under `.threadsense`:
-
-- `raw/<source>/...`
-- `normalized/<source>/...`
-- `analysis/<source>/...`
-- `reports/<source>/...`
-- `corpora/<corpus-id>/manifest.json`
-- `corpora/<corpus-id>/analysis.json`
-- `corpora/<corpus-id>/report.md`
-- `batches/<run-name>.json`
-
-See [docs/artifacts.md](docs/artifacts.md) for the full layout and artifact responsibilities.
-
-## Runtime
-
-ThreadSense can run without a local model, but summaries require a local OpenAI-compatible runtime.
-
-Default endpoint:
-
-- base URL: `http://127.0.0.1:8080`
-- chat path: `/v1/chat/completions`
-
-See [docs/local-runtime-contract.md](docs/local-runtime-contract.md).
-
-## Documentation Map
-
-- [docs/usage.md](docs/usage.md): command reference
-- [docs/research-reddit.md](docs/research-reddit.md): subreddit topic research workflow
-- [docs/output-modes.md](docs/output-modes.md): JSON, human, and quiet output modes
-- [docs/artifacts.md](docs/artifacts.md): persisted artifact types and storage layout
-- [docs/overview.md](docs/overview.md): product and workflow overview
-- [docs/system-design.md](docs/system-design.md): implemented architecture and boundaries
-- [docs/local-runtime-contract.md](docs/local-runtime-contract.md): local inference contract
-- [docs/batch-api-runtime.md](docs/batch-api-runtime.md): batch, API, and runtime notes
-- [docs/pitch.md](docs/pitch.md): product positioning
+| Document                                                    | Content                             |
+| ----------------------------------------------------------- | ----------------------------------- |
+| [usage.md](docs/usage.md)                                   | Command reference                   |
+| [research-reddit.md](docs/research-reddit.md)               | Reddit topic research workflow      |
+| [output-modes.md](docs/output-modes.md)                     | JSON, human, and quiet output modes |
+| [artifacts.md](docs/artifacts.md)                           | Artifact types and storage layout   |
+| [overview.md](docs/overview.md)                             | Product and workflow overview       |
+| [system-design.md](docs/system-design.md)                   | Architecture and system boundaries  |
+| [local-runtime-contract.md](docs/local-runtime-contract.md) | Local inference contract            |
+| [pitch.md](docs/pitch.md)                                   | Product positioning                 |
 
 ## Validation
 
@@ -196,21 +173,18 @@ uv run ruff check
 uv run ruff format --check .
 uv run mypy --strict src tests
 uv run pytest
-./scripts/validate.sh
 ```
 
 ## Current Limits
 
-- Reddit topic research is implemented; broader cross-source research discovery is not
-- Reddit research query grammar is intentionally limited
-- corpus reports are currently Markdown only
-- the local API remains a trusted local surface, not a hardened public service
+- Topic research is implemented for Reddit; other source discovery workflows are planned
+- Reddit research queries support `OR`/`|` clause unions only (intentionally narrow for deterministic alignment)
+- Corpus reports are Markdown only
+- The local API is a trusted local surface, not a hardened public service
 
 ## Direction
 
-The current system is beyond the original single-thread MVP. The highest-value next areas are:
-
-- richer corpus presentation and operator workflows
-- more discovery workflows beyond Reddit subreddit search
-- stronger evaluation and replay benchmarking
-- better source-distribution and research-quality reporting
+- Richer corpus presentation and operator workflows
+- Discovery workflows beyond Reddit
+- Evaluation and replay benchmarking
+- Source-distribution and research-quality reporting
