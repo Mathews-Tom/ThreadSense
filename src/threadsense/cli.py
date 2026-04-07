@@ -49,8 +49,8 @@ from threadsense.workflows import (
     normalize_source_thread,
     report_analysis,
     report_corpus,
-    run_reddit_research,
     run_reddit_pipeline,
+    run_reddit_research,
     run_source_pipeline,
     search_corpora,
 )
@@ -188,6 +188,20 @@ def _build_fetch_parser(subparsers: argparse._SubParsersAction[argparse.Argument
     )
     _add_config_argument(gh_parser)
     _add_no_cache_argument(gh_parser)
+    gist_parser = fetch_subparsers.add_parser(
+        "github-gist",
+        aliases=["gist"],
+        help="Fetch one GitHub Gist with comments.",
+    )
+    gist_parser.add_argument("url", help="Full GitHub Gist URL")
+    gist_parser.add_argument(
+        "--output",
+        "-o",
+        type=Path,
+        help="Raw artifact output path. Defaults to the configured raw store path.",
+    )
+    _add_config_argument(gist_parser)
+    _add_no_cache_argument(gist_parser)
 
 
 def _build_normalize_parser(
@@ -251,6 +265,24 @@ def _build_normalize_parser(
         help="Normalized artifact output path. Defaults to the configured normalized store path.",
     )
     _add_config_argument(normalize_gh_parser)
+    normalize_gist_parser = normalize_subparsers.add_parser(
+        "github-gist",
+        aliases=["gist"],
+        help="Normalize one GitHub Gist raw artifact.",
+    )
+    normalize_gist_parser.add_argument(
+        "--input",
+        type=Path,
+        required=True,
+        help="Raw GitHub Gist artifact path.",
+    )
+    normalize_gist_parser.add_argument(
+        "--output",
+        "-o",
+        type=Path,
+        help="Normalized artifact output path. Defaults to the configured normalized store path.",
+    )
+    _add_config_argument(normalize_gist_parser)
 
 
 def _build_analyze_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -1355,6 +1387,8 @@ def parse_run_target(target: list[str]) -> tuple[str | None, str]:
             source_name = "hackernews"
         if source_name in {"github-discussions", "gh-discussions"}:
             source_name = "github_discussions"
+        if source_name in {"github-gist", "gist"}:
+            source_name = "github_gist"
         return source_name, target[1]
     raise _CommandDispatchError("run")
 
@@ -1395,13 +1429,27 @@ def _dispatch_command(args: argparse.Namespace) -> int:
                 source_name="github_discussions",
                 no_cache=args.no_cache,
             )
+        case ("fetch", "github-gist" | "gist", _, _, _):
+            return run_source_fetch(
+                config_path=args.config,
+                url=args.url,
+                output_path=args.output,
+                source_name="github_gist",
+                no_cache=args.no_cache,
+            )
         case ("normalize", "reddit", _, _, _):
             return run_reddit_normalize(
                 config_path=args.config,
                 input_path=args.input,
                 output_path=args.output,
             )
-        case ("normalize", "hn" | "hackernews" | "github-discussions" | "gh-discussions", _, _, _):
+        case (
+            "normalize",
+            "hn" | "hackernews" | "github-discussions" | "gh-discussions" | "github-gist" | "gist",
+            _,
+            _,
+            _,
+        ):
             return run_source_normalize(
                 config_path=args.config,
                 input_path=args.input,

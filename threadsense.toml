@@ -12,7 +12,7 @@ repair_retries = 1
 json_mode = false
 
 [sources]
-enabled = "reddit,hackernews"
+enabled = "reddit,hackernews,github_discussions,github_gist"
 
 [reddit]
 user_agent = "threadsense/0.2.0 (https://github.com/Mathews-Tom/ThreadSense)"
@@ -31,6 +31,13 @@ request_delay_seconds = 1.0
 base_url = "https://api.github.com/graphql"
 token = ""
 timeout_seconds = 20
+
+[github_gist]
+base_url = "https://api.github.com"
+token = ""
+timeout_seconds = 15
+comments_per_page = 100
+request_delay_seconds = 0.5
 
 [cache]
 enabled = true
