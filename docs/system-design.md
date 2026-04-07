@@ -49,6 +49,7 @@ subreddit search -> candidate ranking -> selected thread fetch/analyze
 - `src/threadsense/connectors/reddit.py`
 - `src/threadsense/connectors/hackernews.py`
 - `src/threadsense/connectors/github_discussions.py`
+- `src/threadsense/connectors/github_gist.py`
 
 Responsibilities:
 
@@ -58,11 +59,11 @@ Responsibilities:
 - preserve source-specific thread metadata
 - return raw artifacts for later normalization
 
-Special note for Reddit:
+Special notes:
 
-- direct thread fetch is URL-based
-- topic research uses explicit subreddit search
-- exact time-window filtering is applied after Reddit retrieval
+- Reddit: direct thread fetch is URL-based; topic research uses explicit subreddit search with exact time-window filtering after retrieval
+- GitHub Discussions: GraphQL with cursor-based pagination for comments (100/page) and replies; requires authentication token
+- GitHub Gists: REST API with paginated flat comments; authentication optional for public gists; comments have no threading (all depth=0)
 
 ### Canonical Model
 

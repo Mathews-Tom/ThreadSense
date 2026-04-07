@@ -6,7 +6,7 @@ ThreadSense is an evidence-first discussion intelligence system for turning publ
 
 The implemented system supports:
 
-- source connectors for Reddit, Hacker News, and GitHub Discussions
+- source connectors for Reddit, Hacker News, GitHub Discussions, and GitHub Gists
 - canonical normalization into a shared thread model
 - deterministic analysis with evidence-linked findings
 - optional local-model synthesis for thread and corpus summaries
@@ -90,9 +90,10 @@ ThreadSense separates source-specific acquisition from canonical normalization.
 
 Current source support:
 
-- Reddit
-- Hacker News
-- GitHub Discussions
+- Reddit — threaded comments via JSON API with "more" expansion
+- Hacker News — recursive tree-based item fetching via Firebase API
+- GitHub Discussions — GraphQL with cursor-based pagination for comments and replies
+- GitHub Gists — REST API with paginated flat comments; authentication optional for public gists
 
 Each connector preserves enough source metadata for traceability, while normalization maps the result into a canonical `Thread` object with:
 
@@ -182,7 +183,7 @@ JSON is for machines. Human mode is for operators. Both should expose the same u
 ThreadSense is best described as:
 
 ```text
-multi-source thread analysis + corpus synthesis + subreddit topic research
+multi-source discussion intelligence + corpus synthesis + subreddit topic research
 ```
 
 It is not just a scraper, and it is not just a summarizer. It is a reproducible pipeline from source thread to inspectable intelligence.

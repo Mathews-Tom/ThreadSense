@@ -25,6 +25,7 @@ Examples:
 - `.threadsense/raw/reddit/<thread-id>.json`
 - `.threadsense/raw/hackernews/<story-id>.json`
 - `.threadsense/raw/github_discussions/<thread-id>.json`
+- `.threadsense/raw/github_gist/<gist-id>.json`
 
 Purpose:
 
@@ -41,6 +42,7 @@ Examples:
 - `.threadsense/normalized/reddit/<thread-id>.json`
 - `.threadsense/normalized/hackernews/<thread-id>.json`
 - `.threadsense/normalized/github_discussions/<thread-id>.json`
+- `.threadsense/normalized/github_gist/<gist-id>.json`
 
 Purpose:
 
@@ -57,6 +59,7 @@ Examples:
 - `.threadsense/analysis/reddit/<thread-id>.json`
 - `.threadsense/analysis/hackernews/<thread-id>.json`
 - `.threadsense/analysis/github_discussions/<thread-id>.json`
+- `.threadsense/analysis/github_gist/<gist-id>.json`
 
 Purpose:
 
