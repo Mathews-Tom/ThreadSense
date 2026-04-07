@@ -15,7 +15,7 @@ json_mode = false
 enabled = "reddit,hackernews,github_discussions,github_gist"
 
 [reddit]
-user_agent = "threadsense/0.2.0 (https://github.com/Mathews-Tom/ThreadSense)"
+user_agent = "threadsense/0.3.0 (https://github.com/Mathews-Tom/ThreadSense)"
 timeout_seconds = 15
 max_retries = 2
 backoff_seconds = 0.5
