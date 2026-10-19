@@ -2,6 +2,8 @@ name: CI
 
 on:
   pull_request:
+    # `edited` re-validates a stacked PR after its base branch is retargeted.
+    types: [opened, synchronize, reopened, edited]
   push:
     branches: [main]
 
@@ -10,7 +12,7 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   validate:
