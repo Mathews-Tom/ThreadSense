@@ -35,7 +35,6 @@ QUERY = "sync conflict"
 SEARCH_URL_MARKER = "/search.json"
 UNSAFE_POST_ID = "../x"
 SWEEP_LEASE_SECONDS = 60
-CRASH_LEASE_SECONDS = 1
 STATE_TABLES = (
     "watch_runs",
     "watch_threads",
@@ -1019,18 +1018,17 @@ def interrupted_sweep(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Interr
         patch.setattr(MonitoringStore, "record_acquisition", die)
         patch.setattr(MonitoringStore, "complete_sweep", die)
         with pytest.raises(ProcessDeathError):
-            run_phase_sweep(config, store, initial, lease_seconds=CRASH_LEASE_SECONDS)
+            run_phase_sweep(config, store, initial)
     assert len(claims) == 1
     return InterruptedSweep(config=config, store=store, initial=initial, dead_claim=claims[0])
 
 
 @pytest.fixture
 def recovered_sweep(interrupted_sweep: InterruptedSweep) -> SweepResult:
-    remaining = interrupted_sweep.dead_claim.lease_expires_at_utc - time.time()
-    time.sleep(max(0.0, remaining) + 0.1)
-    result, _ = run_phase_sweep(
-        interrupted_sweep.config, interrupted_sweep.store, interrupted_sweep.initial
-    )
+    # A store whose clock is past the dead lease recovers it without waiting on wall time.
+    offset = interrupted_sweep.dead_claim.lease_expires_at_utc + 1.0 - time.time()
+    later_store = MonitoringStore(interrupted_sweep.store.path, clock=lambda: time.time() + offset)
+    result, _ = run_phase_sweep(interrupted_sweep.config, later_store, interrupted_sweep.initial)
     return result
 
 
