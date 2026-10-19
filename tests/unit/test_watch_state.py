@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -375,15 +376,33 @@ conn.execute(sys.argv[2], ("x" * 1_000_000,))
 os._exit(0)
 """
 REVISION_UPDATE = "UPDATE watch_revisions SET profile_json = ?"
+# Same crashed writer, but it first sets an uncommitted supported user_version, so SQLite
+# writes the committed page 1 into the rollback journal before the spill.
+CRASH_WITH_UNCOMMITTED_VERSION_CODE = f"""
+import os
+import sqlite3
+import sys
+
+conn = sqlite3.connect(sys.argv[1], isolation_level=None)
+conn.execute("PRAGMA cache_size = 5")
+conn.execute("BEGIN IMMEDIATE")
+conn.execute("PRAGMA user_version = {STATE_SCHEMA_VERSION}")
+conn.execute(sys.argv[2], ("x" * 1_000_000,))
+os._exit(0)
+"""
+# Offset of the big-endian user_version field in the SQLite database header.
+SQLITE_USER_VERSION_OFFSET = 60
 
 
 def journal_path(store: MonitoringStore) -> Path:
     return Path(f"{store.path}-journal")
 
 
-def crash_mid_transaction(store: MonitoringStore, update_sql: str) -> None:
+def crash_mid_transaction(
+    store: MonitoringStore, update_sql: str, *, crash_code: str = CRASH_CODE
+) -> None:
     subprocess.run(
-        [sys.executable, "-c", CRASH_CODE, str(store.path), update_sql], check=True, timeout=30
+        [sys.executable, "-c", crash_code, str(store.path), update_sql], check=True, timeout=30
     )
     journal = journal_path(store)
     assert journal.exists()
@@ -473,6 +492,76 @@ def test_store_hot_journal_on_unsupported_state_is_refused_without_modification(
         operation(store)
 
     assert raised.value.details["reason"] == reason
+    assert directory_snapshot(store.path.parent) == before
+
+
+def inject_header_user_version_fault(path: Path, version: int) -> None:
+    """Overwrite only the four user_version header bytes of the database file.
+
+    This is a deterministic injected page fault representing a partial page-1 write.
+    It is not an observed automatic SQLite header spill. The rollback journal is the
+    genuine one written by SQLite and is never fabricated or edited.
+    """
+    with path.open("r+b") as handle:
+        handle.seek(SQLITE_USER_VERSION_OFFSET)
+        handle.write(version.to_bytes(4, "big"))
+
+
+def raw_header_user_version(path: Path) -> int:
+    header = path.read_bytes()[SQLITE_USER_VERSION_OFFSET : SQLITE_USER_VERSION_OFFSET + 4]
+    return int.from_bytes(header, "big")
+
+
+def recover_private_copy_user_version(store: MonitoringStore, scratch: Path) -> int:
+    """Roll back a private copy of the database and journal; return its committed version."""
+    scratch.mkdir()
+    copy = scratch / store.path.name
+    shutil.copyfile(store.path, copy)
+    shutil.copyfile(journal_path(store), Path(f"{copy}-journal"))
+    with closing(sqlite3.connect(copy)) as conn:
+        # The first read through a write-capable handle rolls the hot journal back.
+        version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    assert not Path(f"{copy}-journal").exists()
+    return version
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        lambda store: store.list_watches(),
+        lambda store: store.inspect_watch("agent-tooling"),
+        lambda store: store.save_profile(parse_watch_profile(fixture_payload())),
+    ],
+    ids=["list", "inspect", "save"],
+)
+def test_store_hot_journal_with_misleading_raw_header_is_refused_by_committed_version(
+    tmp_path: Path, operation: Callable[[MonitoringStore], object]
+) -> None:
+    """Trust the committed identity in the genuine journal, not the raw page-1 header.
+
+    The crashed writer and its rollback journal are genuine SQLite output. The raw
+    header is then rewritten to the supported version by a deterministic injected page
+    fault (a stand-in for a partial page-1 write, not an observed SQLite spill).
+    """
+    newer_version = STATE_SCHEMA_VERSION + 1
+    store = store_at(tmp_path)
+    prepare_newer_schema(store)
+    crash_mid_transaction(store, REVISION_UPDATE, crash_code=CRASH_WITH_UNCOMMITTED_VERSION_CODE)
+    inject_header_user_version_fault(store.path, STATE_SCHEMA_VERSION)
+    assert raw_header_user_version(store.path) == STATE_SCHEMA_VERSION
+    recovered_version = recover_private_copy_user_version(store, tmp_path / "private-recovery")
+    assert recovered_version == newer_version
+    database_before = store.path.read_bytes()
+    journal_before = journal_path(store).read_bytes()
+    before = directory_snapshot(store.path.parent)
+
+    with pytest.raises(MonitoringStateError) as raised:
+        operation(store)
+
+    assert raised.value.details["reason"] == "unsupported_schema_version"
+    assert raised.value.details["schema_version"] == newer_version
+    assert store.path.read_bytes() == database_before
+    assert journal_path(store).read_bytes() == journal_before
     assert directory_snapshot(store.path.parent) == before
 
 

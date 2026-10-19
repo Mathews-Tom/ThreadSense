@@ -101,6 +101,19 @@ conn.execute(sys.argv[2], ("x" * 1000000,))
 os._exit(0)
 """
 CRASH_UPDATE = "UPDATE watch_revisions SET profile_json = ?"
+# Same crashed writer, but it first sets an uncommitted supported user_version, so SQLite
+# writes the committed page 1 into the genuine rollback journal before the spill.
+CRASH_UNCOMMITTED_VERSION_PROCESS = """
+import os, sqlite3, sys
+conn = sqlite3.connect(sys.argv[1], isolation_level=None)
+conn.execute("PRAGMA cache_size = 5")
+conn.execute("BEGIN IMMEDIATE")
+conn.execute("PRAGMA user_version = 1")
+conn.execute(sys.argv[2], ("x" * 1000000,))
+os._exit(0)
+"""
+# Offset of the big-endian user_version field in the SQLite database header.
+USER_VERSION_OFFSET = 60
 
 
 class SmokeFailure(Exception):
@@ -348,9 +361,9 @@ class ProfilesScenario:
         shutil.copyfile(self.state_path, state)
         return root, state
 
-    def crash_writer(self, state: Path, statement: str) -> int:
+    def crash_writer(self, state: Path, statement: str, process: str = CRASH_PROCESS) -> int:
         subprocess.run(
-            [sys.executable, "-c", CRASH_PROCESS, str(state), statement],
+            [sys.executable, "-c", process, str(state), statement],
             check=True,
             env=self.base_env,
             timeout=60,
@@ -422,7 +435,68 @@ class ProfilesScenario:
             check(set(reasons) == {expected}, f"wrong hot-journal refusal: {reasons}")
             check(directory_digest(state.parent) == before, f"{expected} files were modified")
             observed[expected] = reasons
-        self.record("unsupported_crash_journal_refused", reasons=observed)
+        header_fault = self.misleading_header_crash_is_refused(profile)
+        self.record("unsupported_crash_journal_refused", reasons=observed, **header_fault)
+
+    def misleading_header_crash_is_refused(self, profile: str) -> dict[str, Any]:
+        """Refuse a committed-newer crash whose raw page-1 header claims version 1."""
+        root, state = self.store_copy("crash-header-fault-store")
+        with closing(sqlite3.connect(state)) as conn:
+            conn.execute("PRAGMA user_version = 2")
+            conn.commit()
+        self.crash_writer(state, CRASH_UPDATE, CRASH_UNCOMMITTED_VERSION_PROCESS)
+        journal = Path(f"{state}-journal")
+        crash_header = int.from_bytes(
+            state.read_bytes()[USER_VERSION_OFFSET : USER_VERSION_OFFSET + 4], "big"
+        )
+        # Deterministic injected page fault standing in for a partial page-1 write; it is
+        # not an observed SQLite spill. The journal is SQLite's own and is never edited.
+        with state.open("r+b") as handle:
+            handle.seek(USER_VERSION_OFFSET)
+            handle.write((1).to_bytes(4, "big"))
+        raw_header = int.from_bytes(
+            state.read_bytes()[USER_VERSION_OFFSET : USER_VERSION_OFFSET + 4], "big"
+        )
+        check(raw_header == 1, f"injected header fault reads {raw_header}")
+        recovery = self.work_dir / "crash-header-fault-recovery"
+        recovery.mkdir()
+        copy = recovery / state.name
+        shutil.copyfile(state, copy)
+        shutil.copyfile(journal, Path(f"{copy}-journal"))
+        with closing(sqlite3.connect(copy)) as conn:
+            # The first read through a write-capable handle rolls the copy's journal back.
+            committed = int(conn.execute("PRAGMA user_version").fetchone()[0])
+        check(not Path(f"{copy}-journal").exists(), "private copy journal was not rolled back")
+        check(committed == 2, f"private recovery found committed version {committed}")
+        before = {"database": file_sha256(state), "journal": file_sha256(journal)}
+        files_before = directory_digest(state.parent)
+        reasons: list[str] = []
+        for args in (
+            ("watch", "list"),
+            ("watch", "inspect", "--id", WATCH_ID),
+            ("watch", "create", "--profile", profile),
+        ):
+            code, payload = self.cli(*args, store_root=root)
+            check(code == 1, f"misleading header crash accepted by {args[1]}")
+            details = payload["error"]["details"]
+            check(details["schema_version"] == 2, f"refusal read version {details}")
+            reasons.append(details["reason"])
+        check(set(reasons) == {"unsupported_schema_version"}, f"wrong refusal: {reasons}")
+        after = {"database": file_sha256(state), "journal": file_sha256(journal)}
+        check(after == before, "misleading header crash files were modified")
+        check(directory_digest(state.parent) == files_before, "header fault directory changed")
+        return {
+            "fault_injection": (
+                "deterministic four-byte page-1 user_version overwrite after genuine crash; "
+                "not an observed SQLite spill"
+            ),
+            "crash_raw_header_user_version": crash_header,
+            "raw_header_user_version": raw_header,
+            "recovered_committed_user_version": committed,
+            "header_fault_reasons": reasons,
+            "header_fault_sha256_before": before,
+            "header_fault_sha256_after": after,
+        }
 
     def empty_state_file_reads_as_empty(self) -> None:
         root = self.work_dir / "empty-store"
