@@ -246,7 +246,7 @@ def _comment_lines(comment: dict[str, Any]) -> list[str]:
 
 
 def _md(text: str) -> str:
-    """Render untrusted text inert: one line, every markdown control character escaped."""
+    """Quote one line of source text, escaping structural Markdown delimiters."""
     collapsed = " ".join(text.split())
     return "".join(f"\\{char}" if char in _MARKDOWN_SPECIAL else char for char in collapsed)
 

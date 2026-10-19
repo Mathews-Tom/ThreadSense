@@ -591,7 +591,7 @@ Each novel comment carries a novelty label:
 
 Not every change creates an entry. Score changes, reordering, and comments that are absent from a truncated fetch create no entries, and a comment that disappears and later reappears with the same text is not new. A `partial` or `failed` sweep is never reported as `no_changes`, and a failed source fetch creates no evidence for the missing thread.
 
-Excerpts are untrusted source text. The Markdown digest escapes markdown control characters and renders excerpts as block quotes, so source text is never interpreted as markup.
+Excerpts are untrusted source text. The Markdown digest escapes HTML and link, image, code, heading and table delimiters, then renders excerpts as block quotes. Display-only formatting such as strike-through, list markers and automatic URL linking can remain inside the quote.
 
 ### `watch schedule`
 
