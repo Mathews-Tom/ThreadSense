@@ -642,7 +642,18 @@ def _load_stored_profile(
             "stored watch profile is not valid JSON",
             details={"reason": "profile_unreadable", "watch_id": watch_id, "revision": revision},
         ) from error
-    return parse_watch_profile(payload)
+    if not isinstance(payload, dict):
+        raise MonitoringStateError(
+            "stored watch profile is not a JSON object",
+            details={"reason": "profile_unreadable", "watch_id": watch_id, "revision": revision},
+        )
+    try:
+        return parse_watch_profile(payload)
+    except MonitoringInputError as error:
+        raise MonitoringStateError(
+            "stored watch profile is not valid under the current profile schema",
+            details={"reason": "profile_unreadable", "watch_id": watch_id, "revision": revision},
+        ) from error
 
 
 def _run_to_dict(row: tuple[Any, ...]) -> dict[str, Any]:
