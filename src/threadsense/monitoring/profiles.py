@@ -121,6 +121,16 @@ def load_watch_profile_file(path: Path) -> WatchProfile:
         raise MonitoringInputError(
             "watch profile file does not exist", details={"path": str(path)}
         ) from error
+    except OSError as error:
+        raise MonitoringInputError(
+            "watch profile file could not be read",
+            details={"path": str(path), "error": str(error)},
+        ) from error
+    except UnicodeDecodeError as error:
+        raise MonitoringInputError(
+            "watch profile file is not valid UTF-8",
+            details={"path": str(path), "error": str(error)},
+        ) from error
     except tomllib.TOMLDecodeError as error:
         raise MonitoringInputError(
             "watch profile file is not valid TOML",

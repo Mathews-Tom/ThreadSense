@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import os
 import sqlite3
@@ -7,6 +8,7 @@ import subprocess
 import sys
 import time
 import tomllib
+from collections.abc import Iterator
 from contextlib import closing
 from pathlib import Path
 from typing import Any
@@ -15,6 +17,7 @@ import pytest
 
 import threadsense
 from threadsense.cli import main
+from threadsense.cli_display import set_output_mode
 from threadsense.monitoring import parse_watch_profile
 
 FIXTURE_PROFILE = Path(__file__).resolve().parents[1] / "fixtures" / "watch" / "profile_v1.toml"
@@ -267,6 +270,127 @@ def test_watch_create_non_json_toml_values_returns_structured_input_error(
     assert payload["error"]["code"] == "monitoring_input_error"
     assert payload["error"]["details"]["field"] == field
     assert payload["error"]["details"]["value"] == expected_value
+    assert not store_root.exists()
+
+
+@pytest.fixture
+def reset_output_mode() -> Iterator[None]:
+    yield
+    set_output_mode(None)
+
+
+def run_watch_create_process(output_format: str, profile: Path) -> tuple[int, str, str]:
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "threadsense",
+            "--output-format",
+            output_format,
+            "watch",
+            "create",
+            "--profile",
+            str(profile),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=process_env(),
+        timeout=60,
+    )
+    return completed.returncode, completed.stdout, completed.stderr
+
+
+def assert_profile_read_error(
+    result: tuple[int, str, str], output_format: str, profile: Path, expected: tuple[str, str]
+) -> None:
+    exit_code, stdout, stderr = result
+    message, error_fragment = expected
+    assert exit_code == 1
+    assert "Traceback" not in stdout
+    assert "Traceback" not in stderr
+    if output_format == "json":
+        payload = json.loads(stdout, parse_constant=reject_json_constant)
+        assert payload["status"] == "error"
+        assert payload["error"]["type"] == "MonitoringInputError"
+        assert payload["error"]["code"] == "monitoring_input_error"
+        assert payload["error"]["message"] == message
+        assert payload["error"]["details"]["path"] == str(profile)
+        assert error_fragment in payload["error"]["details"]["error"]
+    else:
+        assert "monitoring_input_error" in stderr
+        assert message in stderr
+
+
+@pytest.mark.parametrize("output_format", ["json", "human"])
+def test_watch_create_invalid_utf8_profile_returns_input_error_before_any_write(
+    store_root: Path, tmp_path: Path, output_format: str
+) -> None:
+    profile = tmp_path / "invalid-utf8.toml"
+    profile.write_bytes(b'id = "\xff\xfe"\n')
+
+    result = run_watch_create_process(output_format, profile)
+
+    assert_profile_read_error(
+        result,
+        output_format,
+        profile,
+        ("watch profile file is not valid UTF-8", "can't decode byte 0xff"),
+    )
+    assert not store_root.exists()
+
+
+@pytest.mark.parametrize("output_format", ["json", "human"])
+def test_watch_create_directory_profile_path_returns_input_error_before_any_write(
+    store_root: Path, tmp_path: Path, output_format: str
+) -> None:
+    profile = tmp_path / "profile-directory.toml"
+    profile.mkdir()
+
+    result = run_watch_create_process(output_format, profile)
+
+    assert_profile_read_error(
+        result,
+        output_format,
+        profile,
+        ("watch profile file could not be read", "Is a directory"),
+    )
+    assert not store_root.exists()
+
+
+@pytest.mark.usefixtures("reset_output_mode")
+@pytest.mark.parametrize("output_format", ["json", "human"])
+def test_watch_create_unreadable_profile_returns_input_error_before_any_write(
+    store_root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    output_format: str,
+) -> None:
+    profile = write_profile(tmp_path / "unreadable.toml", FIXTURE_PROFILE.read_text("utf-8"))
+    original_open = Path.open
+
+    # Injected read fault: opening the profile path fails with EACCES at the real
+    # read boundary, independent of the process's privileges; every other path
+    # (config, state storage) delegates to the original implementation.
+    def open_with_injected_read_fault(self: Path, *args: Any, **kwargs: Any) -> Any:
+        if self == profile:
+            raise PermissionError(errno.EACCES, "Permission denied", str(self))
+        return original_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", open_with_injected_read_fault)
+
+    exit_code = main(
+        ["--output-format", output_format, "watch", "create", "--profile", str(profile)]
+    )
+    captured = capsys.readouterr()
+
+    assert_profile_read_error(
+        (exit_code, captured.out, captured.err),
+        output_format,
+        profile,
+        ("watch profile file could not be read", "Permission denied"),
+    )
     assert not store_root.exists()
 
 

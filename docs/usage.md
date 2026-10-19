@@ -419,6 +419,7 @@ Validation rules:
 - entries are trimmed before validation
 - the id never becomes a path; filesystem containment comes from `monitoring_dirname` staying inside the storage root
 - all validation runs before the state database is opened for writing, so an invalid profile never creates or modifies state
+- a profile path that is missing, unreadable or a directory, or a file that is not valid UTF-8 or not valid TOML, is rejected as `monitoring_input_error` (with `details.path`) before any state is written
 
 ### `watch create`
 
