@@ -263,7 +263,7 @@ A sweep ends with one outcome, recorded with its summary in the same transaction
 - `partial`: some source work failed and some succeeded; the failures are recorded with their stage and target
 - `failed`: nothing succeeded, or an error stopped the sweep
 
-Only source failures (a failed search or fetch, an unreadable fetched payload, a fetched thread that does not match the tracked id, an analyzer refusal) are per-item failures that let the sweep continue. A state, artifact-integrity or run-claim error stops the sweep: it is recorded as `failed` while the claim is still held, then raised. A sweep must finish within its lease; a write after the lease expired is refused as `lease_expired`.
+Only source failures (a failed search or fetch, an unreadable fetched payload, a fetched thread that does not match the tracked id or repeats a comment id, an analyzer refusal) are per-item failures that let the sweep continue. A state, artifact-integrity or run-claim error stops the sweep: it is recorded as `failed` while the claim is still held, then raised. A sweep must finish within its lease; a write after the lease expired is refused as `lease_expired`.
 
 The run claim is marked `succeeded` for `changes` and `no_changes` and `failed` otherwise, so a failed or partial fetch can never be reported as a successful `no_changes`.
 

@@ -834,6 +834,29 @@ def test_run_watch_sweep_thread_title_change_creates_revision_with_thread_text_c
     assert record.result.summary["changes"]["thread_text_changed"] == 1
 
 
+def test_run_watch_sweep_thread_repeating_comment_id_is_failed_fetch_not_failed_sweep(
+    baselined_watch: BaselinedWatch, tmp_path: Path
+) -> None:
+    payload = json.loads(
+        (FIXTURE_DIR / "responses" / "thread_a_initial.json").read_text(encoding="utf-8")
+    )
+    comments = payload[1]["data"]["children"]
+    comments.append(comments[0])
+    repeating_path = tmp_path / "thread_a_repeating.json"
+    repeating_path.write_text(json.dumps(payload), encoding="utf-8")
+    phase = reroute(
+        baselined_watch.phases["unchanged"], f"/comments/{THREAD_A}/", response_path=repeating_path
+    )
+
+    record = record_phase(baselined_watch.config, baselined_watch.store, phase)
+
+    failures = record.run_rows("watch_fetch_failures")
+    assert record.result.outcome == "partial"
+    assert [(row["stage"], row["target"]) for row in failures] == [("fetch", THREAD_A)]
+    assert record.run_rows("watch_thread_revisions") == []
+    assert [row["source_thread_id"] for row in record.run_rows("watch_acquisitions")] == [THREAD_B]
+
+
 def test_run_watch_sweep_search_hit_with_unsafe_post_id_is_skipped_and_counted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

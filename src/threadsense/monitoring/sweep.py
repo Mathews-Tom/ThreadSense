@@ -451,6 +451,8 @@ def _refresh_thread(ctx: _SweepContext, tracked: TrackedThread) -> _RefreshedThr
     normalized_path = thread_dir / "acquisitions" / f"{acquisition_id}.normalized.json"
     _publish_bytes(raw_path, raw_bytes)
     acquired = _normalize_acquisition(ctx, raw_path, raw_sha256, normalized_path)
+    with _item_fault(_SOURCE_ERRORS):
+        _require_unique_comment_ids(acquired)
     acquisition = _Acquisition(
         source_thread_id=source_thread_id,
         thread_dir=thread_dir,
@@ -485,6 +487,21 @@ def _refresh_thread(ctx: _SweepContext, tracked: TrackedThread) -> _RefreshedThr
     return _RefreshedThread(
         diff=diff, completeness=completeness, revision_created=revision is not None
     )
+
+
+def _require_unique_comment_ids(thread: Thread) -> None:
+    # A repeated comment id is a malformed source payload, so it fails this fetch only.
+    counts = Counter(comment.comment_id for comment in thread.comments)
+    duplicates = sorted(comment_id for comment_id, count in counts.items() if count > 1)
+    if duplicates:
+        raise RedditResponseError(
+            "fetched thread repeats a comment id",
+            details={
+                "reason": "duplicate_comment_id",
+                "source_thread_id": thread.source.source_thread_id,
+                "comment_ids": duplicates,
+            },
+        )
 
 
 def _normalize_acquisition(
