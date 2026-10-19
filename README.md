@@ -187,6 +187,21 @@ uv run mypy --strict src tests
 uv run pytest
 ```
 
+The full `pytest` suite is deterministic recorded/loopback integration coverage, with no skips. It does not establish that a real source or local model is available, nor does it claim a successful live source fetch or model inference.
+
+For a separate, non-gating operator smoke check, use the actual services:
+
+```bash
+uv run threadsense preflight --config PATH
+uv run threadsense fetch reddit URL --output PATH --config PATH
+uv run threadsense normalize reddit --input PATH --output PATH --config PATH
+uv run threadsense analyze normalized --input PATH --output PATH --config PATH
+uv run threadsense infer analysis --input PATH --task analysis_summary --required --config PATH
+uv run threadsense report analysis --input PATH --with-summary --summary-required --config PATH
+```
+
+Replace `URL` with a real Reddit thread URL and each `PATH` with the relevant configuration, output, or input artifact path. The inference input is an analysis artifact; the report input is also an analysis artifact. The configuration must name an actually installed local model and point to its local endpoint; do not upload source content to a cloud service. Report external source or local-model failures separately from the deterministic suite results. A passing suite must never be interpreted as a live-service pass.
+
 ## Current Limits
 
 - Topic research is implemented for Reddit; other source discovery workflows are planned

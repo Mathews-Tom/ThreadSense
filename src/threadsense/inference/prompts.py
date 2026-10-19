@@ -68,10 +68,13 @@ def build_analysis_summary_request(
                 role="system",
                 content=(
                     "You summarize evidence-backed thread analysis. "
-                    "Use the thread title and top comments to explain what the discussion is about. "
+                    "Use the thread title and top comments to explain "
+                    "what the discussion is about. "
                     "Prioritize only the most decision-relevant findings. "
-                    "Distinguish issues, requests, and mixed signals using the provided marker counts. "
-                    "Convert findings into concrete owner-oriented actions instead of generic review steps. "
+                    "Distinguish issues, requests, and mixed signals "
+                    "using the provided marker counts. "
+                    "Convert findings into concrete owner-oriented actions "
+                    "instead of generic review steps. "
                     "If evidence is mixed, prefer investigate over fix. "
                     "Return only valid JSON with keys "
                     "headline, summary, priority, confidence, why_now, "
@@ -88,8 +91,10 @@ def build_analysis_summary_request(
                 content=(
                     "Use only the provided deterministic evidence. "
                     "Every cited theme key and comment id must come from the input. "
-                    "Treat the thread title as the discussion framing when no separate post body is present. "
-                    "Prefer actions a product, engineering, docs, or research owner could execute this week. "
+                    "Treat the thread title as the discussion framing "
+                    "when no separate post body is present. "
+                    "Prefer actions a product, engineering, docs, or research owner "
+                    "could execute this week. "
                     "Do not restate a finding as a next step without making it actionable. "
                     f"Input:\n{render_analysis_summary_payload(analysis, thread)}"
                 ),

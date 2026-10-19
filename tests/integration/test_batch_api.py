@@ -93,6 +93,7 @@ def test_batch_run_processes_multiple_fixture_threads(
         lambda config: fixture_connector(config.reddit),
     )
     monkeypatch.setenv("THREADSENSE_STORAGE_ROOT", str(tmp_path / "store"))
+    monkeypatch.setenv("THREADSENSE_RUNTIME_ENABLED", "false")
 
     exit_code = main(
         [
@@ -127,6 +128,7 @@ def test_api_workflow_runs_fetch_to_report_and_exposes_metrics(
         env={
             "THREADSENSE_STORAGE_ROOT": str(tmp_path / "store"),
             "THREADSENSE_API_PORT": "0",
+            "THREADSENSE_RUNTIME_ENABLED": "false",
         }
     )
     logger = configure_logging()
@@ -168,17 +170,18 @@ def test_api_workflow_runs_fetch_to_report_and_exposes_metrics(
         handle.thread.join(timeout=2)
 
 
-def test_batch_run_supports_live_summary_generation(
+@pytest.mark.usefixtures("loopback_runtime")
+def test_batch_run_supports_loopback_summary_generation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    manifest_path = tmp_path / "live-manifest.json"
+    manifest_path = tmp_path / "loopback-manifest.json"
     manifest_path.write_text(
         json.dumps(
             {
                 "manifest_version": 1,
-                "run_name": "live-summary",
+                "run_name": "loopback-summary",
                 "created_at_utc": 1710000100.0,
                 "jobs": [
                     {
@@ -217,3 +220,5 @@ def test_batch_run_supports_live_summary_generation(
     assert exit_code == 0
     assert report_output["summary_provider"] == "local_openai_compatible"
     assert Path(str(report_output["output_path"])).exists()
+    assert payload["failed_jobs"] == 0
+    assert payload["total_jobs"] == 1

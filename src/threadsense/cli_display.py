@@ -10,8 +10,8 @@ from typing import Any
 from rich.console import Console
 from rich.json import JSON
 from rich.panel import Panel
-from rich.text import Text
 from rich.table import Table
+from rich.text import Text
 
 from threadsense.errors import ThreadSenseError
 

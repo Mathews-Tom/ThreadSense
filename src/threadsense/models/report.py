@@ -6,12 +6,13 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from threadsense.action_signals import classify_finding_signal
+from threadsense.action_signals import FindingSignal, classify_finding_signal
 from threadsense.errors import SchemaBoundaryError
 from threadsense.models.analysis import (
     AnalysisFinding,
     ConversationStructure,
     RepresentativeQuote,
+    ThreadAnalysis,
     conversation_structure_from_dict,
     load_analysis_artifact_file,
     quote_from_dict,
@@ -245,7 +246,10 @@ def _migrated_confidence(first_finding: Any) -> float:
 
 def _migrated_why_now(first_finding: Any) -> str:
     if first_finding is None:
-        return "The report was migrated from an older summary contract without a stronger urgency field."
+        return (
+            "The report was migrated from an older summary contract "
+            "without a stronger urgency field."
+        )
     theme_label = str(_finding_value(first_finding, "theme_label") or "the lead finding").title()
     return f"{theme_label} was the strongest evidence cluster in the original report artifact."
 
@@ -538,7 +542,7 @@ def calculate_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def load_migration_analysis(provenance: Mapping[str, Any]):
+def load_migration_analysis(provenance: Mapping[str, Any]) -> ThreadAnalysis:
     analysis_path = Path(required_str(provenance, "analysis_artifact_path"))
     expected_sha256 = required_str(provenance, "analysis_sha256")
     actual_sha256 = calculate_sha256(analysis_path)
@@ -554,7 +558,7 @@ def load_migration_analysis(provenance: Mapping[str, Any]):
     return load_analysis_artifact_file(analysis_path)
 
 
-def _migrated_signal(first_finding: AnalysisFinding | None):
+def _migrated_signal(first_finding: AnalysisFinding | None) -> FindingSignal:
     if first_finding is None:
         raise SchemaBoundaryError(
             "report migration requires at least one source analysis finding",
@@ -571,7 +575,7 @@ def _migrated_signal(first_finding: AnalysisFinding | None):
 def _migrated_signal_for_report_lead(
     findings_data: list[Any],
     analysis_findings: dict[str, AnalysisFinding],
-):
+) -> FindingSignal:
     return _migrated_signal(_report_lead_analysis_finding(findings_data, analysis_findings))
 
 

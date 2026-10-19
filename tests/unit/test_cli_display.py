@@ -142,7 +142,9 @@ class TestRenderResearchPanel:
                 "fetched_thread_count": 5,
                 "corpus_report_path": "/tmp/report.md",
                 "terminal_summary": {
-                    "headline": "Second-brain discussions center on workflow capture and memory retrieval",
+                    "headline": (
+                        "Second-brain discussions center on workflow capture and memory retrieval"
+                    ),
                     "key_patterns": ["PKM demand is concentrated in ClaudeCode and LocalLLaMA"],
                     "recommended_actions": ["Review note capture workflows"],
                     "confidence_note": "Based on five selected threads.",

@@ -74,6 +74,7 @@ def test_end_to_end_fetch_normalize_analyze_and_inspect(
     assert isinstance(fixture, list)
     store_root = tmp_path / "store"
     monkeypatch.setenv("THREADSENSE_STORAGE_ROOT", str(store_root))
+    monkeypatch.setenv("THREADSENSE_RUNTIME_ENABLED", "false")
 
     class FixtureConnector:
         def __init__(self, config: RedditConfig) -> None:
@@ -155,7 +156,12 @@ def test_build_storage_paths_keep_raw_and_normalized_separate(tmp_path: Path) ->
     assert paths.analysis_path.name == "abc123.json"
 
 
-def test_persisted_analysis_artifact_reloads(tmp_path: Path) -> None:
+def test_persisted_analysis_artifact_reloads(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("THREADSENSE_RUNTIME_ENABLED", "false")
+    monkeypatch.setenv("THREADSENSE_STORAGE_ROOT", str(tmp_path / "store"))
     fixture = load_fixture("normal_thread.json")
     connector = RedditConnector(
         config=RedditConfig(

@@ -42,11 +42,11 @@ from threadsense.models.results import (
     NormalizeResult,
     PipelineResult,
     RedditResearchResult,
+    ReportFindingSummary,
+    ReportResult,
     ResearchSelectedThreadSummary,
     ResearchTerminalSummary,
     ResearchThreadMatchResult,
-    ReportFindingSummary,
-    ReportResult,
     RunTerminalSummary,
 )
 from threadsense.observability import (
