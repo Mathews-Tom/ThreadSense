@@ -24,6 +24,7 @@ from threadsense.evaluation import load_golden_manifest
 from threadsense.inference import InferenceTask
 from threadsense.inference.local_runtime import LocalRuntimeClient, RuntimeProbeResult
 from threadsense.logging_config import configure_logging
+from threadsense.monitoring import MonitoringStore, load_watch_profile_file, monitoring_state_path
 from threadsense.observability import DEFAULT_METRICS, TraceContext
 from threadsense.pipeline.replay import replay_analysis
 from threadsense.pipeline.storage import (
@@ -637,6 +638,36 @@ def _build_run_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPa
     _add_auto_domain_argument(run_parser)
 
 
+def _build_watch_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    watch_parser = subparsers.add_parser(
+        "watch",
+        help="Manage saved research profiles and their persistent monitoring state.",
+    )
+    watch_subparsers = watch_parser.add_subparsers(dest="watch_command", required=True)
+
+    watch_create_parser = watch_subparsers.add_parser(
+        "create",
+        help="Validate a profile and save it as a new watch or a new revision.",
+    )
+    watch_create_parser.add_argument(
+        "--profile",
+        type=Path,
+        required=True,
+        help="Path to a TOML watch profile.",
+    )
+    _add_config_argument(watch_create_parser)
+
+    watch_list_parser = watch_subparsers.add_parser("list", help="List saved watches.")
+    _add_config_argument(watch_list_parser)
+
+    watch_inspect_parser = watch_subparsers.add_parser(
+        "inspect",
+        help="Show a watch profile, its revision history and recent run claims.",
+    )
+    watch_inspect_parser.add_argument("--id", dest="watch_id", required=True, help="Watch id.")
+    _add_config_argument(watch_inspect_parser)
+
+
 def _build_research_parser(
     subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
 ) -> None:
@@ -727,6 +758,7 @@ def build_parser() -> argparse.ArgumentParser:
     _build_serve_parser(subparsers)
     _build_run_parser(subparsers)
     _build_research_parser(subparsers)
+    _build_watch_parser(subparsers)
     return parser
 
 
@@ -1378,6 +1410,62 @@ def run_analysis_diff(
     return 0
 
 
+def load_monitoring_store(config_path: Path | None) -> MonitoringStore:
+    _logger, config = load_cli_context(config_path)
+    return MonitoringStore(monitoring_state_path(config.storage))
+
+
+def run_watch_create(config_path: Path | None, profile_path: Path) -> int:
+    store = load_monitoring_store(config_path)
+    result = store.save_profile(load_watch_profile_file(profile_path))
+    emit_payload(
+        {
+            "artifact_type": "watch_profile",
+            **result.to_dict(),
+            "state_path": str(store.path),
+        }
+    )
+    return 0
+
+
+def run_watch_list(config_path: Path | None) -> int:
+    store = load_monitoring_store(config_path)
+    emit_payload(
+        {
+            "artifact_type": "watch_list",
+            "status": "ok",
+            "state_path": str(store.path),
+            "watches": store.list_watches(),
+        }
+    )
+    return 0
+
+
+def run_watch_inspect(config_path: Path | None, watch_id: str) -> int:
+    store = load_monitoring_store(config_path)
+    emit_payload(
+        {
+            "artifact_type": "watch_inspection",
+            "status": "ok",
+            "state_path": str(store.path),
+            **store.inspect_watch(watch_id),
+        }
+    )
+    return 0
+
+
+def _dispatch_watch_command(args: argparse.Namespace) -> int:
+    match args.watch_command:
+        case "create":
+            return run_watch_create(args.config, args.profile)
+        case "list":
+            return run_watch_list(args.config)
+        case "inspect":
+            return run_watch_inspect(args.config, args.watch_id)
+        case _:
+            raise _CommandDispatchError(args.command)
+
+
 def parse_run_target(target: list[str]) -> tuple[str | None, str]:
     if len(target) == 1:
         return None, target[0]
@@ -1402,6 +1490,8 @@ def _dispatch_command(args: argparse.Namespace) -> int:
         getattr(args, "corpus_command", None),
     )
     match command_key:
+        case ("watch", _, _, _, _):
+            return _dispatch_watch_command(args)
         case ("preflight", _, _, _, _):
             return run_preflight(args.config, args.skip_runtime)
         case ("fetch", "reddit", _, _, _):

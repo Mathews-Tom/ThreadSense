@@ -53,6 +53,36 @@ uv run threadsense --output-format human research reddit \
   --with-summary
 ```
 
+### Saved watches
+
+Save a research profile as a versioned watch. Profiles are TOML files validated before anything is written; saving identical content again changes nothing, and a real edit records a new revision.
+
+```toml
+profile_version = 1
+id = "agent-memory"
+name = "Agent memory tooling"
+domain = "developer_tools"
+objective = "friction_analysis"
+abstraction_level = "operational"
+queries = ["second brain", "agentic PKM"]
+subreddits = ["ClaudeCode", "LocalLLaMA"]
+refresh_interval_minutes = 1440
+
+[limits]
+discovered_candidates = 100
+refreshed_threads = 25
+analyzed_revisions = 25
+presented_findings = 10
+```
+
+```bash
+uv run threadsense watch create --profile PATH
+uv run threadsense watch list
+uv run threadsense watch inspect --id agent-memory
+```
+
+Field bounds and output shapes: [docs/usage.md](docs/usage.md).
+
 ### Domain-aware analysis
 
 The analysis layer uses a contract system with domain-specific vocabularies (developer tools, product feedback, hiring, research, financial markets, gaming). Each domain defines its own theme keywords, issue markers, and severity calibration — so analysis adapts to context rather than applying one-size-fits-all heuristics.
@@ -138,6 +168,7 @@ uv run threadsense research reddit \
 | `corpus`          | Build and analyze cross-thread corpora              |
 | `inspect`         | Examine persisted artifacts                         |
 | `batch run`       | Process multiple threads                            |
+| `watch`           | Save and inspect versioned research profiles        |
 | `preflight`       | Validate local environment                          |
 | `serve`           | Local API server                                    |
 
@@ -154,7 +185,8 @@ Every pipeline run produces inspectable artifacts under `.threadsense/`:
 ├── analysis/<source>/     # Evidence-linked findings
 ├── reports/<source>/      # Rendered reports
 ├── corpora/<corpus-id>/   # Manifest, analysis, and report
-└── batches/               # Batch run metadata
+├── batches/               # Batch run metadata
+└── monitoring/            # Watch profiles and state (state.sqlite3)
 ```
 
 Details: [docs/artifacts.md](docs/artifacts.md)
@@ -185,7 +217,7 @@ uv sync --locked
 bash scripts/validate.sh
 ```
 
-`uv sync --locked` fails when `uv.lock` is stale instead of rewriting it. `scripts/validate.sh` runs, in order, `ruff check`, `ruff format --check`, `mypy --strict src tests`, the complete `pytest` suite and a scan for absolute local paths in Markdown. GitHub Actions runs the same two commands on every pull request and on pushes to `main`, on Python 3.11 and 3.13, with `UV_LOCKED=1` so no step can modify the lock file.
+`uv sync --locked` fails when `uv.lock` is stale instead of rewriting it. `scripts/validate.sh` runs, in order, `ruff check`, `ruff format --check`, `mypy --strict src tests scripts`, the complete `pytest` suite and a scan for absolute local paths in Markdown. GitHub Actions runs the same two commands on every pull request and on pushes to `main`, on Python 3.11 and 3.13, with `UV_LOCKED=1` so no step can modify the lock file.
 
 The full `pytest` suite is deterministic recorded/loopback integration coverage, with no skips. It does not establish that a real source or local model is available, nor does it claim a successful live source fetch or model inference.
 
@@ -209,6 +241,7 @@ Replace `URL` with a real Reddit thread URL and each `PATH` with the relevant co
 - Corpus reports are Markdown only
 - GitHub Gist comments are flat (no threading); analysis uses temporal/semantic clustering
 - GitHub Gist connector does not retry on transient API errors (502/503)
+- Watches persist profiles and state only; they do not yet run sweeps, fetch threads, or install schedules
 - The local API is a trusted local surface, not a hardened public service
 
 ## Direction

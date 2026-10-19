@@ -192,6 +192,44 @@ The research flow returns:
 
 In human mode, the CLI renders a research summary panel instead of raw JSON.
 
+## Monitoring Design
+
+The monitoring subsystem (`src/threadsense/monitoring/`) persists saved research profiles ("watches") and run-claim state. It is a state layer only. It does not fetch threads, run sweeps, call a model, or schedule anything, and the existing artifact pipeline does not depend on it.
+
+### Profile contract
+
+- `profiles.py` parses a TOML document with `profile_version = 1` into an immutable `WatchProfile`
+- `domain`, `objective` and `abstraction_level` reuse the analysis contract enums; queries reuse the `research reddit` query validation and subreddits reuse the Reddit subreddit-name validation
+- the watch `id` is a database key, not a filesystem namespace; it is validated against a pattern of lowercase letters, digits and inner hyphens, so path-like ids are rejected, and filesystem containment comes from `monitoring_dirname` resolving inside the storage root
+- unknown fields, non-integer numerics, duplicates, overlapping include and exclude terms, and unsupported `profile_version` values are rejected
+- queries, subreddits and terms are treated as sets and stored sorted; the content hash is the SHA-256 of canonical JSON and excludes timestamps, so equivalent documents hash identically
+- the whole profile is validated before the state database is touched
+
+### State store
+
+- `state.py` owns a single SQLite database at `<storage root>/<monitoring_dirname>/state.sqlite3`; the path must stay inside the storage root
+- tables are `watches`, `watch_revisions` and `watch_runs`; revisions are append-only
+- saving identical content returns `unchanged` without writing; a changed profile appends a revision and returns `revised`
+- the database carries an application id and schema version `1`; newer-schema, foreign and non-SQLite files are refused and never migrated or downgraded
+- an existing file is probed through a read-only handle before any writable connection is opened, so a refused file is never opened for writing
+- a hot rollback journal left by a crashed writer is rolled back by SQLite only after a private copy of the database and journal recovers to a verified supported state with the same bytes; newer-schema, foreign and non-SQLite files and their journals are refused unchanged, and recovery that cannot complete reports `recovery_failed` or, when the files change underneath it, `recovery_conflict`
+- `watch list` and `watch inspect` never create a missing database and write nothing, except for the verified hot-journal rollback above
+- writes run in `BEGIN IMMEDIATE` transactions with a bounded busy timeout; a database still locked by another process after that timeout fails as `state_locked`, for reads and writes alike, and other SQLite failures surface as `monitoring_state_error` rather than raw exceptions
+
+### Run claims, leases and fencing
+
+- at most one run per watch is `running`, enforced inside the claim transaction and by a partial unique index on `watch_runs`
+- a claim returns an owner token to the caller; only its SHA-256 is stored
+- a claim carries a lease of 1-86400 seconds; a competing claim while the lease is live fails with `run_claim_error` (`claim_held`)
+- the first claim after expiry marks the old run `abandoned` and records `recovered_by_run_id` on it
+- finalizing requires the matching owner token and an unexpired lease; an abandoned run's old owner is refused as `stale_owner`, and an owner whose lease has expired is refused as `lease_expired`
+- the claim primitive is a library API; no CLI command starts a run yet
+
+### Boundaries
+
+- no sweeps, source fetching, scheduler installation, model calls, API endpoints or deletion of watches
+- existing JSON artifacts and their schemas are unchanged
+
 ## Artifact Boundaries
 
 ThreadSense relies on explicit persisted artifacts.
@@ -281,5 +319,6 @@ Once normalized, downstream analysis and reporting do not branch on source shape
 - no API route for `research reddit`
 - no corpus HTML report yet
 - research query grammar is intentionally constrained
+- watches persist profiles and run-claim state only; no sweep or scheduler consumes them yet
 
 These are product and workflow gaps, not evidence-layer gaps.

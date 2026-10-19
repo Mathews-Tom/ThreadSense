@@ -1,0 +1,18 @@
+# Watch profile document, version 1.
+profile_version = 1
+id = "agent-tooling"
+name = "Coding agent friction"
+domain = "developer_tools"
+objective = "friction_analysis"
+abstraction_level = "operational"
+queries = ["mcp server", "coding agent"]
+subreddits = ["r/LocalLLaMA", "ClaudeAI"]
+refresh_interval_minutes = 360
+include_terms = ["latency", "context window"]
+exclude_terms = ["giveaway"]
+
+[limits]
+discovered_candidates = 50
+refreshed_threads = 25
+analyzed_revisions = 25
+presented_findings = 10
