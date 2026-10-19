@@ -1197,6 +1197,8 @@ class InterruptedSweep:
 def interrupted_sweep(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> InterruptedSweep:
     config = build_config(monkeypatch, tmp_path / ".threadsense")
     store = create_watch_store(config)
+    observed_at = time.time()
+    store = MonitoringStore(store.path, clock=lambda: observed_at)
     initial = load_replay_phases(PHASES_PATH)[0]
     claims: list[RunClaim] = []
     original_claim_run = MonitoringStore.claim_run
@@ -1222,8 +1224,8 @@ def interrupted_sweep(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Interr
 @pytest.fixture
 def recovered_sweep(interrupted_sweep: InterruptedSweep) -> SweepResult:
     # A store whose clock is past the dead lease recovers it without waiting on wall time.
-    offset = interrupted_sweep.dead_claim.lease_expires_at_utc + 1.0 - time.time()
-    later_store = MonitoringStore(interrupted_sweep.store.path, clock=lambda: time.time() + offset)
+    recovered_at = interrupted_sweep.dead_claim.lease_expires_at_utc + 1.0
+    later_store = MonitoringStore(interrupted_sweep.store.path, clock=lambda: recovered_at)
     result, _ = run_phase_sweep(interrupted_sweep.config, later_store, interrupted_sweep.initial)
     return result
 
