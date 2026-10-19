@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import shutil
 import sqlite3
 import subprocess
@@ -289,6 +291,45 @@ def test_store_unsupported_database_is_refused_without_modification(
         operation(store)
 
     assert raised.value.details["reason"] == reason
+    assert directory_snapshot(store.path.parent) == before
+
+
+def store_hash_consistent_invalid_profile(store: MonitoringStore) -> None:
+    profile_json = json.dumps(edited(profile_version=999), sort_keys=True)
+    digest = hashlib.sha256(profile_json.encode("utf-8")).hexdigest()
+    with closing(sqlite3.connect(store.path)) as conn:
+        conn.execute(
+            "UPDATE watch_revisions SET profile_json = ?, content_sha256 = ?",
+            (profile_json, digest),
+        )
+        conn.commit()
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        lambda store: store.list_watches(),
+        lambda store: store.inspect_watch("agent-tooling"),
+    ],
+)
+def test_store_invalid_stored_profile_raises_state_error_without_modification(
+    tmp_path: Path, operation: Callable[[MonitoringStore], object]
+) -> None:
+    store = store_at(tmp_path)
+    store.save_profile(parse_watch_profile(fixture_payload()))
+    store_hash_consistent_invalid_profile(store)
+    before = directory_snapshot(store.path.parent)
+
+    with pytest.raises(MonitoringStateError) as raised:
+        operation(store)
+
+    assert raised.value.code == "monitoring_state_error"
+    assert raised.value.details == {
+        "reason": "profile_unreadable",
+        "watch_id": "agent-tooling",
+        "revision": 1,
+    }
+    assert isinstance(raised.value.__cause__, MonitoringInputError)
     assert directory_snapshot(store.path.parent) == before
 
 
