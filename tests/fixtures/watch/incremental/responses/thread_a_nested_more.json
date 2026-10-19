@@ -1,0 +1,86 @@
+[
+  {
+    "kind": "Listing",
+    "data": {
+      "children": [
+        {
+          "kind": "t3",
+          "data": {
+            "id": "sc1aaa",
+            "title": "Sync conflict after offline edit",
+            "selftext": "Two devices edited the same note offline and the merge kept both copies.",
+            "subreddit": "SyncTools",
+            "author": "field_notes",
+            "permalink": "/r/SyncTools/comments/sc1aaa/sync_conflict_after_offline_edit/",
+            "score": 61,
+            "num_comments": 4,
+            "created_utc": 1760000000.0
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "Listing",
+    "data": {
+      "children": [
+        {
+          "kind": "t1",
+          "data": {
+            "id": "ka1",
+            "author": "merge_watcher",
+            "body": "The merge tool keeps both versions and renames one with a conflict suffix, which is slow to clean up.",
+            "score": 15,
+            "created_utc": 1760000100.0,
+            "parent_id": "t3_sc1aaa",
+            "permalink": "/r/SyncTools/comments/sc1aaa/sync_conflict_after_offline_edit/ka1/",
+            "replies": {
+              "kind": "Listing",
+              "data": {
+                "children": [
+                  {
+                    "kind": "t1",
+                    "data": {
+                      "id": "ka4",
+                      "author": "release_reader",
+                      "body": "Version 2.4 added a prefer-newest option under advanced sync settings.",
+                      "score": 2,
+                      "created_utc": 1760000400.0,
+                      "parent_id": "t1_ka1",
+                      "permalink": "/r/SyncTools/comments/sc1aaa/sync_conflict_after_offline_edit/ka4/",
+                      "replies": ""
+                    }
+                  },
+                  {
+                    "kind": "more",
+                    "data": {
+                      "count": 1,
+                      "name": "t1_ka2",
+                      "id": "ka2",
+                      "parent_id": "t1_ka1",
+                      "depth": 1,
+                      "children": ["ka2"]
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "kind": "t1",
+          "data": {
+            "id": "ka3",
+            "author": "settings_seeker",
+            "body": "Is there a setting to prefer the newest edit instead of keeping both copies?",
+            "score": 9,
+            "created_utc": 1760000220.0,
+            "parent_id": "t3_sc1aaa",
+            "permalink": "/r/SyncTools/comments/sc1aaa/sync_conflict_after_offline_edit/ka3/",
+            "replies": ""
+          }
+        }
+      ]
+    }
+  }
+]

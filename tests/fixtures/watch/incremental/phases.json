@@ -1,0 +1,190 @@
+{
+  "description": "Eight consecutive watch sweeps of profile.toml against r/SyncTools. Each phase is one sweep; routes list every Reddit request that sweep is expected to make.",
+  "provenance": "Synthesized, representative Reddit JSON listing shapes with invented ids, authors and text. Not captured from live Reddit. Replay rules are documented in README.md.",
+  "phases": [
+    {
+      "name": "initial",
+      "notes": "Search returns A and B (selected) and C (rejected by exclude term 'giveaway'). A and B are fetched and baselined.",
+      "routes": [
+        {
+          "url": "https://www.reddit.com/r/SyncTools/search.json",
+          "params_match": {"q": "sync conflict", "restrict_sr": "on", "sort": "new", "t": "month"},
+          "response": "responses/search_initial.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/SyncTools/comments/sc1aaa/sync_conflict_after_offline_edit.json",
+          "params_match": {},
+          "response": "responses/thread_a_initial.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/SyncTools/comments/sc1bbb/resolving_a_sync_conflict_in_a_shared_vault.json",
+          "params_match": {},
+          "response": "responses/thread_b_initial.json"
+        }
+      ],
+      "fresh_comment_ids": [],
+      "fresh_post_ids": ["sc1aaa", "sc1bbb", "sc1ccc"]
+    },
+    {
+      "name": "unchanged",
+      "notes": "Identical payloads for search, A and B.",
+      "routes": [
+        {
+          "url": "https://www.reddit.com/r/SyncTools/search.json",
+          "params_match": {"q": "sync conflict", "restrict_sr": "on", "sort": "new", "t": "month"},
+          "response": "responses/search_initial.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/SyncTools/comments/sc1aaa/sync_conflict_after_offline_edit.json",
+          "params_match": {},
+          "response": "responses/thread_a_initial.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/SyncTools/comments/sc1bbb/resolving_a_sync_conflict_in_a_shared_vault.json",
+          "params_match": {},
+          "response": "responses/thread_b_initial.json"
+        }
+      ],
+      "fresh_comment_ids": [],
+      "fresh_post_ids": ["sc1aaa", "sc1bbb", "sc1ccc"]
+    },
+    {
+      "name": "score_only",
+      "notes": "Every post and comment score changes and A's top-level comment order is reversed; no text changes.",
+      "routes": [
+        {
+          "url": "https://www.reddit.com/r/SyncTools/search.json",
+          "params_match": {"q": "sync conflict", "restrict_sr": "on", "sort": "new", "t": "month"},
+          "response": "responses/search_initial.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/SyncTools/comments/sc1aaa/sync_conflict_after_offline_edit.json",
+          "params_match": {},
+          "response": "responses/thread_a_score_only.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/SyncTools/comments/sc1bbb/resolving_a_sync_conflict_in_a_shared_vault.json",
+          "params_match": {},
+          "response": "responses/thread_b_score_only.json"
+        }
+      ],
+      "fresh_comment_ids": [],
+      "fresh_post_ids": ["sc1aaa", "sc1bbb", "sc1ccc"]
+    },
+    {
+      "name": "search_omits_known",
+      "notes": "Search no longer returns A. A is still refreshed from tracked state and has one new reply ka4 posted after the previous observation. B is unchanged.",
+      "routes": [
+        {
+          "url": "https://www.reddit.com/r/SyncTools/search.json",
+          "params_match": {"q": "sync conflict", "restrict_sr": "on", "sort": "new", "t": "month"},
+          "response": "responses/search_without_a.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/SyncTools/comments/sc1aaa/sync_conflict_after_offline_edit.json",
+          "params_match": {},
+          "response": "responses/thread_a_new_comment.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/SyncTools/comments/sc1bbb/resolving_a_sync_conflict_in_a_shared_vault.json",
+          "params_match": {},
+          "response": "responses/thread_b_score_only.json"
+        }
+      ],
+      "fresh_comment_ids": ["ka4"],
+      "fresh_post_ids": ["sc1bbb", "sc1ccc"]
+    },
+    {
+      "name": "edit",
+      "notes": "B's known reply kb2 is edited. A is unchanged.",
+      "routes": [
+        {
+          "url": "https://www.reddit.com/r/SyncTools/search.json",
+          "params_match": {"q": "sync conflict", "restrict_sr": "on", "sort": "new", "t": "month"},
+          "response": "responses/search_without_a.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/SyncTools/comments/sc1aaa/sync_conflict_after_offline_edit.json",
+          "params_match": {},
+          "response": "responses/thread_a_new_comment.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/SyncTools/comments/sc1bbb/resolving_a_sync_conflict_in_a_shared_vault.json",
+          "params_match": {},
+          "response": "responses/thread_b_edited.json"
+        }
+      ],
+      "fresh_comment_ids": [],
+      "fresh_post_ids": ["sc1bbb", "sc1ccc"]
+    },
+    {
+      "name": "partial",
+      "notes": "A's known reply ka2 is hidden behind a nested more node, which the connector does not expand, so the acquisition is truncated and ka2 is absent. B returns HTTP 503.",
+      "routes": [
+        {
+          "url": "https://www.reddit.com/r/SyncTools/search.json",
+          "params_match": {"q": "sync conflict", "restrict_sr": "on", "sort": "new", "t": "month"},
+          "response": "responses/search_without_a.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/SyncTools/comments/sc1aaa/sync_conflict_after_offline_edit.json",
+          "params_match": {},
+          "response": "responses/thread_a_nested_more.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/SyncTools/comments/sc1bbb/resolving_a_sync_conflict_in_a_shared_vault.json",
+          "params_match": {},
+          "status": 503
+        }
+      ],
+      "fresh_comment_ids": [],
+      "fresh_post_ids": ["sc1bbb", "sc1ccc"]
+    },
+    {
+      "name": "reappear",
+      "notes": "ka2 reappears unchanged; ka3 is served as [removed] and drops out of the parsed set; ka5 is first observed now but carries an old created_utc. B is unchanged since its edit.",
+      "routes": [
+        {
+          "url": "https://www.reddit.com/r/SyncTools/search.json",
+          "params_match": {"q": "sync conflict", "restrict_sr": "on", "sort": "new", "t": "month"},
+          "response": "responses/search_without_a.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/SyncTools/comments/sc1aaa/sync_conflict_after_offline_edit.json",
+          "params_match": {},
+          "response": "responses/thread_a_reappear.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/SyncTools/comments/sc1bbb/resolving_a_sync_conflict_in_a_shared_vault.json",
+          "params_match": {},
+          "response": "responses/thread_b_edited.json"
+        }
+      ],
+      "fresh_comment_ids": [],
+      "fresh_post_ids": ["sc1bbb", "sc1ccc"]
+    },
+    {
+      "name": "backlog",
+      "notes": "Search adds D and E, so four threads are tracked with a refresh budget of two. The queue refreshes A and B (attempted earliest); D and E remain pending and are never requested.",
+      "routes": [
+        {
+          "url": "https://www.reddit.com/r/SyncTools/search.json",
+          "params_match": {"q": "sync conflict", "restrict_sr": "on", "sort": "new", "t": "month"},
+          "response": "responses/search_backlog.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/SyncTools/comments/sc1aaa/sync_conflict_after_offline_edit.json",
+          "params_match": {},
+          "response": "responses/thread_a_reappear.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/SyncTools/comments/sc1bbb/resolving_a_sync_conflict_in_a_shared_vault.json",
+          "params_match": {},
+          "response": "responses/thread_b_edited.json"
+        }
+      ],
+      "fresh_comment_ids": [],
+      "fresh_post_ids": ["sc1bbb", "sc1ddd", "sc1eee"]
+    }
+  ]
+}

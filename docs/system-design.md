@@ -194,7 +194,7 @@ In human mode, the CLI renders a research summary panel instead of raw JSON.
 
 ## Monitoring Design
 
-The monitoring subsystem (`src/threadsense/monitoring/`) persists saved research profiles ("watches") and run-claim state. It is a state layer only. It does not fetch threads, run sweeps, call a model, or schedule anything, and the existing artifact pipeline does not depend on it.
+The monitoring subsystem (`src/threadsense/monitoring/`) persists saved research profiles ("watches"), run-claim state and the durable history of bounded incremental sweeps. A sweep reuses the existing Reddit search, fetch, normalize and analyze stages; it does not call a model, schedule anything or deliver notifications, and the existing artifact pipeline does not depend on it.
 
 ### Profile contract
 
@@ -208,9 +208,10 @@ The monitoring subsystem (`src/threadsense/monitoring/`) persists saved research
 ### State store
 
 - `state.py` owns a single SQLite database at `<storage root>/<monitoring_dirname>/state.sqlite3`; the path must stay inside the storage root
-- tables are `watches`, `watch_revisions` and `watch_runs`; revisions are append-only
+- schema version `1` holds `watches`, `watch_revisions` and `watch_runs`; revisions are append-only
+- schema version `2` adds the sweep tables `watch_threads`, `watch_discoveries`, `watch_acquisitions`, `watch_fetch_failures`, `watch_comments`, `watch_comment_texts`, `watch_thread_revisions`, `watch_revision_analyses` and `watch_sweeps`
 - saving identical content returns `unchanged` without writing; a changed profile appends a revision and returns `revised`
-- the database carries an application id and schema version `1`; newer-schema, foreign and non-SQLite files are refused and never migrated or downgraded
+- the database carries an application id and a schema version; a version `1` database is upgraded in place by the first writing command, inside one transaction that only creates the new tables and keeps every existing row, while read-only commands read it without modification; newer-schema, foreign and non-SQLite files are refused and never migrated or downgraded
 - an existing file is probed through a read-only handle before any writable connection is opened, so a refused file is never opened for writing
 - a hot rollback journal left by a crashed writer is rolled back by SQLite only after a private copy of the database and journal recovers to a verified supported state with the same bytes; newer-schema, foreign and non-SQLite files and their journals are refused unchanged, and recovery that cannot complete reports `recovery_failed` or, when the files change underneath it, `recovery_conflict`
 - `watch list` and `watch inspect` never create a missing database and write nothing, except for the verified hot-journal rollback above
@@ -223,12 +224,53 @@ The monitoring subsystem (`src/threadsense/monitoring/`) persists saved research
 - a claim carries a lease of 1-86400 seconds; a competing claim while the lease is live fails with `run_claim_error` (`claim_held`)
 - the first claim after expiry marks the old run `abandoned` and records `recovered_by_run_id` on it
 - finalizing requires the matching owner token and an unexpired lease; an abandoned run's old owner is refused as `stale_owner`, and an owner whose lease has expired is refused as `lease_expired`
-- the claim primitive is a library API; no CLI command starts a run yet
+- every sweep write repeats the owner-token and lease check inside its own transaction, so a sweep whose claim was recovered by another run cannot record observations or an outcome
+- the claim and sweep primitives are a library API; no CLI command starts a run yet
+
+### Sweeps
+
+`sweep.py` runs one bounded sweep of a watch with `run_watch_sweep`. Each stage has its own budget from the profile `limits`, and no stage consumes another stage's budget:
+
+- discovery searches every profile query across its subreddits (sort `new`, time window `30d`), merges and deduplicates hits by post id, caps them at `discovered_candidates`, and records every capped hit with its rank and whether it was selected; a hit that fails the existing lexical query match is rejected as `query_mismatch` and a hit containing an exclude term as `excluded_term`; include terms are recorded as preferences and do not filter; a thread once selected stays tracked
+- refresh fetches at most `refreshed_threads` tracked threads in first-in, first-out order of their last attempt (a never-attempted thread queues by its discovery time), whether or not the current search returned them, so new comments on older tracked threads are still found and every tracked thread waits at most `ceil(tracked / refreshed_threads)` sweeps; a failed fetch moves the thread to the back of the queue without marking it refreshed
+- search hits whose post id is not a plain Reddit id are skipped and counted, never used in a path
+- analysis runs the deterministic analyzer on at most `analyzed_revisions` pending revisions, oldest first, with the model runtime and artifact versioning disabled; a revision superseded before it was analyzed is skipped because the newer snapshot contains its comments
+- sweeps always fetch with the fetch cache disabled, so a cached response is never mistaken for a fresh observation of an unchanged thread
+- every stage reports its limit, what it did and what is still pending; Reddit search is never treated as exhaustive (`search_completeness` is `unknown`)
+
+Novelty comes from durable per-comment history, not from comparing the latest two fetches:
+
+- each comment is tracked by its source id, the SHA-256 of its text and the store-clock time it was first observed
+- each acquisition's observation time is read from the store clock before the fetch starts
+- a comment first seen on the thread's first acquisition is an `initial_observation`; a later new comment created after the novelty cutoff is a `new_source_event`; one created before it is `newly_observed_historical`, evidence that existed but was not seen before
+- the novelty cutoff is the observation time of the thread's latest acquisition that was not `truncated`, or of its first acquisition when every acquisition was truncated, so a truncated fetch never hides a new comment's arrival time
+- a changed text hash is `edited`; its observation time is recorded and its source edit time stays unknown
+- score, order, author, permalink and retrieval-time changes are not substantive; a known comment missing from an acquisition is recorded as absent, never as deleted, and reappearing with the same text changes nothing
+- an acquisition whose payload still contains unexpanded `more` placeholders is recorded as `truncated`; otherwise completeness is `unknown`, never `complete`
+
+A substantive change (new comment, edited comment, changed thread title or body, or the first acquisition of a thread) creates an immutable revision. Its snapshot is a canonical thread containing every known comment, including ones absent from the latest acquisition. Revision ids chain the previous revision id with the substantive content hash, so a retried transition reuses its id and an edit that later reverts still gets a new revision.
+
+Files are written before the database references them:
+
+- raw acquisitions, normalized acquisitions, revision snapshots and analyses are written to content-addressed or run-scoped paths with a temporary file, a file flush, an atomic rename and a directory flush, and are never overwritten
+- the database row that references a file is committed only after the file exists inside the monitoring directory and its SHA-256 matches
+- a crash between the file write and the database commit leaves an unreferenced file and no row; the next sweep fetches again and records the change once
+
+A sweep ends with one outcome, recorded with its summary in the same transaction that finishes the run claim:
+
+- `changes`: the sweep committed new revisions or analyses
+- `no_changes`: every search, fetch and analysis succeeded and nothing substantive changed
+- `partial`: some source work failed and some succeeded; the failures are recorded with their stage and target
+- `failed`: nothing succeeded, or an error stopped the sweep
+
+Only source failures (a failed search or fetch, an unreadable fetched payload, a fetched thread that does not match the tracked id or repeats a comment id, an analyzer refusal) are per-item failures that let the sweep continue. Malformed Reddit source structures, including non-object listing children and invalid replies, raise `RedditResponseError` at the connector/schema boundary; they are per-item source errors, not successful `no_changes`, and do not prevent remaining refresh or analysis work. A state, artifact-integrity or run-claim error stops the sweep: it is recorded as `failed` while the claim is still held, then raised. A sweep must finish within its lease; a write after the lease expired is refused as `lease_expired`.
+
+The run claim is marked `succeeded` for `changes` and `no_changes` and `failed` otherwise, so a failed or partial fetch can never be reported as a successful `no_changes`.
 
 ### Boundaries
 
-- no sweeps, source fetching, scheduler installation, model calls, API endpoints or deletion of watches
-- existing JSON artifacts and their schemas are unchanged
+- no CLI command, scheduler installation, model calls, API endpoints, notifications or deletion of watches or observations
+- existing JSON artifacts and their schemas are unchanged; sweep artifacts live under the monitoring directory
 
 ## Artifact Boundaries
 
@@ -319,6 +361,6 @@ Once normalized, downstream analysis and reporting do not branch on source shape
 - no API route for `research reddit`
 - no corpus HTML report yet
 - research query grammar is intentionally constrained
-- watches persist profiles and run-claim state only; no sweep or scheduler consumes them yet
+- sweeps are a library API only; no CLI command runs them and no scheduler is installed
 
 These are product and workflow gaps, not evidence-layer gaps.

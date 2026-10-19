@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 import threadsense
+from threadsense.monitoring import STATE_SCHEMA_VERSION
 
 WATCH_ID = "agent-tooling"
 
@@ -114,6 +115,7 @@ os._exit(0)
 """
 # Offset of the big-endian user_version field in the SQLite database header.
 USER_VERSION_OFFSET = 60
+NEWER_SCHEMA_VERSION = STATE_SCHEMA_VERSION + 1
 
 
 class SmokeFailure(Exception):
@@ -337,7 +339,7 @@ class ProfilesScenario:
         newer_state.parent.mkdir(parents=True)
         shutil.copyfile(self.state_path, newer_state)
         with closing(sqlite3.connect(newer_state)) as conn:
-            conn.execute("PRAGMA user_version = 2")
+            conn.execute(f"PRAGMA user_version = {NEWER_SCHEMA_VERSION}")
             conn.commit()
         before = directory_digest(newer_state.parent)
         profile = str(self.work_dir / "profiles" / "v1.toml")
@@ -405,7 +407,7 @@ class ProfilesScenario:
     def unsupported_crash_journal_is_refused_unmodified(self) -> None:
         newer_root, newer_state = self.store_copy("crash-newer-store")
         with closing(sqlite3.connect(newer_state)) as conn:
-            conn.execute("PRAGMA user_version = 2")
+            conn.execute(f"PRAGMA user_version = {NEWER_SCHEMA_VERSION}")
             conn.commit()
         foreign_root = self.work_dir / "crash-foreign-store"
         foreign_state = foreign_root / "monitoring" / "state.sqlite3"
@@ -442,7 +444,7 @@ class ProfilesScenario:
         """Refuse a committed-newer crash whose raw page-1 header claims version 1."""
         root, state = self.store_copy("crash-header-fault-store")
         with closing(sqlite3.connect(state)) as conn:
-            conn.execute("PRAGMA user_version = 2")
+            conn.execute(f"PRAGMA user_version = {NEWER_SCHEMA_VERSION}")
             conn.commit()
         self.crash_writer(state, CRASH_UPDATE, CRASH_UNCOMMITTED_VERSION_PROCESS)
         journal = Path(f"{state}-journal")
@@ -467,7 +469,10 @@ class ProfilesScenario:
             # The first read through a write-capable handle rolls the copy's journal back.
             committed = int(conn.execute("PRAGMA user_version").fetchone()[0])
         check(not Path(f"{copy}-journal").exists(), "private copy journal was not rolled back")
-        check(committed == 2, f"private recovery found committed version {committed}")
+        check(
+            committed == NEWER_SCHEMA_VERSION,
+            f"private recovery found committed version {committed}",
+        )
         before = {"database": file_sha256(state), "journal": file_sha256(journal)}
         files_before = directory_digest(state.parent)
         reasons: list[str] = []
@@ -479,7 +484,10 @@ class ProfilesScenario:
             code, payload = self.cli(*args, store_root=root)
             check(code == 1, f"misleading header crash accepted by {args[1]}")
             details = payload["error"]["details"]
-            check(details["schema_version"] == 2, f"refusal read version {details}")
+            check(
+                details["schema_version"] == NEWER_SCHEMA_VERSION,
+                f"refusal read version {details}",
+            )
             reasons.append(details["reason"])
         check(set(reasons) == {"unsupported_schema_version"}, f"wrong refusal: {reasons}")
         after = {"database": file_sha256(state), "journal": file_sha256(journal)}

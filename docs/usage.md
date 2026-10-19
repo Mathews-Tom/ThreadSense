@@ -492,9 +492,19 @@ Show the current profile, revision history and recent run claims for one watch. 
   ],
   "active_run": null,
   "run_count": 0,
-  "recent_runs": []
+  "recent_runs": [],
+  "sweep": {
+    "tracked_threads": 0,
+    "refresh_due_never_refreshed": 0,
+    "pending_analyses": 0,
+    "revision_count": 0,
+    "comment_count": 0,
+    "latest_sweep": null
+  }
 }
 ```
+
+`sweep` summarizes recorded sweep state: tracked threads, tracked threads never refreshed, revisions still waiting for analysis, revision and comment counts, and the latest finished sweep with its outcome and summary, or `null`.
 
 `recent_runs` holds the newest 20 claims. Each entry has `run_id`, `profile_revision`, `status` (`running`, `succeeded`, `failed` or `abandoned`), `claimed_at_utc`, `lease_expires_at_utc`, `finished_at_utc` and `recovered_by_run_id`. `active_run` is the entry whose status is `running`, or `null`. `run_count` is the total number of claims for the watch.
 
@@ -504,7 +514,7 @@ State is a SQLite database at `<storage root>/<monitoring_dirname>/state.sqlite3
 
 ### Run claims
 
-The `threadsense.monitoring` Python package provides a run-claim primitive for future watch runs. No CLI command uses it yet; `watch inspect` only reports claims that already exist in the database.
+The `threadsense.monitoring` Python package provides the run-claim primitive and the `run_watch_sweep` library API that uses it. No CLI command starts a run yet; `watch inspect` only reports claims and sweeps that already exist in the database.
 
 - at most one run per watch is `running`, enforced transactionally and by a partial unique index
 - a claim carries an owner token and a lease of 1-86400 seconds; only the SHA-256 of the token is stored

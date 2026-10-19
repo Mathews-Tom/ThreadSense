@@ -18,7 +18,7 @@ import pytest
 import threadsense
 from threadsense.cli import main
 from threadsense.cli_display import set_output_mode
-from threadsense.monitoring import parse_watch_profile
+from threadsense.monitoring import STATE_SCHEMA_VERSION, parse_watch_profile
 
 FIXTURE_PROFILE = Path(__file__).resolve().parents[1] / "fixtures" / "watch" / "profile_v1.toml"
 
@@ -438,7 +438,7 @@ def test_newer_state_schema_is_refused_by_every_watch_command_without_modificati
     run_cli(capsys, "watch", "create", "--profile", str(FIXTURE_PROFILE))
     path = state_path(store_root)
     with closing(sqlite3.connect(path)) as conn:
-        conn.execute("PRAGMA user_version = 2")
+        conn.execute(f"PRAGMA user_version = {STATE_SCHEMA_VERSION + 1}")
         conn.commit()
     before = {entry.name: entry.read_bytes() for entry in path.parent.iterdir()}
 

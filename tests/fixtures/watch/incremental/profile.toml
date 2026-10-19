@@ -1,0 +1,19 @@
+# Watch profile for the recorded incremental sweep sequence in phases.json.
+# Budgets are deliberately small so the sequence exercises the refresh backlog.
+profile_version = 1
+id = "sync-conflicts"
+name = "Note sync conflict friction"
+domain = "developer_tools"
+objective = "friction_analysis"
+abstraction_level = "operational"
+queries = ["sync conflict"]
+subreddits = ["SyncTools"]
+refresh_interval_minutes = 60
+include_terms = ["merge"]
+exclude_terms = ["giveaway"]
+
+[limits]
+discovered_candidates = 4
+refreshed_threads = 2
+analyzed_revisions = 2
+presented_findings = 3
