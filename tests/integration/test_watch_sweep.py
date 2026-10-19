@@ -932,6 +932,76 @@ def test_run_watch_sweep_malformed_thread_cannot_starve_refresh_queue(
     assert all(third.artifacts[path] == digest for path, digest in first.artifacts.items())
 
 
+def test_run_watch_sweep_analysis_budget_drains_durable_pending_revision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = build_config(monkeypatch, tmp_path / ".threadsense")
+    store = create_watch_store(config)
+    profile = load_watch_profile_file(PROFILE_PATH)
+    store.save_profile(replace(profile, limits=replace(profile.limits, analyzed_revisions=1)))
+    phases = {phase.name: phase for phase in load_replay_phases(PHASES_PATH)}
+
+    first = record_phase(config, store, phases["initial"])
+
+    assert first.result.summary["changes"]["revisions_created"] == 2
+    assert first.result.summary["analysis"]["analyzed"] == 1
+    assert first.result.summary["analysis"]["pending"] == 1
+    assert len(first.tables["watch_revision_analyses"]) == 1
+    assert sorted(
+        (row["source_thread_id"], row["sequence"]) for row in first.tables["watch_thread_revisions"]
+    ) == [(THREAD_A, 1), (THREAD_B, 1)]
+    assert len(first.tables["watch_comments"]) == 5
+    assert {row["novelty"] for row in first.tables["watch_comments"]} == {"initial_observation"}
+
+    second = record_phase(config, store, phases["unchanged"])
+
+    assert second.result.summary["analysis"]["analyzed"] == 1
+    assert second.result.summary["analysis"]["pending"] == 0
+    assert len(second.tables["watch_revision_analyses"]) == 2
+    assert second.run_rows("watch_thread_revisions") == []
+    assert second.result.summary["changes"]["revisions_created"] == 0
+    assert second.result.summary["changes"]["new_source_event"] == 0
+    assert second.tables["watch_thread_revisions"] == first.tables["watch_thread_revisions"]
+    assert second.tables["watch_comment_texts"] == first.tables["watch_comment_texts"]
+    assert len(second.tables["watch_comments"]) == 5
+    assert {row["novelty"] for row in second.tables["watch_comments"]} == {"initial_observation"}
+    assert all(second.artifacts[path] == digest for path, digest in first.artifacts.items())
+
+
+def test_run_watch_sweep_discovery_budget_bounds_persisted_candidates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = build_config(monkeypatch, tmp_path / ".threadsense")
+    store = create_watch_store(config)
+    profile = load_watch_profile_file(PROFILE_PATH)
+    store.save_profile(replace(profile, limits=replace(profile.limits, discovered_candidates=1)))
+    payload = json.loads(
+        (FIXTURE_DIR / "responses" / "search_initial.json").read_text(encoding="utf-8")
+    )
+    children = payload["data"]["children"]
+    for child in children[1:]:
+        child["data"]["title"] = children[0]["data"]["title"]
+        child["data"]["selftext"] = children[0]["data"]["selftext"]
+        child["data"]["score"] = 1
+    search_path = tmp_path / "search_bounded.json"
+    search_path.write_text(json.dumps(payload), encoding="utf-8")
+    phase = reroute(
+        load_replay_phases(PHASES_PATH)[0], SEARCH_URL_MARKER, response_path=search_path
+    )
+
+    record = record_phase(config, store, phase)
+
+    discovery = record.result.summary["discovery"]
+    assert discovery["limit"] == 1
+    assert discovery["matched_count"] == 3
+    assert discovery["persisted_count"] == 1
+    assert discovery["truncated"] is True
+    assert discovery["newly_tracked_count"] == 1
+    assert [row["source_thread_id"] for row in record.run_rows("watch_discoveries")] == [THREAD_A]
+    assert [row["source_thread_id"] for row in record.tables["watch_threads"]] == [THREAD_A]
+    assert [row["source_thread_id"] for row in record.run_rows("watch_acquisitions")] == [THREAD_A]
+
+
 def test_run_watch_sweep_malformed_search_preserves_known_thread_progress(
     baselined_watch: BaselinedWatch, tmp_path: Path
 ) -> None:
