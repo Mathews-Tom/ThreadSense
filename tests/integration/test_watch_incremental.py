@@ -13,6 +13,7 @@ from collections import Counter
 from collections.abc import Iterator
 from contextlib import closing, redirect_stdout
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -38,7 +39,6 @@ THREAD_B = "sc1bbb"
 # profile.toml limits.presented_findings and refresh_interval_minutes.
 PRESENTATION_LIMIT = 3
 REFRESH_INTERVAL_SECONDS = 3600
-CRASH_LEASE_SECONDS = 1
 HELD_CLAIM_LEASE_SECONDS = 600
 UNREPRESENTABLE_CRON_MINUTES = 45
 HOSTILE_WORKSPACE_NAME = "work space 'single' \"double\" 100%"
@@ -793,10 +793,15 @@ def recovered_sweep(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Recovere
         patch.setattr(MonitoringStore, "record_acquisition", die)
         patch.setattr(MonitoringStore, "complete_sweep", die)
         with pytest.raises(ProcessDeathError):
-            run_cli("watch", "run", "--id", WATCH_ID, "--lease-seconds", str(CRASH_LEASE_SECONDS))
+            run_cli("watch", "run", "--id", WATCH_ID)
     [dead] = read_tables(state_path)["watch_runs"]
     orphans = artifact_hashes(state_path.parent)
-    time.sleep(max(0.0, dead["lease_expires_at_utc"] - time.time()) + 0.1)
+    # A store clock past the dead lease recovers it without waiting on wall time.
+    offset = dead["lease_expires_at_utc"] + 1.0 - time.time()
+    monkeypatch.setattr(
+        "threadsense.cli.MonitoringStore",
+        partial(MonitoringStore, clock=lambda: time.time() + offset),
+    )
     install_transport(monkeypatch, initial)
     exit_code, payload = run_cli("watch", "run", "--id", WATCH_ID)
     return RecoveredSweep(
