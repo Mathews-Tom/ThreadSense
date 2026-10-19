@@ -294,8 +294,7 @@ def test_store_unsupported_database_is_refused_without_modification(
     assert directory_snapshot(store.path.parent) == before
 
 
-def store_hash_consistent_invalid_profile(store: MonitoringStore) -> None:
-    profile_json = json.dumps(edited(profile_version=999), sort_keys=True)
+def store_hash_consistent_profile_json(store: MonitoringStore, profile_json: str) -> None:
     digest = hashlib.sha256(profile_json.encode("utf-8")).hexdigest()
     with closing(sqlite3.connect(store.path)) as conn:
         conn.execute(
@@ -306,18 +305,29 @@ def store_hash_consistent_invalid_profile(store: MonitoringStore) -> None:
 
 
 @pytest.mark.parametrize(
+    "profile_json",
+    [
+        json.dumps(edited(profile_version=999), sort_keys=True),
+        "[]",
+        "null",
+        '"x"',
+    ],
+    ids=["invalid-version", "array", "null", "string"],
+)
+@pytest.mark.parametrize(
     "operation",
     [
         lambda store: store.list_watches(),
         lambda store: store.inspect_watch("agent-tooling"),
     ],
+    ids=["list", "inspect"],
 )
 def test_store_invalid_stored_profile_raises_state_error_without_modification(
-    tmp_path: Path, operation: Callable[[MonitoringStore], object]
+    tmp_path: Path, operation: Callable[[MonitoringStore], object], profile_json: str
 ) -> None:
     store = store_at(tmp_path)
     store.save_profile(parse_watch_profile(fixture_payload()))
-    store_hash_consistent_invalid_profile(store)
+    store_hash_consistent_profile_json(store, profile_json)
     before = directory_snapshot(store.path.parent)
 
     with pytest.raises(MonitoringStateError) as raised:
@@ -329,7 +339,6 @@ def test_store_invalid_stored_profile_raises_state_error_without_modification(
         "watch_id": "agent-tooling",
         "revision": 1,
     }
-    assert isinstance(raised.value.__cause__, MonitoringInputError)
     assert directory_snapshot(store.path.parent) == before
 
 
