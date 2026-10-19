@@ -162,6 +162,145 @@ def test_connector_expands_morechildren_from_fixture() -> None:
     assert result.expanded_more_count == 2
 
 
+@pytest.mark.parametrize("child", [None, 3, True, "invalid", []])
+@pytest.mark.parametrize("boundary", ["post", "comment", "reply", "search", "morechildren"])
+def test_connector_rejects_non_object_listing_children(boundary: str, child: Any) -> None:
+    payload = load_fixture("normal_thread.json")
+    assert isinstance(payload, list)
+    more_payload = {"json": {"data": {"things": [child]}}}
+    if boundary == "post":
+        payload[0]["data"]["children"] = [child]
+    elif boundary == "comment":
+        payload[1]["data"]["children"] = [child]
+    elif boundary == "reply":
+        payload[1]["data"]["children"][0]["data"]["replies"] = {"data": {"children": [child]}}
+    elif boundary == "morechildren":
+        payload[1]["data"]["children"] = [{"kind": "more", "data": {"children": ["extra1"]}}]
+
+    def fake_transport(
+        url: str,
+        headers: Mapping[str, str],
+        params: Mapping[str, str | int | float | bool],
+        timeout: float,
+    ) -> object:
+        if boundary == "search":
+            return {"data": {"children": [child]}}
+        return more_payload if url.endswith("/api/morechildren.json") else payload
+
+    connector = RedditConnector(
+        config=RedditConfig(
+            user_agent="threadsense/test",
+            timeout_seconds=15,
+            max_retries=0,
+            backoff_seconds=0.1,
+            request_delay_seconds=0,
+            listing_limit=500,
+        ),
+        transport=fake_transport,
+        sleeper=lambda value: None,
+    )
+    with pytest.raises(RedditResponseError):
+        if boundary == "search":
+            connector.search_threads(
+                RedditSearchRequest(
+                    query="second brain",
+                    subreddits=["ThreadSense"],
+                    limit=5,
+                    sort="new",
+                    time_window="30d",
+                )
+            )
+        else:
+            connector.fetch_thread(
+                RedditThreadRequest(
+                    post_url="https://www.reddit.com/r/ThreadSense/comments/abc123/normal_thread",
+                    expand_more=boundary == "morechildren",
+                )
+            )
+
+
+@pytest.mark.parametrize(
+    "replies",
+    [[], ["invalid"], {}, {"data": []}, {"data": {"children": {}}}, 3, True, "invalid"],
+)
+@pytest.mark.parametrize("expanded", [False, True])
+def test_connector_rejects_invalid_replies(replies: Any, expanded: bool) -> None:
+    payload = load_fixture("normal_thread.json")
+    assert isinstance(payload, list)
+    comment = payload[1]["data"]["children"][0]
+    comment["data"]["replies"] = replies
+    more_payload = {"json": {"data": {"things": [comment]}}}
+    if expanded:
+        payload[1]["data"]["children"] = [{"kind": "more", "data": {"children": ["extra1"]}}]
+    connector = RedditConnector(
+        config=RedditConfig(
+            user_agent="threadsense/test",
+            timeout_seconds=15,
+            max_retries=0,
+            backoff_seconds=0.1,
+            request_delay_seconds=0,
+            listing_limit=500,
+        ),
+        transport=lambda url, headers, params, timeout: (
+            more_payload if url.endswith("/api/morechildren.json") else payload
+        ),
+        sleeper=lambda value: None,
+    )
+    with pytest.raises(RedditResponseError):
+        connector.fetch_thread(
+            RedditThreadRequest(
+                post_url="https://www.reddit.com/r/ThreadSense/comments/abc123/normal_thread",
+                expand_more=expanded,
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "fixture", ["normal_thread.json", "deleted_thread.json", "removed_thread.json"]
+)
+@pytest.mark.parametrize("reply_shape", ["none", "empty_string", "empty_listing", "nested"])
+def test_connector_preserves_valid_replies_and_deleted_comments(
+    fixture: str, reply_shape: str
+) -> None:
+    payload = load_fixture(fixture)
+    assert isinstance(payload, list)
+    raw_comment = payload[1]["data"]["children"][0]
+    if reply_shape != "nested":
+        raw_comment["data"]["replies"] = {
+            "none": None,
+            "empty_string": "",
+            "empty_listing": {"data": {"children": []}},
+        }[reply_shape]
+    connector = RedditConnector(
+        config=RedditConfig(
+            user_agent="threadsense/test",
+            timeout_seconds=15,
+            max_retries=0,
+            backoff_seconds=0.1,
+            request_delay_seconds=0,
+            listing_limit=500,
+        ),
+        transport=lambda url, headers, params, timeout: payload,
+        sleeper=lambda value: None,
+    )
+    result = connector.fetch_thread(
+        RedditThreadRequest(
+            post_url="https://www.reddit.com/r/ThreadSense/comments/abc123/normal_thread"
+        )
+    )
+    comments = flatten(list(result.comments))
+    matching = [comment for comment in comments if comment.id == raw_comment["data"]["id"]]
+    if fixture == "normal_thread.json":
+        assert len(matching) == 1
+        if reply_shape == "nested":
+            assert len(matching[0].replies) == 1
+            assert matching[0].replies[0].depth == 1
+        else:
+            assert matching[0].replies == ()
+    else:
+        assert matching == []
+
+
 def test_extract_post_preserves_selftext() -> None:
     payload = load_fixture("normal_thread.json")
     assert isinstance(payload, list)

@@ -289,6 +289,7 @@ class RedditConnector:
         things = extract_morechildren_things(payload)
         comments: list[RedditComment] = []
         for thing in things:
+            thing = _schema.nested_object(thing)
             if thing.get("kind") != "t1":
                 continue
             parsed_comment = parse_comment(thing, depth=depth)
@@ -439,6 +440,7 @@ def extract_search_matches(payload: Any, expected_subreddit: str) -> list[Reddit
     children = _schema.nested_list(payload, "data", "children")
     matches: list[RedditSearchMatch] = []
     for child in children:
+        child = _schema.nested_object(child)
         if _schema.required_str(child, "kind") != "t3":
             continue
         post_data = _schema.nested_object(child, "data")
@@ -594,6 +596,7 @@ def collect_more_ids(children: list[JsonObject]) -> tuple[list[RedditComment], l
     comments: list[RedditComment] = []
     more_ids: list[str] = []
     for child in children:
+        child = _schema.nested_object(child)
         kind = _schema.required_str(child, "kind")
         if kind == "t1":
             parsed_comment = parse_comment(child, depth=0)
@@ -618,11 +621,12 @@ def parse_comment(raw_comment: JsonObject, depth: int = 0) -> RedditComment | No
     reply_children: list[JsonObject] = []
     if isinstance(replies, dict):
         reply_children = _schema.nested_list(replies, "data", "children")
-    elif replies not in {"", None}:
+    elif replies is not None and replies != "":
         raise RedditResponseError("reddit replies payload must be a listing object or empty string")
 
     parsed_replies: list[RedditComment] = []
     for child in reply_children:
+        child = _schema.nested_object(child)
         kind = _schema.required_str(child, "kind")
         if kind != "t1":
             continue

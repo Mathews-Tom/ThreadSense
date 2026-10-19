@@ -857,6 +857,109 @@ def test_run_watch_sweep_thread_repeating_comment_id_is_failed_fetch_not_failed_
     assert [row["source_thread_id"] for row in record.run_rows("watch_acquisitions")] == [THREAD_B]
 
 
+@pytest.mark.parametrize("malformation", ["comment_child", "reply_child", "replies_list"])
+def test_run_watch_sweep_malformed_thread_cannot_starve_refresh_queue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, malformation: str
+) -> None:
+    config = build_config(monkeypatch, tmp_path / ".threadsense")
+    now = [time.time()]
+    store = MonitoringStore(monitoring_state_path(config.storage), clock=lambda: now[0])
+    profile = load_watch_profile_file(PROFILE_PATH)
+    store.save_profile(profile)
+    phases = {phase.name: phase for phase in load_replay_phases(PHASES_PATH)}
+    payload = json.loads(
+        (FIXTURE_DIR / "responses" / "thread_a_initial.json").read_text(encoding="utf-8")
+    )
+    children = payload[1]["data"]["children"]
+    if malformation == "comment_child":
+        children.append(3)
+    elif malformation == "reply_child":
+        children[0]["data"]["replies"] = {"kind": "Listing", "data": {"children": [3]}}
+    else:
+        children[0]["data"]["replies"] = []
+    malformed_path = tmp_path / "thread_a_malformed.json"
+    malformed_path.write_text(json.dumps(payload), encoding="utf-8")
+    phase = reroute(phases["initial"], f"/comments/{THREAD_A}/", response_path=malformed_path)
+
+    first = record_phase(config, store, phase)
+
+    assert first.result.outcome == "partial"
+    failures = first.run_rows("watch_fetch_failures")
+    assert [
+        (row["stage"], row["target"], json.loads(row["error_json"])["code"]) for row in failures
+    ] == [("fetch", THREAD_A, "reddit_response_error")]
+    assert [row["source_thread_id"] for row in first.run_rows("watch_acquisitions")] == [THREAD_B]
+    assert [
+        (row["source_thread_id"], row["sequence"])
+        for row in first.run_rows("watch_thread_revisions")
+    ] == [(THREAD_B, 1)]
+    assert len(first.run_rows("watch_revision_analyses")) == 1
+    assert first.result.summary["analysis"]["analyzed"] == 1
+    assert len(first.tables["watch_comments"]) == 2
+    assert len(first.tables["watch_comment_texts"]) == 2
+    before = next(
+        row for row in first.tables["watch_threads"] if row["source_thread_id"] == THREAD_A
+    )
+
+    store.save_profile(replace(profile, limits=replace(profile.limits, refreshed_threads=1)))
+    now[0] += 10
+    second = record_phase(config, store, phase)
+
+    assert second.result.outcome == "partial"
+    assert second.run_rows("watch_acquisitions") == []
+    assert [
+        (row["stage"], row["target"], json.loads(row["error_json"])["code"])
+        for row in second.run_rows("watch_fetch_failures")
+    ] == [("fetch", THREAD_A, "reddit_response_error")]
+    after = next(
+        row for row in second.tables["watch_threads"] if row["source_thread_id"] == THREAD_A
+    )
+    assert after["last_attempted_at_utc"] > before["last_attempted_at_utc"]
+    assert [item.source_thread_id for item in store.refresh_queue(WATCH_ID, 2)] == [
+        THREAD_B,
+        THREAD_A,
+    ]
+
+    now[0] += 10
+    third = record_phase(config, store, phase)
+
+    assert third.result.outcome == "no_changes"
+    assert [row["source_thread_id"] for row in third.run_rows("watch_acquisitions")] == [THREAD_B]
+    assert third.run_rows("watch_fetch_failures") == []
+    assert third.tables["watch_thread_revisions"] == first.tables["watch_thread_revisions"]
+    assert third.tables["watch_revision_analyses"] == first.tables["watch_revision_analyses"]
+    assert third.tables["watch_comment_texts"] == first.tables["watch_comment_texts"]
+    assert all(third.artifacts[path] == digest for path, digest in first.artifacts.items())
+
+
+def test_run_watch_sweep_malformed_search_preserves_known_thread_progress(
+    baselined_watch: BaselinedWatch, tmp_path: Path
+) -> None:
+    payload = json.loads(
+        (FIXTURE_DIR / "responses" / "search_initial.json").read_text(encoding="utf-8")
+    )
+    payload["data"]["children"].append(3)
+    search_path = tmp_path / "search_malformed.json"
+    search_path.write_text(json.dumps(payload), encoding="utf-8")
+    phase = reroute(
+        baselined_watch.phases["unchanged"], SEARCH_URL_MARKER, response_path=search_path
+    )
+
+    record = record_phase(baselined_watch.config, baselined_watch.store, phase)
+
+    assert record.result.outcome == "partial"
+    failures = record.run_rows("watch_fetch_failures")
+    assert [
+        (row["stage"], row["target"], json.loads(row["error_json"])["code"]) for row in failures
+    ] == [("search", QUERY, "reddit_response_error")]
+    assert sorted(row["source_thread_id"] for row in record.run_rows("watch_acquisitions")) == [
+        THREAD_A,
+        THREAD_B,
+    ]
+    assert record.result.summary["refresh"]["fetched"] == 2
+    assert record.run_rows("watch_thread_revisions") == []
+
+
 def test_run_watch_sweep_search_hit_with_unsafe_post_id_is_skipped_and_counted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
