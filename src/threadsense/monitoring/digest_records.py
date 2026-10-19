@@ -195,6 +195,9 @@ def _folded_novelty(
                 # latest text, whatever edits followed within the same window.
                 merged = {**prior[0], "text_sha256": change["text_sha256"]}
                 folded[change["comment_id"]] = (merged, prior[1])
+            elif prior is not None:
+                merged = {**change, "previous_text_sha256": prior[0]["previous_text_sha256"]}
+                folded[change["comment_id"]] = (merged, str(acquisition_id))
             else:
                 folded[change["comment_id"]] = (dict(change), str(acquisition_id))
     novel = tuple(

@@ -275,7 +275,7 @@ The run claim is marked `succeeded` for `changes` and `no_changes` and `failed` 
 Entries are created from analyzed revisions and are deterministic and idempotent:
 
 - each analyzed revision yields one `thread_update` entry listing its novel comments, and one `finding` entry for each analysis finding whose evidence includes a novel comment; entry ids are hashes of the watch, revision and theme, and an existing id is never inserted twice
-- novelty folds the comment changes of every revision since the thread's last materialized revision, so a revision superseded before analysis does not lose its novel comments; a comment first seen inside that window keeps its first-observation label even if it was also edited there
+- novelty folds the comment changes of every revision since the thread's last materialized revision, so a revision superseded before analysis does not lose its novel comments; a comment first seen inside that window keeps its first-observation label even if it was also edited there. Repeated edits to an existing comment keep the pre-window previous-text hash alongside the latest content hash and latest observation time
 - novel comments carry the labels `initial_observation`, `new_source_event`, `newly_observed_historical` or `edited`; an edit's source edit time is unknown and recorded as `null`
 - score and order changes create no entries, and a comment missing from a truncated fetch is neither an entry nor a deletion; a `partial` or `failed` sweep is never reported as `no_changes`
 - entry payloads quote the stored snapshot and analysis files after verifying their SHA-256 against the recorded values

@@ -407,6 +407,49 @@ def test_unmaterialized_revisions_superseded_revision_folds_novelty_into_next_an
     ]
 
 
+def test_unmaterialized_revisions_repeated_edits_preserve_baseline_and_latest_observation(
+    tmp_path: Path,
+) -> None:
+    harness = Harness(tmp_path)
+    harness.sweep({"c1": "first"}, findings=[])
+    harness.present()
+    harness.sweep({"c1": "intermediate edit"})
+    latest = harness.sweep({"c1": "latest edit"}, findings=[])
+    assert latest is not None
+
+    [item] = harness.store.unmaterialized_revisions(WATCH_ID)
+
+    expected_change = {
+        "comment_id": "c1",
+        "kind": "edited",
+        "text_sha256": text_sha256("latest edit"),
+        "previous_text_sha256": text_sha256("first"),
+        "source_created_utc": harness.created["c1"],
+        "source_edited_at_utc": None,
+        "observed_at_utc": harness.observed_at[2],
+    }
+    assert item.revision.revision_id == latest
+    assert item.revision.sequence == 3
+    assert list(item.novel_comments) == [expected_change]
+
+    result = harness.present()
+
+    artifact = json.loads(harness.digest_files()[f"000002-{result.digest_id}.json"])
+    [entry] = artifact["entries"]
+    assert result.status == "presented"
+    assert (result.sequence, result.materialized_entries) == (2, 1)
+    assert entry["entry_id"] == expected_update_id(latest)
+    assert entry["kind"] == "thread_update"
+    assert entry["revision_id"] == latest
+    assert entry["novel_comments"] == [
+        {
+            **expected_change,
+            "permalink": f"{THREAD_URL}c1/",
+            "excerpt": "latest edit",
+        }
+    ]
+
+
 def test_present_watch_digest_unchanged_sweep_creates_no_entries(tmp_path: Path) -> None:
     harness = Harness(tmp_path)
     harness.sweep({"c1": "latency"}, findings=[("latency", ["c1"])])
