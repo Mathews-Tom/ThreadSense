@@ -121,7 +121,7 @@ Saved watches live in a single SQLite database, separate from the JSON artifacts
 
 The directory name comes from `monitoring_dirname` under `[storage]` (environment override `THREADSENSE_STORAGE_MONITORING_DIR`, default `monitoring`). It must be a relative path that stays inside the storage root. The database is created by the first `watch create`; `watch list` and `watch inspect` open it read-only and never create it. A zero-byte or otherwise uninitialized file reads as an empty store.
 
-The database carries a ThreadSense application id and a schema version, currently `2`. A version `1` database is upgraded in place by the first command that writes to it: the upgrade only creates the version `2` tables, in one transaction, and keeps every existing profile, revision and run. Read-only commands read a version `1` database without modifying it. A database written by a newer schema version, a SQLite file that is not a ThreadSense monitoring database, and a file that is not SQLite are all refused with `monitoring_state_error` and left unmodified. There is no downgrade path. An existing completely empty SQLite file (no tables, no application id) is treated as uninitialized and receives the schema on the first write.
+The database carries a ThreadSense application id and a schema version, currently `3`. A version `1` or `2` database is upgraded in place by the first command that writes to it: the upgrade only creates the missing tables and index, in one transaction, and keeps every existing profile, revision, run and sweep record. Read-only commands read a version `1` or `2` database without modifying it; `watch inspect` then reports an empty `digest` summary. A database written by a newer schema version, a SQLite file that is not a ThreadSense monitoring database, and a file that is not SQLite are all refused with `monitoring_state_error` and left unmodified. There is no downgrade path. An existing completely empty SQLite file (no tables, no application id) is treated as uninitialized and receives the schema on the first write.
 
 If a crash left `state.sqlite3-journal` next to the database, any watch command, including `watch list` and `watch inspect`, lets SQLite roll back the interrupted transaction, but only after verifying that a private recovered copy is a supported ThreadSense state. Otherwise the database and journal are left untouched.
 
@@ -143,6 +143,11 @@ Sweep tables (schema version `2`):
 - `watch_revision_analyses`: the analysis artifact of each analyzed revision with its path and SHA-256
 - `watch_sweeps`: one row per finished sweep with its outcome (`changes`, `no_changes`, `partial` or `failed`) and summary
 
+Digest tables (schema version `3`):
+
+- `watch_digests`: one row per digest with its per-watch `sequence`, the run that created it, `status` (`pending` until both files are verified, then `written`), the entry ids and backlog snapshot it was created with, the relative paths and SHA-256 of its JSON and Markdown files, and creation and written times; a partial unique index allows at most one `pending` digest per watch
+- `watch_digest_entries`: one row per digest entry with its kind (`thread_update` or `finding`), source thread, revision, theme key, canonical payload and creation run; `digest_id` and `presented_at_utc` stay empty until the digest that presents the entry is written
+
 Sweep files live under the monitoring directory and are never overwritten. Paths in the database are relative to the monitoring directory:
 
 ```text
@@ -151,6 +156,19 @@ watches/<watch_id>/threads/<thread_id>/acquisitions/<acquisition_id>.normalized.
 watches/<watch_id>/threads/<thread_id>/revisions/<revision_id>/<snapshot_sha256>.json
 watches/<watch_id>/threads/<thread_id>/analyses/<revision_id>/<run_id>.json
 ```
+
+Digest files are written beside the sweep files, are never overwritten, and are named by sequence and digest id:
+
+```text
+watches/<watch_id>/digests/<sequence>-<digest_id>.json
+watches/<watch_id>/digests/<sequence>-<digest_id>.md
+```
+
+The sequence is zero-padded to six digits. A database row marks a digest `written`, and its entries presented, only after both files exist inside the monitoring directory with matching SHA-256. A crash between the file write and that commit leaves a `pending` digest; the next `watch digest` or `watch run` rewrites byte-identical files for the same digest or reuses them, and a file at the path with different bytes is refused as `monitoring_state_error` (reason `artifact_conflict`).
+
+The digest JSON artifact (`artifact_type: watch_digest`, `schema_version: 1`) has `watch_id`, `digest_id`, `sequence`, `created_at_utc`, `entries` and `backlog`. It is written with sorted keys, two-space indentation and a trailing newline, and rendered only from stored digest data, so a resumed digest is byte-identical. Each entry has `kind`, `entry_id`, `watch_id`, `source_thread_id`, `thread_url`, `subreddit`, `title`, `revision_id`, `revision_sequence`, `snapshot_path`, `snapshot_sha256`, `analysis_path`, `analysis_sha256` and `thread_text_changed`; a `thread_update` entry adds `novel_comments` and `counts` (every change kind with its count, including zeros). Each novel comment has `comment_id`, `kind` (`initial_observation`, `new_source_event`, `newly_observed_historical` or `edited`), `text_sha256`, `previous_text_sha256`, `source_created_utc`, `source_edited_at_utc` (present only on `edited` comments and always `null`; no source edit time is recorded), `first_observed_at_utc` or, for edits, `observed_at_utc`, `permalink` and a whitespace-collapsed `excerpt` of at most 280 characters. A `finding` entry adds `theme_key`, `theme_label`, `severity`, `finding_comment_count`, `novel_evidence_comment_ids` and `novel_evidence` (the novel comments it cites, in the same shape). `backlog` has `presentation_limit`, `presented_in_digest`, `unpresented_entries_after`, `pending_analyses`, `tracked_threads`, `refresh_pending`, `latest_sweep_outcome` and `search_completeness` (always `unknown`). Snapshot and analysis paths are relative to the monitoring directory.
+
+The Markdown artifact has a title with the watch id and sequence, a backlog section and one section per entry. Source text is untrusted: excerpts are block quotes with markdown control characters escaped.
 
 The raw file is the connector's raw thread artifact and the acquisition id is derived from its SHA-256. A revision snapshot is a canonical thread artifact holding every comment known for the thread at that revision, including comments absent from the latest acquisition; its provenance points at the raw acquisition file that created it. An analysis artifact's provenance points at the immutable snapshot it analyzed, not at a mutable latest path. Files from an interrupted sweep that the database never referenced are kept, not deleted.
 
@@ -162,7 +180,13 @@ Inspection payloads emitted by the CLI:
 
 `watch list` (`artifact_type: watch_list`): `status`, `state_path`, and `watches`, each with `watch_id`, `name`, `current_revision`, `content_sha256`, `created_at_utc`, `updated_at_utc`.
 
-`watch inspect` (`artifact_type: watch_inspection`): `status`, `state_path`, `watch_id`, `current_revision`, `created_at_utc`, `updated_at_utc`, `profile`, `revisions` (each with `revision`, `content_sha256`, `created_at_utc`), `active_run`, `run_count`, `recent_runs` (newest 20, each with `run_id`, `profile_revision`, `status`, `claimed_at_utc`, `lease_expires_at_utc`, `finished_at_utc`, `recovered_by_run_id`), and `sweep` with `tracked_threads`, `refresh_due_never_refreshed`, `pending_analyses`, `revision_count`, `comment_count` and `latest_sweep` (`run_id`, `outcome`, `finished_at_utc`, `summary`, or `null`).
+`watch inspect` (`artifact_type: watch_inspection`): `status`, `state_path`, `watch_id`, `current_revision`, `created_at_utc`, `updated_at_utc`, `profile`, `revisions` (each with `revision`, `content_sha256`, `created_at_utc`), `active_run`, `run_count`, `recent_runs` (newest 20, each with `run_id`, `profile_revision`, `status`, `claimed_at_utc`, `lease_expires_at_utc`, `finished_at_utc`, `recovered_by_run_id`), and `digest` (`entry_count`, `unpresented_entries`, `pending_digest_id`, `digest_count`, `latest_digest` with `digest_id`, `sequence`, absolute `json_path` and `markdown_path`, `entry_count` and `written_at_utc`, or `null`), and `sweep` with `tracked_threads`, `refresh_due_never_refreshed`, `pending_analyses`, `revision_count`, `comment_count` and `latest_sweep` (`run_id`, `outcome`, `finished_at_utc`, `summary`, or `null`).
+
+`watch run` (`artifact_type: watch_run`): `status` (the sweep outcome), `state_path`, `sweep` and `digest`.
+
+`watch digest` (`artifact_type: watch_digest_result`): `status` (`presented` or `no_entries`), `state_path`, `run_id`, `watch_id`, `digest_id`, `sequence`, `resumed`, `json_path`, `markdown_path`, `entry_ids`, `materialized_entries` and `backlog`.
+
+`watch schedule` (`artifact_type: watch_schedule`): `status` (`rendered`), `format`, `watch_id`, `installed` and `enabled` (both `false`), `executable`, `workspace`, `storage_root`, `config_path`, `interval_seconds`, `lease_seconds`, `argv`, `log_path`, `overlap_policy`, `content` and `install_instructions`. It writes no file.
 
 See [usage.md](usage.md) for the profile format and command behavior.
 

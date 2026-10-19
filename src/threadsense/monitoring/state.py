@@ -16,6 +16,27 @@ from typing import Any, Literal
 
 from threadsense.config import StorageConfig
 from threadsense.errors import MonitoringInputError, MonitoringStateError, RunClaimError
+from threadsense.monitoring.digest_records import (
+    _DIGEST_SCHEMA_VERSION,
+    _UNMATERIALIZED_REVISIONS,
+    DIGEST_SCHEMA_STATEMENTS,
+    DigestEntryRecord,
+    MaterializationInput,
+    PendingDigest,
+    _backlog_snapshot,
+    _digest_relative_paths,
+    _digest_row_by_id,
+    _digest_status,
+    _entry_payloads,
+    _folded_novelty,
+    _insert_entry,
+    _next_sequence,
+    _pending_digest_row,
+    _require_analyzed_revision,
+    _unpresented_entry_ids,
+    _validate_entry,
+    digest_id_for,
+)
 from threadsense.monitoring.profiles import (
     WATCH_PROFILE_VERSION,
     WatchProfile,
@@ -58,7 +79,7 @@ from threadsense.monitoring.sweep_records import (
     _validate_observed_at,
 )
 
-STATE_SCHEMA_VERSION = 2
+STATE_SCHEMA_VERSION = 3
 STATE_APPLICATION_ID = 0x54534D4E
 STATE_FILENAME = "state.sqlite3"
 BUSY_TIMEOUT_SECONDS = 5.0
@@ -247,7 +268,11 @@ _SCHEMA_V2 = (
 )
 
 # Each version lists only its additive statements; a later version only appends.
-_SCHEMA_STATEMENTS: dict[int, tuple[str, ...]] = {1: _SCHEMA_V1, 2: _SCHEMA_V2}
+_SCHEMA_STATEMENTS: dict[int, tuple[str, ...]] = {
+    1: _SCHEMA_V1,
+    2: _SCHEMA_V2,
+    3: DIGEST_SCHEMA_STATEMENTS,
+}
 
 
 @dataclass(frozen=True)
@@ -410,6 +435,7 @@ class MonitoringStore:
                 (watch_id, RECENT_RUN_LIMIT),
             ).fetchall()
             sweep = _sweep_status(conn, version, watch_id)
+            digest = _digest_status(conn, version, watch_id, self.monitoring_root())
         current_revision, created_at, updated_at = watch
         current = [row for row in revisions if row[0] == current_revision]
         if len(current) != 1:
@@ -437,6 +463,7 @@ class MonitoringStore:
             "run_count": run_count,
             "recent_runs": recent_runs,
             "sweep": sweep,
+            "digest": digest,
         }
 
     def claim_run(self, watch_id: str, *, lease_seconds: int) -> RunClaim:
@@ -854,6 +881,164 @@ class MonitoringStore:
             conn, version = handle
             return _sweep_status(conn, version, watch_id)
 
+    def unmaterialized_revisions(self, watch_id: str) -> list[MaterializationInput]:
+        """Analyzed revisions without digest entries, oldest first, with folded novelty."""
+        validate_watch_id(watch_id)
+        root = self.monitoring_root()
+        inputs: list[MaterializationInput] = []
+        with self._connect_digest_readonly() as conn:
+            if conn is None:
+                return []
+            rows = conn.execute(
+                f"SELECT {_REVISION_REF_COLUMNS}, a.analysis_path, a.analysis_sha256, "
+                f"t.thread_url, t.subreddit, t.title {_UNMATERIALIZED_REVISIONS}",
+                (watch_id,),
+            ).fetchall()
+            for row in rows:
+                revision = self._revision_ref_from_row(tuple(row[:7]))
+                novel, thread_text_changed = _folded_novelty(
+                    conn, watch_id, revision.source_thread_id, revision.sequence
+                )
+                inputs.append(
+                    MaterializationInput(
+                        revision=revision,
+                        analysis_path=root / row[7],
+                        analysis_sha256=row[8],
+                        thread_url=row[9],
+                        subreddit=row[10],
+                        title=row[11],
+                        novel_comments=novel,
+                        thread_text_changed=thread_text_changed,
+                        monitoring_root=root,
+                    )
+                )
+        return inputs
+
+    def materialize_digest_entries(
+        self, claim: RunClaim, entries: Sequence[DigestEntryRecord]
+    ) -> int:
+        """Record digest entries; return how many were new, skipping recorded entry ids."""
+        for entry in entries:
+            _validate_entry(entry)
+        inserted = 0
+        with self._connect_writable(create=False) as conn, _immediate(conn):
+            now = self._fence_claim(conn, claim)
+            for entry in entries:
+                _require_analyzed_revision(conn, claim.watch_id, entry)
+                inserted += int(_insert_entry(conn, claim, entry, now))
+        return inserted
+
+    def begin_digest(self, claim: RunClaim, limit: int) -> PendingDigest | None:
+        """Resume the watch's pending digest, else record one over the oldest unpresented entries.
+
+        Entries stay unpresented until `complete_digest` has verified both digest artifacts.
+        """
+        if type(limit) is not int or limit < 1:
+            raise MonitoringInputError(
+                "digest limit must be a positive integer",
+                details={"reason": "invalid_limit", "limit": limit},
+            )
+        root = self.monitoring_root().absolute()
+        with self._connect_writable(create=False) as conn, _immediate(conn):
+            now = self._fence_claim(conn, claim)
+            pending = _pending_digest_row(conn, claim.watch_id)
+            if pending is not None:
+                return PendingDigest(
+                    digest_id=pending.digest_id,
+                    sequence=pending.sequence,
+                    json_path=root / pending.json_path,
+                    markdown_path=root / pending.markdown_path,
+                    created_at_utc=pending.created_at_utc,
+                    entries=_entry_payloads(conn, claim.watch_id, pending.entry_ids),
+                    backlog=pending.backlog,
+                    resumed=True,
+                )
+            entry_ids = tuple(_unpresented_entry_ids(conn, claim.watch_id, limit))
+            if not entry_ids:
+                return None
+            sequence = _next_sequence(conn, claim.watch_id)
+            digest_id = digest_id_for(claim.watch_id, sequence, entry_ids)
+            json_path, markdown_path = _digest_relative_paths(claim.watch_id, sequence, digest_id)
+            backlog = _backlog_snapshot(conn, claim.watch_id, limit, len(entry_ids))
+            entries = _entry_payloads(conn, claim.watch_id, entry_ids)
+            conn.execute(
+                "INSERT INTO watch_digests (digest_id, watch_id, sequence, run_id, status, "
+                "entry_ids_json, backlog_json, json_path, markdown_path, created_at_utc) "
+                "VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)",
+                (
+                    digest_id,
+                    claim.watch_id,
+                    sequence,
+                    claim.run_id,
+                    _canonical_json(list(entry_ids), "entry_ids"),
+                    _canonical_json(backlog, "backlog"),
+                    json_path,
+                    markdown_path,
+                    now,
+                ),
+            )
+        return PendingDigest(
+            digest_id=digest_id,
+            sequence=sequence,
+            json_path=root / json_path,
+            markdown_path=root / markdown_path,
+            created_at_utc=now,
+            entries=entries,
+            backlog=backlog,
+            resumed=False,
+        )
+
+    def complete_digest(
+        self, claim: RunClaim, digest_id: str, json_sha256: str, markdown_sha256: str
+    ) -> None:
+        """Mark a pending digest written once both artifacts verify, presenting its entries."""
+        root = self.monitoring_root()
+        with self._connect_writable(create=False) as conn, _immediate(conn):
+            now = self._fence_claim(conn, claim)
+            digest = _digest_row_by_id(conn, claim.watch_id, digest_id)
+            if digest.status != "pending":
+                raise MonitoringStateError(
+                    "digest is not pending",
+                    details={
+                        "reason": "digest_not_pending",
+                        "digest_id": digest_id,
+                        "status": digest.status,
+                    },
+                )
+            artifacts = ((digest.json_path, json_sha256), (digest.markdown_path, markdown_sha256))
+            for relative, sha256 in artifacts:
+                if self._verified_artifact(root / relative, sha256) != relative:
+                    raise MonitoringStateError(
+                        "digest artifact does not resolve to its recorded path",
+                        details={"reason": "artifact_outside_state", "path": relative},
+                    )
+            conn.execute(
+                "UPDATE watch_digests SET status = 'written', json_sha256 = ?, "
+                "markdown_sha256 = ?, written_at_utc = ? "
+                "WHERE digest_id = ? AND status = 'pending'",
+                (json_sha256, markdown_sha256, now, digest_id),
+            )
+            for entry_id in digest.entry_ids:
+                linked = conn.execute(
+                    "UPDATE watch_digest_entries SET digest_id = ?, presented_at_utc = ? "
+                    "WHERE entry_id = ? AND watch_id = ? AND digest_id IS NULL",
+                    (digest_id, now, entry_id, claim.watch_id),
+                ).rowcount
+                if linked != 1:
+                    raise MonitoringStateError(
+                        "digest entry was already presented or is missing",
+                        details={"reason": "entry_already_presented", "entry_id": entry_id},
+                    )
+
+    def digest_status(self, watch_id: str) -> dict[str, Any]:
+        validate_watch_id(watch_id)
+        root = self.monitoring_root()
+        with self._connect_readonly() as handle:
+            if handle is None:
+                return _digest_status(None, 0, watch_id, root)
+            conn, version = handle
+            return _digest_status(conn, version, watch_id, root)
+
     def _verified_artifact(self, path: Path, sha256: str) -> str:
         """Verify an artifact inside the monitoring root; return its stored relative path."""
         root = self.monitoring_root().resolve()
@@ -990,6 +1175,15 @@ class MonitoringStore:
         """Read sweep tables; a missing state or a pre-sweep schema reads as empty."""
         with self._connect_readonly() as handle:
             if handle is None or handle[1] < _SWEEP_SCHEMA_VERSION:
+                yield None
+                return
+            yield handle[0]
+
+    @contextmanager
+    def _connect_digest_readonly(self) -> Iterator[sqlite3.Connection | None]:
+        """Read digest tables; a missing state or a pre-digest schema reads as empty."""
+        with self._connect_readonly() as handle:
+            if handle is None or handle[1] < _DIGEST_SCHEMA_VERSION:
                 yield None
                 return
             yield handle[0]

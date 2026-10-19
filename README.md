@@ -79,7 +79,12 @@ presented_findings = 10
 uv run threadsense watch create --profile PATH
 uv run threadsense watch list
 uv run threadsense watch inspect --id agent-memory
+uv run threadsense watch run --id agent-memory
+uv run threadsense watch digest --id agent-memory
+uv run threadsense watch schedule --id agent-memory --format launchd
 ```
+
+`watch run` performs one bounded sweep of the watch and then presents a digest of the new evidence; `watch digest` presents only. A digest is a JSON and Markdown artifact pair under the monitoring directory listing new evidence-linked thread updates and findings, at most `presented_findings` per digest, with the remaining backlog reported. `watch schedule` renders a launchd property list or a cron line and nothing else: it installs and enables nothing, and you install the output yourself if you want recurring runs.
 
 Field bounds and output shapes: [docs/usage.md](docs/usage.md).
 
@@ -168,7 +173,7 @@ uv run threadsense research reddit \
 | `corpus`          | Build and analyze cross-thread corpora              |
 | `inspect`         | Examine persisted artifacts                         |
 | `batch run`       | Process multiple threads                            |
-| `watch`           | Save and inspect versioned research profiles        |
+| `watch`           | Save, sweep, digest and schedule research profiles  |
 | `preflight`       | Validate local environment                          |
 | `serve`           | Local API server                                    |
 
@@ -234,6 +239,14 @@ uv run threadsense report analysis --input PATH --with-summary --summary-require
 
 Replace `URL` with a real Reddit thread URL and each `PATH` with the relevant configuration, output, or input artifact path. The inference input is an analysis artifact; the report input is also an analysis artifact. The configuration must name an actually installed local model and point to its local endpoint; do not upload source content to a cloud service. Report external source or local-model failures separately from the deterministic suite results. A passing suite must never be interpreted as a live-service pass.
 
+The incremental watch flow has its own smoke scenario. It drives the actual CLI in fresh child processes against synthesized recorded Reddit JSON served in-process, so it is not a live acquisition:
+
+```bash
+uv run python scripts/smoke_monitoring.py --scenario incremental --work-dir DIR
+```
+
+Replace `DIR` with a working directory for the scenario. The scenario prints `scenario=incremental status=passed evidence=...` only after every assertion passes and writes `incremental-evidence.json` into that directory.
+
 ## Current Limits
 
 - Topic research is implemented for Reddit; other source discovery workflows are planned
@@ -241,7 +254,7 @@ Replace `URL` with a real Reddit thread URL and each `PATH` with the relevant co
 - Corpus reports are Markdown only
 - GitHub Gist comments are flat (no threading); analysis uses temporal/semantic clustering
 - GitHub Gist connector does not retry on transient API errors (502/503)
-- Watches persist profiles and state only; they do not yet run sweeps, fetch threads, or install schedules
+- Watches sweep and digest on demand through `watch run` and `watch digest`; nothing runs on a timer unless you install the rendered `watch schedule` output yourself, and digests are local files with no remote notification or delivery guarantee
 - The local API is a trusted local surface, not a hardened public service
 
 ## Direction

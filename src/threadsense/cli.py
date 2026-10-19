@@ -3,13 +3,15 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 
 from threadsense.api_server import start_api_server
 from threadsense.batching import run_batch_manifest
 from threadsense.cli_display import cli_log_level, emit_error, emit_payload, status
-from threadsense.config import AppConfig, load_config
+from threadsense.config import AppConfig, effective_config_path, load_config
 from threadsense.connectors.hackernews import HackerNewsConnector
 from threadsense.connectors.reddit import RedditConnector
 from threadsense.contracts import (
@@ -24,7 +26,22 @@ from threadsense.evaluation import load_golden_manifest
 from threadsense.inference import InferenceTask
 from threadsense.inference.local_runtime import LocalRuntimeClient, RuntimeProbeResult
 from threadsense.logging_config import configure_logging
-from threadsense.monitoring import MonitoringStore, load_watch_profile_file, monitoring_state_path
+from threadsense.monitoring import (
+    MonitoringStore,
+    build_schedule_spec,
+    load_watch_profile_file,
+    monitoring_state_path,
+    present_watch_digest,
+    render_cron,
+    render_launchd,
+    run_watch_sweep,
+)
+from threadsense.monitoring.schedule import (
+    ScheduleFormat,
+    render_install_instructions,
+    resolve_storage_root,
+    resolve_workspace,
+)
 from threadsense.observability import DEFAULT_METRICS, TraceContext
 from threadsense.pipeline.replay import replay_analysis
 from threadsense.pipeline.storage import (
@@ -666,6 +683,56 @@ def _build_watch_parser(subparsers: argparse._SubParsersAction[argparse.Argument
     )
     watch_inspect_parser.add_argument("--id", dest="watch_id", required=True, help="Watch id.")
     _add_config_argument(watch_inspect_parser)
+    _build_watch_execution_parsers(watch_subparsers)
+
+
+def _add_watch_lease_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--lease-seconds",
+        type=int,
+        default=3600,
+        help="Run claim lease in seconds (1-86400).",
+    )
+
+
+def _build_watch_execution_parsers(
+    watch_subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    watch_run_parser = watch_subparsers.add_parser(
+        "run",
+        help="Sweep a watch for changed discussions, then present a digest of new evidence.",
+    )
+    watch_run_parser.add_argument("--id", dest="watch_id", required=True, help="Watch id.")
+    _add_watch_lease_argument(watch_run_parser)
+    _add_config_argument(watch_run_parser)
+
+    watch_digest_parser = watch_subparsers.add_parser(
+        "digest",
+        help="Present a digest of analyzed evidence not yet presented, without sweeping.",
+    )
+    watch_digest_parser.add_argument("--id", dest="watch_id", required=True, help="Watch id.")
+    _add_watch_lease_argument(watch_digest_parser)
+    _add_config_argument(watch_digest_parser)
+
+    watch_schedule_parser = watch_subparsers.add_parser(
+        "schedule",
+        help="Render a launchd or cron definition for a watch; nothing is installed or enabled.",
+    )
+    watch_schedule_parser.add_argument("--id", dest="watch_id", required=True, help="Watch id.")
+    watch_schedule_parser.add_argument(
+        "--format",
+        dest="schedule_format",
+        choices=["launchd", "cron"],
+        required=True,
+        help="Scheduler definition format.",
+    )
+    watch_schedule_parser.add_argument(
+        "--workspace",
+        type=Path,
+        default=None,
+        help="Working directory for scheduled runs (defaults to the current directory).",
+    )
+    _add_config_argument(watch_schedule_parser)
 
 
 def _build_research_parser(
@@ -1454,6 +1521,111 @@ def run_watch_inspect(config_path: Path | None, watch_id: str) -> int:
     return 0
 
 
+def watch_trace(run_id: str) -> TraceContext:
+    return TraceContext.create(run_id=run_id, source_name="watch")
+
+
+def run_watch_run(config_path: Path | None, watch_id: str, lease_seconds: int) -> int:
+    logger, config = load_cli_context(config_path)
+    store = MonitoringStore(monitoring_state_path(config.storage))
+    trace = watch_trace("cli-watch-run")
+    sweep = run_watch_sweep(
+        config=config,
+        store=store,
+        watch_id=watch_id,
+        lease_seconds=lease_seconds,
+        connector_factory=build_reddit_connector,
+        logger=logger,
+        trace=trace,
+    )
+    digest = present_watch_digest(
+        store=store,
+        watch_id=watch_id,
+        lease_seconds=lease_seconds,
+        logger=logger,
+        trace=trace,
+    )
+    emit_payload(
+        {
+            "artifact_type": "watch_run",
+            "status": sweep.outcome,
+            "state_path": str(store.path),
+            "sweep": sweep.to_dict(),
+            "digest": digest.to_dict(),
+        }
+    )
+    return 0 if sweep.outcome in ("changes", "no_changes") else 1
+
+
+def run_watch_digest(config_path: Path | None, watch_id: str, lease_seconds: int) -> int:
+    logger, config = load_cli_context(config_path)
+    store = MonitoringStore(monitoring_state_path(config.storage))
+    digest = present_watch_digest(
+        store=store,
+        watch_id=watch_id,
+        lease_seconds=lease_seconds,
+        logger=logger,
+        trace=watch_trace("cli-watch-digest"),
+    )
+    emit_payload(
+        {
+            "artifact_type": "watch_digest_result",
+            "status": digest.status,
+            "state_path": str(store.path),
+            **digest.to_dict(),
+        }
+    )
+    return 0
+
+
+def run_watch_schedule(
+    config_path: Path | None,
+    watch_id: str,
+    schedule_format: ScheduleFormat,
+    workspace: Path | None,
+) -> int:
+    _logger, config = load_cli_context(config_path)
+    resolved_workspace = resolve_workspace(workspace if workspace is not None else Path.cwd())
+    storage = config.storage.model_copy(
+        update={"root_dir": resolve_storage_root(config.storage.root_dir, resolved_workspace)}
+    )
+    store = MonitoringStore(monitoring_state_path(storage))
+    inspection = store.inspect_watch(watch_id)
+    spec = build_schedule_spec(
+        watch_id=watch_id,
+        refresh_interval_minutes=inspection["profile"]["refresh_interval_minutes"],
+        workspace=resolved_workspace,
+        storage_root=storage.root_dir,
+        # launchd and cron do not inherit the shell, so pin the config this render loaded.
+        config_path=effective_config_path(config_path, os.environ),
+        executable=Path(sys.executable).absolute(),
+        monitoring_dirname=storage.monitoring_dirname,
+    )
+    content = render_launchd(spec) if schedule_format == "launchd" else render_cron(spec)
+    emit_payload(
+        {
+            "artifact_type": "watch_schedule",
+            "status": "rendered",
+            "format": schedule_format,
+            "watch_id": spec.watch_id,
+            "installed": False,
+            "enabled": False,
+            "executable": str(spec.executable),
+            "workspace": str(spec.workspace),
+            "storage_root": str(spec.storage_root),
+            "config_path": str(spec.config_path) if spec.config_path is not None else None,
+            "interval_seconds": spec.interval_seconds,
+            "lease_seconds": spec.lease_seconds,
+            "argv": list(spec.argv),
+            "log_path": str(spec.log_path),
+            "overlap_policy": "run_claim",
+            "content": content,
+            "install_instructions": render_install_instructions(spec, schedule_format),
+        }
+    )
+    return 0
+
+
 def _dispatch_watch_command(args: argparse.Namespace) -> int:
     match args.watch_command:
         case "create":
@@ -1462,6 +1634,14 @@ def _dispatch_watch_command(args: argparse.Namespace) -> int:
             return run_watch_list(args.config)
         case "inspect":
             return run_watch_inspect(args.config, args.watch_id)
+        case "run":
+            return run_watch_run(args.config, args.watch_id, args.lease_seconds)
+        case "digest":
+            return run_watch_digest(args.config, args.watch_id, args.lease_seconds)
+        case "schedule":
+            return run_watch_schedule(
+                args.config, args.watch_id, args.schedule_format, args.workspace
+            )
         case _:
             raise _CommandDispatchError(args.command)
 
