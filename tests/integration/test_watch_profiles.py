@@ -195,6 +195,81 @@ def test_watch_create_storage_escape_fails_before_any_write(
     assert not (tmp_path / "escaped").exists()
 
 
+def reject_json_constant(token: str) -> object:
+    raise ValueError(f"non-standard JSON constant in output: {token}")
+
+
+@pytest.mark.parametrize(
+    ("original", "replacement", "field", "expected_value"),
+    [
+        ('id = "agent-tooling"', "id = 1979-05-27", "id", "1979-05-27"),
+        ('name = "Coding agent friction"', "name = 07:32:00", "name", "07:32:00"),
+        (
+            'domain = "developer_tools"',
+            "domain = 1979-05-27T07:32:00Z",
+            "domain",
+            "1979-05-27T07:32:00+00:00",
+        ),
+        (
+            'objective = "friction_analysis"',
+            "objective = [[1, 2], {a = 1979-05-27}]",
+            "objective",
+            [[1, 2], {"a": "1979-05-27"}],
+        ),
+        (
+            "refresh_interval_minutes = 360",
+            "refresh_interval_minutes = nan",
+            "refresh_interval_minutes",
+            "nan",
+        ),
+        (
+            "refreshed_threads = 25",
+            "refreshed_threads = inf",
+            "limits.refreshed_threads",
+            "inf",
+        ),
+    ],
+)
+def test_watch_create_non_json_toml_values_returns_structured_input_error(
+    store_root: Path,
+    tmp_path: Path,
+    original: str,
+    replacement: str,
+    field: str,
+    expected_value: object,
+) -> None:
+    text = FIXTURE_PROFILE.read_text(encoding="utf-8")
+    assert original in text
+    invalid = write_profile(tmp_path / "invalid.toml", text.replace(original, replacement, 1))
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "threadsense",
+            "--output-format",
+            "json",
+            "watch",
+            "create",
+            "--profile",
+            str(invalid),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=process_env(),
+        timeout=60,
+    )
+
+    assert completed.returncode == 1
+    payload = json.loads(completed.stdout, parse_constant=reject_json_constant)
+    assert payload["status"] == "error"
+    assert payload["error"]["code"] == "monitoring_input_error"
+    assert payload["error"]["details"]["field"] == field
+    assert payload["error"]["details"]["value"] == expected_value
+    assert not store_root.exists()
+
+
 def test_concurrent_claim_processes_admit_exactly_one_owner(
     store_root: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

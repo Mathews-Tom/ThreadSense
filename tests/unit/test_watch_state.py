@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sqlite3
+import subprocess
+import sys
 import tomllib
 from collections.abc import Callable
 from contextlib import closing
@@ -357,3 +359,159 @@ def test_claim_run_on_uninitialized_file_refuses_without_writing(tmp_path: Path)
 
     assert raised.value.details["reason"] == "state_missing"
     assert store.path.read_bytes() == b""
+
+
+# Runs in a child process: spills a large uncommitted update to the database file,
+# then dies without committing or rolling back, leaving a hot rollback journal.
+CRASH_CODE = """
+import os
+import sqlite3
+import sys
+
+conn = sqlite3.connect(sys.argv[1], isolation_level=None)
+conn.execute("PRAGMA cache_size = 5")
+conn.execute("BEGIN IMMEDIATE")
+conn.execute(sys.argv[2], ("x" * 1_000_000,))
+os._exit(0)
+"""
+REVISION_UPDATE = "UPDATE watch_revisions SET profile_json = ?"
+
+
+def journal_path(store: MonitoringStore) -> Path:
+    return Path(f"{store.path}-journal")
+
+
+def crash_mid_transaction(store: MonitoringStore, update_sql: str) -> None:
+    subprocess.run(
+        [sys.executable, "-c", CRASH_CODE, str(store.path), update_sql], check=True, timeout=30
+    )
+    journal = journal_path(store)
+    assert journal.exists()
+    assert journal.stat().st_size > 512
+
+
+def prepare_newer_schema(store: MonitoringStore) -> None:
+    store.save_profile(parse_watch_profile(fixture_payload()))
+    mark_schema_newer(store)
+
+
+def make_foreign_database_with_note(store: MonitoringStore) -> None:
+    make_foreign_database(store)
+    with closing(sqlite3.connect(store.path)) as conn:
+        conn.execute("INSERT INTO notes (body) VALUES ('kept')")
+        conn.commit()
+
+
+@pytest.mark.parametrize(
+    "first_access",
+    [
+        lambda store: store.list_watches(),
+        lambda store: store.inspect_watch("agent-tooling"),
+        lambda store: store.save_profile(parse_watch_profile(fixture_payload())),
+    ],
+    ids=["list", "inspect", "save"],
+)
+def test_store_hot_journal_on_supported_state_recovers_committed_state(
+    tmp_path: Path, first_access: Callable[[MonitoringStore], object]
+) -> None:
+    store = store_at(tmp_path)
+    profile = parse_watch_profile(fixture_payload())
+    store.save_profile(profile)
+    claim = store.claim_run("agent-tooling", lease_seconds=60)
+    crash_mid_transaction(store, REVISION_UPDATE)
+
+    first_access(store)
+
+    journal_left = journal_path(store).exists()
+    watches = store.list_watches()
+    inspected = store.inspect_watch("agent-tooling")
+    saved = store.save_profile(profile)
+    store.finalize_run(claim.run_id, claim.owner_token, "succeeded")
+    follow_up = store.claim_run("agent-tooling", lease_seconds=60)
+
+    assert journal_left is False
+    assert [(watch["watch_id"], watch["content_sha256"]) for watch in watches] == [
+        ("agent-tooling", profile.content_sha256())
+    ]
+    assert inspected["profile"] == profile.to_dict()
+    assert inspected["active_run"]["run_id"] == claim.run_id
+    assert saved.status == "unchanged"
+    assert follow_up.recovered_run_id is None
+
+
+@pytest.mark.parametrize(
+    ("prepare", "update_sql", "reason"),
+    [
+        (prepare_newer_schema, REVISION_UPDATE, "unsupported_schema_version"),
+        (make_foreign_database_with_note, "UPDATE notes SET body = ?", "foreign_database"),
+    ],
+    ids=["newer", "foreign"],
+)
+@pytest.mark.parametrize(
+    "operation",
+    [
+        lambda store: store.save_profile(parse_watch_profile(fixture_payload())),
+        lambda store: store.list_watches(),
+        lambda store: store.inspect_watch("agent-tooling"),
+        lambda store: store.claim_run("agent-tooling", lease_seconds=60),
+    ],
+    ids=["save", "list", "inspect", "claim"],
+)
+def test_store_hot_journal_on_unsupported_state_is_refused_without_modification(
+    tmp_path: Path,
+    prepare: Callable[[MonitoringStore], None],
+    update_sql: str,
+    reason: str,
+    operation: Callable[[MonitoringStore], object],
+) -> None:
+    store = store_at(tmp_path)
+    prepare(store)
+    crash_mid_transaction(store, update_sql)
+    before = directory_snapshot(store.path.parent)
+
+    with pytest.raises(MonitoringStateError) as raised:
+        operation(store)
+
+    assert raised.value.details["reason"] == reason
+    assert directory_snapshot(store.path.parent) == before
+
+
+def test_list_watches_hot_journal_on_write_protected_state_fails_without_modification(
+    tmp_path: Path,
+) -> None:
+    store = store_at(tmp_path)
+    store.save_profile(parse_watch_profile(fixture_payload()))
+    crash_mid_transaction(store, REVISION_UPDATE)
+    before = directory_snapshot(store.path.parent)
+    store.path.chmod(0o444)
+
+    try:
+        with pytest.raises(MonitoringStateError) as raised:
+            store.list_watches()
+    finally:
+        store.path.chmod(0o644)
+
+    assert raised.value.details["reason"] == "recovery_failed"
+    assert raised.value.details["journal_path"] == str(journal_path(store))
+    assert directory_snapshot(store.path.parent) == before
+
+
+def test_store_zero_byte_state_reads_empty_and_initializes_on_save(tmp_path: Path) -> None:
+    store = store_at(tmp_path)
+    store.path.parent.mkdir(parents=True)
+    store.path.write_bytes(b"")
+    before = directory_snapshot(store.path.parent)
+
+    watches = store.list_watches()
+    with pytest.raises(MonitoringStateError) as inspected:
+        store.inspect_watch("agent-tooling")
+    after_reads = directory_snapshot(store.path.parent)
+    with pytest.raises(MonitoringStateError) as claimed:
+        store.claim_run("agent-tooling", lease_seconds=60)
+    saved = store.save_profile(parse_watch_profile(fixture_payload()))
+
+    assert watches == []
+    assert inspected.value.details["reason"] == "unknown_watch"
+    assert after_reads == before
+    assert claimed.value.details["reason"] == "state_missing"
+    assert saved.status == "created"

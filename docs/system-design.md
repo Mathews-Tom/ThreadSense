@@ -200,7 +200,7 @@ The monitoring subsystem (`src/threadsense/monitoring/`) persists saved research
 
 - `profiles.py` parses a TOML document with `profile_version = 1` into an immutable `WatchProfile`
 - `domain`, `objective` and `abstraction_level` reuse the analysis contract enums; queries reuse the `research reddit` query validation and subreddits reuse the Reddit subreddit-name validation
-- the watch `id` is restricted to lowercase letters, digits and inner hyphens because it is the storage namespace; path-like ids are rejected
+- the watch `id` is a database key, not a filesystem namespace; it is validated against a pattern of lowercase letters, digits and inner hyphens, so path-like ids are rejected, and filesystem containment comes from `monitoring_dirname` resolving inside the storage root
 - unknown fields, non-integer numerics, duplicates, overlapping include and exclude terms, and unsupported `profile_version` values are rejected
 - queries, subreddits and terms are treated as sets and stored sorted; the content hash is the SHA-256 of canonical JSON and excludes timestamps, so equivalent documents hash identically
 - the whole profile is validated before the state database is touched
@@ -212,7 +212,8 @@ The monitoring subsystem (`src/threadsense/monitoring/`) persists saved research
 - saving identical content returns `unchanged` without writing; a changed profile appends a revision and returns `revised`
 - the database carries an application id and schema version `1`; newer-schema, foreign and non-SQLite files are refused and never migrated or downgraded
 - an existing file is probed through a read-only handle before any writable connection is opened, so a refused file is never opened for writing
-- `watch list` and `watch inspect` are read-only and do not create a missing database
+- a hot rollback journal left by a crashed writer is rolled back by SQLite only after a private copy of the database and journal recovers to a verified supported state with the same bytes; newer-schema, foreign and non-SQLite files and their journals are refused unchanged, and recovery that cannot complete reports `recovery_failed` or, when the files change underneath it, `recovery_conflict`
+- `watch list` and `watch inspect` never create a missing database and write nothing, except for the verified hot-journal rollback above
 - writes run in `BEGIN IMMEDIATE` transactions with a bounded busy timeout; a database still locked by another process after that timeout fails as `state_locked`, for reads and writes alike, and other SQLite failures surface as `monitoring_state_error` rather than raw exceptions
 
 ### Run claims, leases and fencing

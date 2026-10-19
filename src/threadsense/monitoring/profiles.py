@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import datetime
 import hashlib
 import json
+import math
 import re
 import tomllib
 from collections.abc import Mapping
@@ -176,24 +178,38 @@ def _validate_profile_version(version: object) -> None:
     if type(version) is not int:
         raise MonitoringInputError(
             "watch profile_version must be an integer",
-            details={"field": "profile_version", "value": version},
+            details={"field": "profile_version", "value": _detail_value(version)},
         )
     if version != WATCH_PROFILE_VERSION:
         raise MonitoringInputError(
             "watch profile_version is not supported",
             details={
                 "field": "profile_version",
-                "value": version,
+                "value": _detail_value(version),
                 "supported": WATCH_PROFILE_VERSION,
             },
         )
+
+
+def _detail_value(value: object) -> object:
+    """Render a raw TOML value as JSON-safe error detail."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return str(value)
+    if isinstance(value, datetime.datetime | datetime.date | datetime.time):
+        return value.isoformat()
+    if isinstance(value, list):
+        return [_detail_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _detail_value(item) for key, item in value.items()}
+    return value
 
 
 def _required_str(payload: Mapping[str, Any], field: str) -> str:
     value = payload.get(field)
     if not isinstance(value, str):
         raise MonitoringInputError(
-            f"watch {field} must be a string", details={"field": field, "value": value}
+            f"watch {field} must be a string",
+            details={"field": field, "value": _detail_value(value)},
         )
     return value
 
@@ -291,7 +307,7 @@ def _bounded_int(value: object, field: str, bounds: tuple[int, int]) -> int:
     if type(value) is not int or not low <= value <= high:
         raise MonitoringInputError(
             f"watch {field} must be an integer between {low} and {high}",
-            details={"field": field, "value": value},
+            details={"field": field, "value": _detail_value(value)},
         )
     return value
 

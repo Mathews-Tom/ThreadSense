@@ -4,7 +4,9 @@ import hashlib
 import hmac
 import json
 import secrets
+import shutil
 import sqlite3
+import tempfile
 import time
 from collections.abc import Callable, Iterator
 from contextlib import closing, contextmanager
@@ -374,8 +376,12 @@ class MonitoringStore:
         if not self.path.exists():
             yield None
             return
-        with closing(self._open(f"{self.path.resolve().as_uri()}?mode=ro")) as conn:
-            _require_supported_schema(conn, self.path, allow_uninitialized=False)
+        conn, version = self._open_probe()
+        with closing(conn):
+            if version == 0:
+                # An uninitialized file reads as an empty store; nothing is written.
+                yield None
+                return
             try:
                 yield conn
             except sqlite3.Error as error:
@@ -385,9 +391,10 @@ class MonitoringStore:
     def _connect_writable(self, *, create: bool) -> Iterator[sqlite3.Connection]:
         if self.path.exists():
             # Refuse unknown or foreign databases through a read-only handle first,
-            # so a refused file is never opened for writing.
-            with closing(self._open(f"{self.path.resolve().as_uri()}?mode=ro")) as probe:
-                version = _require_supported_schema(probe, self.path, allow_uninitialized=True)
+            # so a refused file is never opened for writing. A hot journal is rolled
+            # back only after a private copy proves the recovered state is supported.
+            probe, version = self._open_probe()
+            probe.close()
             if version == 0 and not create:
                 raise MonitoringStateError(
                     "monitoring state is not initialized; create a watch first",
@@ -410,6 +417,88 @@ class MonitoringStore:
                     conn.execute(f"PRAGMA application_id = {STATE_APPLICATION_ID}")
                     conn.execute(f"PRAGMA user_version = {STATE_SCHEMA_VERSION}")
             yield conn
+
+    def _open_probe(self) -> tuple[sqlite3.Connection, int]:
+        """Open and validate the existing file read-only, recovering a hot journal once."""
+        try:
+            return self._open_validated_readonly()
+        except _HotJournal:
+            self._recover_hot_journal()
+        try:
+            return self._open_validated_readonly()
+        except _HotJournal as error:
+            raise _recovery_failed(self.path, error) from error
+
+    def _open_validated_readonly(self) -> tuple[sqlite3.Connection, int]:
+        conn = self._open(f"{self.path.resolve().as_uri()}?mode=ro")
+        try:
+            return conn, _require_supported_schema(conn, self.path, allow_uninitialized=True)
+        except BaseException:
+            conn.close()
+            raise
+
+    def _recover_hot_journal(self) -> None:
+        """Let SQLite roll back a hot journal once a private copy proves it is supported.
+
+        A writer that crashed after spilling its cache leaves partially written pages
+        in the database and the originals in the rollback journal, which read-only
+        handles cannot restore. The pair is copied and rolled back privately first;
+        the original is opened for writing only when the recovered copy is a
+        supported ThreadSense state and the pair did not change meanwhile.
+        """
+        journal = _journal_path(self.path)
+        try:
+            fingerprint = _fingerprint(self.path, journal)
+            with tempfile.TemporaryDirectory() as scratch:
+                recovered_sha256 = self._recover_copy(Path(scratch), fingerprint)
+            if _fingerprint(self.path, journal) != fingerprint:
+                raise _recovery_conflict(self.path)
+            with closing(self._open(f"{self.path.resolve().as_uri()}?mode=rw")) as conn:
+                # The first read performs SQLite's rollback, then holds a SHARED lock
+                # so the restored bytes cannot change before they are compared.
+                conn.execute("BEGIN")
+                conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
+                if _file_sha256(self.path) != recovered_sha256:
+                    raise _recovery_conflict(self.path)
+                _require_supported_schema(conn, self.path, allow_uninitialized=True)
+                conn.execute("COMMIT")
+        except sqlite3.Error as error:
+            failure = _sqlite_failure(error, self.path, "recovery_failed")
+            if failure.details["reason"] == "state_locked":
+                raise failure from error
+            raise _recovery_failed(self.path, error) from error
+        except FileNotFoundError as error:
+            if error.filename is None or Path(error.filename) not in (self.path, journal):
+                raise _recovery_failed(self.path, error) from error
+            # A file of the pair vanished: another process recovered or replaced it first.
+            raise _recovery_conflict(self.path) from error
+        except (OSError, _HotJournal) as error:
+            raise _recovery_failed(self.path, error) from error
+        except MonitoringStateError as error:
+            if error.details["reason"] != "open_failed":
+                raise
+            raise _recovery_failed(self.path, error.details["error"]) from error
+
+    def _recover_copy(self, scratch: Path, fingerprint: tuple[str, str]) -> str:
+        """Roll back a private copy of the pair and return the recovered database hash."""
+        copy = scratch / STATE_FILENAME
+        shutil.copyfile(self.path, copy)
+        shutil.copyfile(_journal_path(self.path), _journal_path(copy))
+        if _fingerprint(copy, _journal_path(copy)) != fingerprint:
+            raise _recovery_conflict(self.path)
+        with closing(self._open(f"{copy.resolve().as_uri()}?mode=rw")) as conn:
+            try:
+                # The first read rolls the copy back; its failures are recovery failures.
+                conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
+            except sqlite3.DatabaseError as error:
+                if getattr(error, "sqlite_errorcode", None) != sqlite3.SQLITE_NOTADB:
+                    raise
+            # Refusals report the original path; only the copy has been touched.
+            _require_supported_schema(conn, self.path, allow_uninitialized=True)
+            check = conn.execute("PRAGMA quick_check").fetchone()[0]
+        if check != "ok":
+            raise _recovery_failed(self.path, f"quick_check: {check}")
+        return _file_sha256(copy)
 
     def _open(self, uri: str) -> sqlite3.Connection:
         try:
@@ -440,6 +529,46 @@ def _immediate(conn: sqlite3.Connection) -> Iterator[None]:
         raise
 
 
+class _HotJournal(Exception):
+    """A read-only handle met a hot rollback journal that only a writer can roll back."""
+
+
+def _journal_path(path: Path) -> Path:
+    return Path(f"{path}-journal")
+
+
+def _file_sha256(path: Path) -> str:
+    with path.open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
+
+
+def _fingerprint(path: Path, journal: Path) -> tuple[str, str]:
+    return _file_sha256(path), _file_sha256(journal)
+
+
+def _recovery_failed(path: Path, error: object) -> MonitoringStateError:
+    return MonitoringStateError(
+        "monitoring state crash recovery failed",
+        details={
+            "reason": "recovery_failed",
+            "path": str(path),
+            "journal_path": str(_journal_path(path)),
+            "error": str(error),
+        },
+    )
+
+
+def _recovery_conflict(path: Path) -> MonitoringStateError:
+    return MonitoringStateError(
+        "monitoring state changed during crash recovery",
+        details={
+            "reason": "recovery_conflict",
+            "path": str(path),
+            "journal_path": str(_journal_path(path)),
+        },
+    )
+
+
 def _sqlite_failure(error: sqlite3.Error, path: Path | None, reason: str) -> MonitoringStateError:
     """Map a SQLite error to a state error, reporting lock contention distinctly."""
     details: dict[str, Any] = {"error": str(error)}
@@ -464,6 +593,8 @@ def _require_supported_schema(
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         table_count = conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0]
     except sqlite3.DatabaseError as error:
+        if getattr(error, "sqlite_errorcode", None) == sqlite3.SQLITE_READONLY_ROLLBACK:
+            raise _HotJournal(str(error)) from error
         failure = _sqlite_failure(error, path, "not_a_database")
         if failure.details["reason"] == "not_a_database":
             failure = MonitoringStateError(

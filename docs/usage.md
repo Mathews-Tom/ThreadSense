@@ -360,13 +360,13 @@ uv run threadsense watch list [--config PATH]
 uv run threadsense watch inspect --id ID [--config PATH]
 ```
 
-Output is JSON by default; `--output-format human|quiet` applies as for other commands. Failures exit with code `1` and print:
+Output follows [output-modes.md](output-modes.md): human when stdout is a TTY and JSON otherwise, with `--output-format` overriding. In `json` mode the payload is printed to stdout. In `human` mode a successful payload is printed to stdout as syntax-highlighted JSON, and an error is a red panel on stderr showing the error code, message and details. In `quiet` mode a success prints only its `status` (`created`, `revised`, `unchanged` or `ok`) and an error prints `error: <message>`, both on stdout. Failures exit with code `1`. In `json` mode they print:
 
 ```json
 {"status": "error", "error": {"type": "...", "code": "...", "message": "...", "details": {}}}
 ```
 
-Profile problems use code `monitoring_input_error`. State database problems use `monitoring_state_error`, with a `reason` in `details` such as `unsupported_schema_version`, `foreign_database`, `not_a_database`, `state_locked` or `unknown_watch`. Run claim refusals use `run_claim_error`.
+Profile problems use code `monitoring_input_error`. State database problems use `monitoring_state_error`, with a `reason` in `details` such as `unsupported_schema_version`, `foreign_database`, `not_a_database`, `state_locked`, `unknown_watch`, `recovery_failed` (SQLite could not recover an interrupted transaction of a supported state) or `recovery_conflict` (the state files changed during recovery). An empty, uninitialized state file reads as no watches. Run claim refusals use `run_claim_error`.
 
 ### Profile file
 
@@ -395,7 +395,7 @@ presented_findings = 10
 | Field                          | Required | Constraint                                                                                            |
 | ------------------------------ | -------- | ----------------------------------------------------------------------------------------------------- |
 | `profile_version`              | yes      | integer `1`; any other value, including a newer version, is rejected                                  |
-| `id`                           | yes      | 1-64 lowercase letters, digits or inner hyphens; used as the storage namespace, so `../x` is rejected |
+| `id`                           | yes      | 1-64 lowercase letters, digits or inner hyphens, so `../x` is rejected; a database key, not a path    |
 | `name`                         | yes      | 1-200 characters after trimming                                                                       |
 | `domain`                       | yes      | same values as `--domain` in the analysis contract                                                    |
 | `objective`                    | yes      | same values as `--objective`                                                                          |
@@ -417,6 +417,7 @@ Validation rules:
 - numeric fields must be integers; booleans are rejected
 - duplicate entries (case-insensitive) in `queries`, `subreddits`, `include_terms` or `exclude_terms` are rejected
 - entries are trimmed before validation
+- the id never becomes a path; filesystem containment comes from `monitoring_dirname` staying inside the storage root
 - all validation runs before the state database is opened for writing, so an invalid profile never creates or modifies state
 
 ### `watch create`

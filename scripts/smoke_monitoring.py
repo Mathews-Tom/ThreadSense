@@ -62,6 +62,8 @@ INVALID_PROFILES = {
     "zero_limit": ("discovered_candidates = 50", "discovered_candidates = 0"),
     "advanced_query": ('"mcp server", "coding agent"', '"mcp server", "title:agent"'),
     "path_traversal_id": ('id = "agent-tooling"', 'id = "../../escaped"'),
+    "toml_date_id": ('id = "agent-tooling"', "id = 1979-05-27"),
+    "non_finite_limit": ("discovered_candidates = 50", "discovered_candidates = nan"),
 }
 
 CLAIM_PROCESS = """
@@ -88,6 +90,18 @@ except RunClaimError as error:
     print(json.dumps({"outcome": "refused", "reason": error.details["reason"]}))
 """
 
+# Runs in a separate interpreter: spills a large uncommitted update to the database
+# file and exits without rolling back, leaving a genuine hot rollback journal.
+CRASH_PROCESS = """
+import os, sqlite3, sys
+conn = sqlite3.connect(sys.argv[1], isolation_level=None)
+conn.execute("PRAGMA cache_size = 5")
+conn.execute("BEGIN IMMEDIATE")
+conn.execute(sys.argv[2], ("x" * 1000000,))
+os._exit(0)
+"""
+CRASH_UPDATE = "UPDATE watch_revisions SET profile_json = ?"
+
 
 class SmokeFailure(Exception):
     pass
@@ -104,6 +118,10 @@ def file_sha256(path: Path) -> str:
 
 def directory_digest(directory: Path) -> dict[str, str]:
     return {entry.name: file_sha256(entry) for entry in sorted(directory.iterdir())}
+
+
+def reject_constant(token: str) -> Any:
+    raise ValueError(f"non-standard JSON constant {token}")
 
 
 class ProfilesScenario:
@@ -144,8 +162,8 @@ class ProfilesScenario:
             timeout=60,
         )
         try:
-            payload: dict[str, Any] = json.loads(completed.stdout)
-        except json.JSONDecodeError as error:
+            payload: dict[str, Any] = json.loads(completed.stdout, parse_constant=reject_constant)
+        except ValueError as error:
             raise SmokeFailure(
                 f"threadsense {' '.join(args)} printed no JSON: {completed.stderr[-500:]}"
             ) from error
@@ -184,6 +202,10 @@ class ProfilesScenario:
         current = self.expired_claim_is_recovered(winner)
         self.stale_owner_is_refused(winner, current)
         self.newer_schema_is_refused_unmodified()
+        self.crash_journal_is_recovered("list")
+        self.crash_journal_is_recovered("create")
+        self.unsupported_crash_journal_is_refused_unmodified()
+        self.empty_state_file_reads_as_empty()
 
     def persist_and_restart(self) -> None:
         code, created = self.cli(
@@ -318,6 +340,103 @@ class ProfilesScenario:
         check(set(reasons) == {"unsupported_schema_version"}, f"wrong refusal: {reasons}")
         check(directory_digest(newer_state.parent) == before, "newer schema state was modified")
         self.record("newer_schema_refused", reasons=reasons, files=before)
+
+    def store_copy(self, name: str) -> tuple[Path, Path]:
+        root = self.work_dir / name
+        state = root / "monitoring" / "state.sqlite3"
+        state.parent.mkdir(parents=True)
+        shutil.copyfile(self.state_path, state)
+        return root, state
+
+    def crash_writer(self, state: Path, statement: str) -> int:
+        subprocess.run(
+            [sys.executable, "-c", CRASH_PROCESS, str(state), statement],
+            check=True,
+            env=self.base_env,
+            timeout=60,
+        )
+        journal = Path(f"{state}-journal")
+        check(journal.is_file() and journal.stat().st_size > 512, "crash left no hot journal")
+        return journal.stat().st_size
+
+    def crash_journal_is_recovered(self, first_command: str) -> None:
+        expected = self.inspect()
+        root, state = self.store_copy(f"crash-{first_command}-store")
+        journal_size = self.crash_writer(state, CRASH_UPDATE)
+        profile = str(self.work_dir / "profiles" / "edit.toml")
+        commands = {
+            "list": ("watch", "list"),
+            "create": ("watch", "create", "--profile", profile),
+            "inspect": ("watch", "inspect", "--id", WATCH_ID),
+        }
+        order = [first_command, *(name for name in commands if name != first_command)]
+        payloads: dict[str, dict[str, Any]] = {}
+        for name in order:
+            code, payloads[name] = self.cli(*commands[name], store_root=root)
+            check(code == 0, f"watch {name} after crash failed: {payloads[name]}")
+        check(not Path(f"{state}-journal").exists(), "hot journal was not recovered")
+        listed = [watch["watch_id"] for watch in payloads["list"]["watches"]]
+        check(listed == [WATCH_ID], f"recovered list differs: {listed}")
+        check(payloads["create"]["status"] == "unchanged", "recovered profile was not intact")
+        recovered = payloads["inspect"]
+        for key in ("current_revision", "revisions", "profile", "recent_runs", "run_count"):
+            check(recovered[key] == expected[key], f"recovered {key} differs from committed")
+        self.record(
+            f"crash_recovered_via_{first_command}",
+            journal_bytes=journal_size,
+            order=order,
+            current_revision=recovered["current_revision"],
+            run_count=recovered["run_count"],
+        )
+
+    def unsupported_crash_journal_is_refused_unmodified(self) -> None:
+        newer_root, newer_state = self.store_copy("crash-newer-store")
+        with closing(sqlite3.connect(newer_state)) as conn:
+            conn.execute("PRAGMA user_version = 2")
+            conn.commit()
+        foreign_root = self.work_dir / "crash-foreign-store"
+        foreign_state = foreign_root / "monitoring" / "state.sqlite3"
+        foreign_state.parent.mkdir(parents=True)
+        with closing(sqlite3.connect(foreign_state)) as conn:
+            conn.execute("CREATE TABLE notes (body TEXT)")
+            conn.execute("INSERT INTO notes VALUES ('kept')")
+            conn.commit()
+        cases = [
+            (newer_root, newer_state, CRASH_UPDATE, "unsupported_schema_version"),
+            (foreign_root, foreign_state, "UPDATE notes SET body = ?", "foreign_database"),
+        ]
+        profile = str(self.work_dir / "profiles" / "v1.toml")
+        observed: dict[str, list[str]] = {}
+        for root, state, statement, expected in cases:
+            self.crash_writer(state, statement)
+            before = directory_digest(state.parent)
+            reasons: list[str] = []
+            for args in (
+                ("watch", "list"),
+                ("watch", "inspect", "--id", WATCH_ID),
+                ("watch", "create", "--profile", profile),
+            ):
+                code, payload = self.cli(*args, store_root=root)
+                check(code == 1, f"{expected} with hot journal accepted by {args[1]}")
+                reasons.append(payload["error"]["details"]["reason"])
+            check(set(reasons) == {expected}, f"wrong hot-journal refusal: {reasons}")
+            check(directory_digest(state.parent) == before, f"{expected} files were modified")
+            observed[expected] = reasons
+        self.record("unsupported_crash_journal_refused", reasons=observed)
+
+    def empty_state_file_reads_as_empty(self) -> None:
+        root = self.work_dir / "empty-store"
+        state = root / "monitoring" / "state.sqlite3"
+        state.parent.mkdir(parents=True)
+        state.touch()
+        before = directory_digest(state.parent)
+        code, listed = self.cli("watch", "list", store_root=root)
+        check(code == 0 and listed["watches"] == [], f"empty state list: {listed}")
+        code, inspected = self.cli("watch", "inspect", "--id", WATCH_ID, store_root=root)
+        reason = inspected["error"]["details"]["reason"]
+        check(code == 1 and reason == "unknown_watch", f"empty state inspect: {inspected}")
+        check(directory_digest(state.parent) == before, "empty state file was modified")
+        self.record("empty_state_reads_empty", watches=listed["watches"], inspect=reason)
 
 
 def prepare_work_dir(work_dir: Path) -> Path:
