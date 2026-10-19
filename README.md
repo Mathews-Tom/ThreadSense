@@ -181,11 +181,11 @@ Details: [docs/local-runtime-contract.md](docs/local-runtime-contract.md)
 ## Validation
 
 ```bash
-uv run ruff check
-uv run ruff format --check .
-uv run mypy --strict src tests
-uv run pytest
+uv sync --locked
+bash scripts/validate.sh
 ```
+
+`uv sync --locked` fails when `uv.lock` is stale instead of rewriting it. `scripts/validate.sh` runs, in order, `ruff check`, `ruff format --check`, `mypy --strict src tests`, the complete `pytest` suite and a scan for absolute local paths in Markdown. GitHub Actions runs the same two commands on every pull request and on pushes to `main`, on Python 3.11 and 3.13, with `UV_LOCKED=1` so no step can modify the lock file.
 
 The full `pytest` suite is deterministic recorded/loopback integration coverage, with no skips. It does not establish that a real source or local model is available, nor does it claim a successful live source fetch or model inference.
 
