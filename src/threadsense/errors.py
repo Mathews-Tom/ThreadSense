@@ -65,6 +65,21 @@ class ApiInputError(ThreadSenseError):
         super().__init__(message=message, code="api_input_error", details=details or {})
 
 
+class MonitoringInputError(ThreadSenseError):
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message=message, code="monitoring_input_error", details=details or {})
+
+
+class MonitoringStateError(ThreadSenseError):
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message=message, code="monitoring_state_error", details=details or {})
+
+
+class RunClaimError(ThreadSenseError):
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message=message, code="run_claim_error", details=details or {})
+
+
 class RedditInputError(ThreadSenseError):
     def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
         super().__init__(message=message, code="reddit_input_error", details=details or {})

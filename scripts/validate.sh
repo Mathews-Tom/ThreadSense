@@ -3,7 +3,7 @@ set -euo pipefail
 
 uv run ruff check
 uv run ruff format --check .
-uv run mypy --strict src tests
+uv run mypy --strict src tests scripts
 uv run pytest
 
 echo "Checking for absolute local paths in markdown files..."

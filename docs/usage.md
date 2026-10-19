@@ -37,6 +37,7 @@ Top-level commands:
 - `serve`
 - `run`
 - `research`
+- `watch`
 
 ## Happy Paths
 
@@ -349,6 +350,166 @@ Unsupported query syntax:
 
 See [research-reddit.md](research-reddit.md) for the full workflow and ranking behavior.
 
+## `watch`
+
+Manage saved research profiles ("watches") and their persistent monitoring state. A watch stores what to look for: queries, subreddits, analysis contract, refresh cadence and per-stage limits. The command group currently saves and reads profiles only. It does not fetch threads, run sweeps, call a model, or install a scheduler, and there is no CLI command that starts a run.
+
+```bash
+uv run threadsense watch create --profile PATH [--config PATH]
+uv run threadsense watch list [--config PATH]
+uv run threadsense watch inspect --id ID [--config PATH]
+```
+
+Output is JSON by default; `--output-format human|quiet` applies as for other commands. Failures exit with code `1` and print:
+
+```json
+{"status": "error", "error": {"type": "...", "code": "...", "message": "...", "details": {}}}
+```
+
+Profile problems use code `monitoring_input_error`. State database problems use `monitoring_state_error`, with a `reason` in `details` such as `unsupported_schema_version`, `foreign_database`, `not_a_database`, `state_locked` or `unknown_watch`. Run claim refusals use `run_claim_error`.
+
+### Profile file
+
+Profiles are TOML documents with `profile_version = 1`.
+
+```toml
+profile_version = 1
+id = "agent-memory"
+name = "Agent memory tooling"
+domain = "developer_tools"
+objective = "friction_analysis"
+abstraction_level = "operational"
+queries = ["second brain", "agentic PKM"]
+subreddits = ["ClaudeCode", "r/LocalLLaMA"]
+refresh_interval_minutes = 1440
+include_terms = ["obsidian"]
+exclude_terms = ["hiring"]
+
+[limits]
+discovered_candidates = 100
+refreshed_threads = 25
+analyzed_revisions = 25
+presented_findings = 10
+```
+
+| Field                          | Required | Constraint                                                                                            |
+| ------------------------------ | -------- | ----------------------------------------------------------------------------------------------------- |
+| `profile_version`              | yes      | integer `1`; any other value, including a newer version, is rejected                                  |
+| `id`                           | yes      | 1-64 lowercase letters, digits or inner hyphens; used as the storage namespace, so `../x` is rejected |
+| `name`                         | yes      | 1-200 characters after trimming                                                                       |
+| `domain`                       | yes      | same values as `--domain` in the analysis contract                                                    |
+| `objective`                    | yes      | same values as `--objective`                                                                          |
+| `abstraction_level`            | yes      | same values as `--level`                                                                              |
+| `queries`                      | yes      | 1-10 entries, each at most 256 characters, same query syntax as `research reddit`                     |
+| `subreddits`                   | yes      | 1-25 valid subreddit names; a leading `r/` is removed                                                 |
+| `refresh_interval_minutes`     | yes      | integer 15-10080                                                                                      |
+| `include_terms`                | no       | 0-50 entries, 1-100 characters each                                                                   |
+| `exclude_terms`                | no       | 0-50 entries, 1-100 characters each; must not overlap `include_terms` case-insensitively              |
+| `[limits]`                     | yes      | table with exactly the four keys below                                                                |
+| `limits.discovered_candidates` | yes      | integer 1-500                                                                                         |
+| `limits.refreshed_threads`     | yes      | integer 1-200                                                                                         |
+| `limits.analyzed_revisions`    | yes      | integer 1-200                                                                                         |
+| `limits.presented_findings`    | yes      | integer 1-100                                                                                         |
+
+Validation rules:
+
+- unknown top-level fields and unknown `[limits]` keys are rejected
+- numeric fields must be integers; booleans are rejected
+- duplicate entries (case-insensitive) in `queries`, `subreddits`, `include_terms` or `exclude_terms` are rejected
+- entries are trimmed before validation
+- all validation runs before the state database is opened for writing, so an invalid profile never creates or modifies state
+
+### `watch create`
+
+Validate a profile and save it as a new watch or a new revision of an existing watch.
+
+```bash
+uv run threadsense watch create --profile profiles/agent-memory.toml
+```
+
+`queries`, `subreddits`, `include_terms` and `exclude_terms` are treated as sets and stored sorted. The content hash is the SHA-256 of the canonical JSON form of the validated profile and excludes timestamps. Key order, list order, comments and whitespace in the TOML file do not affect it.
+
+`status` in the result:
+
+- `created`: first save for this `id`; revision `1`
+- `unchanged`: content hash matches the current revision; the database is not modified
+- `revised`: content differs from the current revision; `revision` is incremented and earlier revisions are kept
+
+```json
+{
+  "artifact_type": "watch_profile",
+  "status": "created",
+  "watch_id": "agent-memory",
+  "revision": 1,
+  "content_sha256": "...",
+  "state_path": "<resolved storage root>/monitoring/state.sqlite3"
+}
+```
+
+### `watch list`
+
+List saved watches. A missing state database lists nothing and is not created.
+
+```json
+{
+  "artifact_type": "watch_list",
+  "status": "ok",
+  "state_path": "<resolved storage root>/monitoring/state.sqlite3",
+  "watches": [
+    {
+      "watch_id": "agent-memory",
+      "name": "Agent memory tooling",
+      "current_revision": 2,
+      "content_sha256": "...",
+      "created_at_utc": 1760000000.0,
+      "updated_at_utc": 1760003600.0
+    }
+  ]
+}
+```
+
+Timestamps are Unix epoch seconds (UTC) as floating-point numbers.
+
+### `watch inspect`
+
+Show the current profile, revision history and recent run claims for one watch. An unknown `--id` is an error (`monitoring_state_error`, reason `unknown_watch`).
+
+```json
+{
+  "artifact_type": "watch_inspection",
+  "status": "ok",
+  "state_path": "<resolved storage root>/monitoring/state.sqlite3",
+  "watch_id": "agent-memory",
+  "current_revision": 2,
+  "created_at_utc": 1760000000.0,
+  "updated_at_utc": 1760003600.0,
+  "profile": {"profile_version": 1, "id": "agent-memory", "...": "..."},
+  "revisions": [
+    {"revision": 1, "content_sha256": "...", "created_at_utc": 1760000000.0},
+    {"revision": 2, "content_sha256": "...", "created_at_utc": 1760003600.0}
+  ],
+  "active_run": null,
+  "run_count": 0,
+  "recent_runs": []
+}
+```
+
+`recent_runs` holds the newest 20 claims. Each entry has `run_id`, `profile_revision`, `status` (`running`, `succeeded`, `failed` or `abandoned`), `claimed_at_utc`, `lease_expires_at_utc`, `finished_at_utc` and `recovered_by_run_id`. `active_run` is the entry whose status is `running`, or `null`. `run_count` is the total number of claims for the watch.
+
+### State location
+
+State is a SQLite database at `<storage root>/<monitoring_dirname>/state.sqlite3`, by default `.threadsense/monitoring/state.sqlite3`. Set `monitoring_dirname` under `[storage]` in the config file or with `THREADSENSE_STORAGE_MONITORING_DIR`. The value must be a relative path that stays inside the storage root; absolute paths and `..` segments are rejected. See [artifacts.md](artifacts.md) for the schema and version behavior.
+
+### Run claims
+
+The `threadsense.monitoring` Python package provides a run-claim primitive for future watch runs. No CLI command uses it yet; `watch inspect` only reports claims that already exist in the database.
+
+- at most one run per watch is `running`, enforced transactionally and by a partial unique index
+- a claim carries an owner token and a lease of 1-86400 seconds; only the SHA-256 of the token is stored
+- a competing claim while the lease is live is refused with `run_claim_error`, reason `claim_held`
+- after the lease expires, the next claim marks the old run `abandoned` with `recovered_by_run_id` pointing at the new run
+- the previous owner can no longer finalize that run (reason `stale_owner`); an owner whose lease expired without a newer claim cannot finalize either (reason `lease_expired`)
+
 ## `evaluate`
 
 Run golden-dataset evaluation.
@@ -396,6 +557,7 @@ Common paths:
 - `.threadsense/analysis/<source>/...`
 - `.threadsense/reports/<source>/...`
 - `.threadsense/corpora/<corpus-id>/...`
+- `.threadsense/monitoring/state.sqlite3`
 
 ## Related Docs
 

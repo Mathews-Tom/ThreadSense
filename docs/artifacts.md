@@ -111,6 +111,36 @@ Example:
 .threadsense/batches/<run-name>.json
 ```
 
+## Monitoring State
+
+Saved watches live in a single SQLite database, separate from the JSON artifacts above:
+
+```text
+.threadsense/monitoring/state.sqlite3
+```
+
+The directory name comes from `monitoring_dirname` under `[storage]` (environment override `THREADSENSE_STORAGE_MONITORING_DIR`, default `monitoring`). It must be a relative path that stays inside the storage root. The database is created by the first `watch create`; `watch list` and `watch inspect` open it read-only and never create it.
+
+The database carries a ThreadSense application id and schema version `1`. A database written by a newer schema version, a SQLite file that is not a ThreadSense monitoring database, and a file that is not SQLite are all refused with `monitoring_state_error` and left unmodified. There is no downgrade or migration path. An existing completely empty SQLite file (no tables, no application id) is treated as uninitialized and receives the schema on the first write.
+
+Tables:
+
+- `watches`: one row per watch with its current revision number and creation and update times
+- `watch_revisions`: one row per saved profile revision with the canonical profile JSON and its SHA-256 content hash; earlier revisions are kept
+- `watch_runs`: one row per run claim with the profile revision it used, status (`running`, `succeeded`, `failed`, `abandoned`), claim, lease-expiry and finish times, the SHA-256 of the owner token, and `recovered_by_run_id` when a later claim took over an expired run; a partial unique index allows at most one `running` row per watch
+
+Timestamps are stored as Unix epoch seconds (UTC) floating-point values. The content hash excludes timestamps, so saving identical profile content again does not write a new revision.
+
+Inspection payloads emitted by the CLI:
+
+`watch create` (`artifact_type: watch_profile`): `status` (`created`, `revised` or `unchanged`), `watch_id`, `revision`, `content_sha256`, `state_path`.
+
+`watch list` (`artifact_type: watch_list`): `status`, `state_path`, and `watches`, each with `watch_id`, `name`, `current_revision`, `content_sha256`, `created_at_utc`, `updated_at_utc`.
+
+`watch inspect` (`artifact_type: watch_inspection`): `status`, `state_path`, `watch_id`, `current_revision`, `created_at_utc`, `updated_at_utc`, `profile`, `revisions` (each with `revision`, `content_sha256`, `created_at_utc`), `active_run`, `run_count`, and `recent_runs` (newest 20, each with `run_id`, `profile_revision`, `status`, `claimed_at_utc`, `lease_expires_at_utc`, `finished_at_utc`, `recovered_by_run_id`).
+
+See [usage.md](usage.md) for the profile format and command behavior.
+
 ## Research Result Payloads
 
 `research reddit` also returns runtime metadata in the emitted result payload, including:

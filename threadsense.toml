@@ -55,6 +55,7 @@ report_dirname = "reports"
 batch_dirname = "batches"
 corpus_dirname = "corpora"
 index_dirname = "index"
+monitoring_dirname = "monitoring"
 versioning_enabled = false
 
 [batch]
