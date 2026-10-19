@@ -1,0 +1,50 @@
+{
+  "kind": "Listing",
+  "data": {
+    "after": null,
+    "children": [
+      {
+        "kind": "t3",
+        "data": {
+          "id": "sc1bbb",
+          "title": "Resolving a sync conflict in a shared vault",
+          "selftext": "Our team vault shows conflict copies every morning after the nightly sync.",
+          "subreddit": "SyncTools",
+          "author": "vault_admin",
+          "permalink": "/r/SyncTools/comments/sc1bbb/resolving_a_sync_conflict_in_a_shared_vault/",
+          "score": 31,
+          "num_comments": 2,
+          "created_utc": 1760000050.0
+        }
+      },
+      {
+        "kind": "t3",
+        "data": {
+          "id": "sc1ddd",
+          "title": "Sync conflict on mobile after the latest update",
+          "selftext": "Since the update my phone creates a conflict file for every edited note.",
+          "subreddit": "SyncTools",
+          "author": "pocket_editor",
+          "permalink": "/r/SyncTools/comments/sc1ddd/sync_conflict_on_mobile_after_the_latest_update/",
+          "score": 18,
+          "num_comments": 1,
+          "created_utc": 1760000600.0
+        }
+      },
+      {
+        "kind": "t3",
+        "data": {
+          "id": "sc1eee",
+          "title": "Recurring sync conflict with calendar attachments",
+          "selftext": "Calendar attachments get duplicated with a conflict suffix on each sync.",
+          "subreddit": "SyncTools",
+          "author": "agenda_keeper",
+          "permalink": "/r/SyncTools/comments/sc1eee/recurring_sync_conflict_with_calendar_attachments/",
+          "score": 9,
+          "num_comments": 1,
+          "created_utc": 1760000700.0
+        }
+      }
+    ]
+  }
+}

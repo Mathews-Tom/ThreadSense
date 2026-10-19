@@ -8,7 +8,7 @@ import shutil
 import sqlite3
 import tempfile
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,8 +22,43 @@ from threadsense.monitoring.profiles import (
     parse_watch_profile,
     validate_watch_id,
 )
+from threadsense.monitoring.sweep_records import (
+    _FAILURE_STAGES,
+    _PENDING_ANALYSES_FROM,
+    _REVISION_REF_COLUMNS,
+    _SUCCEEDED_SWEEP_OUTCOMES,
+    _SWEEP_OUTCOMES,
+    _SWEEP_SCHEMA_VERSION,
+    _TRACKED_THREADS_WHERE,
+    AcquisitionRecord,
+    DiscoveredThread,
+    FailureStage,
+    KnownComment,
+    RevisionRecord,
+    RevisionRef,
+    SweepOutcome,
+    ThreadHistory,
+    TrackedThread,
+    _AcquisitionWrite,
+    _apply_comment_writes,
+    _canonical_json,
+    _comment_writes,
+    _count,
+    _insert_revision,
+    _known_comment_hashes,
+    _novelty_cutoff,
+    _pending_analysis_count,
+    _stored_novelty,
+    _sweep_status,
+    _tracked_thread,
+    _upsert_watch_thread,
+    _validate_acquisition,
+    _validate_discovery,
+    _validate_limit,
+    _validate_observed_at,
+)
 
-STATE_SCHEMA_VERSION = 1
+STATE_SCHEMA_VERSION = 2
 STATE_APPLICATION_ID = 0x54534D4E
 STATE_FILENAME = "state.sqlite3"
 BUSY_TIMEOUT_SECONDS = 5.0
@@ -32,6 +67,7 @@ RECENT_RUN_LIMIT = 20
 
 RunOutcome = Literal["succeeded", "failed"]
 ProfileWriteStatus = Literal["created", "revised", "unchanged"]
+
 
 _SCHEMA_V1 = (
     """
@@ -74,6 +110,144 @@ _SCHEMA_V1 = (
         ON watch_runs (watch_id) WHERE status = 'running'
     """,
 )
+
+_SCHEMA_V2 = (
+    """
+    CREATE TABLE watch_threads (
+        watch_id TEXT NOT NULL REFERENCES watches (watch_id),
+        source_thread_id TEXT NOT NULL,
+        thread_url TEXT NOT NULL,
+        subreddit TEXT NOT NULL,
+        title TEXT NOT NULL,
+        source_created_utc REAL,
+        selected INTEGER NOT NULL CHECK (selected IN (0, 1)),
+        rejection_reason TEXT,
+        first_discovered_at_utc REAL NOT NULL,
+        first_discovered_run_id TEXT NOT NULL,
+        last_discovered_at_utc REAL NOT NULL,
+        last_attempted_at_utc REAL,
+        last_refreshed_at_utc REAL,
+        last_acquisition_id TEXT,
+        current_revision_id TEXT,
+        PRIMARY KEY (watch_id, source_thread_id)
+    )
+    """,
+    """
+    CREATE TABLE watch_discoveries (
+        run_id TEXT NOT NULL REFERENCES watch_runs (run_id),
+        watch_id TEXT NOT NULL,
+        query TEXT NOT NULL,
+        source_thread_id TEXT NOT NULL,
+        rank INTEGER NOT NULL,
+        score INTEGER NOT NULL,
+        num_comments INTEGER NOT NULL,
+        selected INTEGER NOT NULL CHECK (selected IN (0, 1)),
+        rejection_reason TEXT,
+        observed_at_utc REAL NOT NULL,
+        PRIMARY KEY (run_id, query, source_thread_id)
+    )
+    """,
+    """
+    CREATE TABLE watch_acquisitions (
+        acquisition_id TEXT PRIMARY KEY,
+        watch_id TEXT NOT NULL,
+        source_thread_id TEXT NOT NULL,
+        run_id TEXT NOT NULL REFERENCES watch_runs (run_id),
+        observed_at_utc REAL NOT NULL,
+        raw_path TEXT NOT NULL,
+        raw_sha256 TEXT NOT NULL,
+        normalized_path TEXT NOT NULL,
+        normalized_sha256 TEXT NOT NULL,
+        completeness TEXT NOT NULL CHECK (completeness IN ('truncated', 'unknown')),
+        cache_status TEXT NOT NULL,
+        parsed_comment_count INTEGER NOT NULL,
+        reported_comment_count INTEGER NOT NULL,
+        absent_known_comment_count INTEGER NOT NULL,
+        revision_id TEXT
+    )
+    """,
+    """
+    CREATE TABLE watch_fetch_failures (
+        failure_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id TEXT NOT NULL REFERENCES watch_runs (run_id),
+        watch_id TEXT NOT NULL,
+        stage TEXT NOT NULL CHECK (stage IN ('search', 'fetch', 'analyze')),
+        target TEXT NOT NULL,
+        error_json TEXT NOT NULL,
+        observed_at_utc REAL NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE watch_comments (
+        watch_id TEXT NOT NULL,
+        source_thread_id TEXT NOT NULL,
+        comment_id TEXT NOT NULL,
+        current_text_sha256 TEXT NOT NULL,
+        source_created_utc REAL NOT NULL,
+        novelty TEXT NOT NULL CHECK (
+            novelty IN ('initial_observation', 'new_source_event', 'newly_observed_historical')
+        ),
+        first_observed_at_utc REAL NOT NULL,
+        first_observed_run_id TEXT NOT NULL,
+        first_acquisition_id TEXT NOT NULL,
+        last_seen_at_utc REAL NOT NULL,
+        last_seen_acquisition_id TEXT NOT NULL,
+        PRIMARY KEY (watch_id, source_thread_id, comment_id)
+    )
+    """,
+    """
+    CREATE TABLE watch_comment_texts (
+        watch_id TEXT NOT NULL,
+        source_thread_id TEXT NOT NULL,
+        comment_id TEXT NOT NULL,
+        acquisition_id TEXT NOT NULL,
+        text_sha256 TEXT NOT NULL,
+        change TEXT NOT NULL CHECK (change IN ('first_observed', 'edited')),
+        observed_at_utc REAL NOT NULL,
+        PRIMARY KEY (watch_id, source_thread_id, comment_id, acquisition_id)
+    )
+    """,
+    """
+    CREATE TABLE watch_thread_revisions (
+        revision_id TEXT PRIMARY KEY,
+        watch_id TEXT NOT NULL,
+        source_thread_id TEXT NOT NULL,
+        sequence INTEGER NOT NULL CHECK (sequence >= 1),
+        previous_revision_id TEXT,
+        substantive_sha256 TEXT NOT NULL,
+        thread_text_sha256 TEXT NOT NULL,
+        snapshot_path TEXT NOT NULL,
+        snapshot_sha256 TEXT NOT NULL,
+        acquisition_id TEXT NOT NULL REFERENCES watch_acquisitions (acquisition_id),
+        run_id TEXT NOT NULL REFERENCES watch_runs (run_id),
+        created_at_utc REAL NOT NULL,
+        changes_json TEXT NOT NULL,
+        UNIQUE (watch_id, source_thread_id, sequence)
+    )
+    """,
+    """
+    CREATE TABLE watch_revision_analyses (
+        revision_id TEXT PRIMARY KEY REFERENCES watch_thread_revisions (revision_id),
+        watch_id TEXT NOT NULL,
+        analysis_path TEXT NOT NULL,
+        analysis_sha256 TEXT NOT NULL,
+        run_id TEXT NOT NULL REFERENCES watch_runs (run_id),
+        analyzed_at_utc REAL NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE watch_sweeps (
+        run_id TEXT PRIMARY KEY REFERENCES watch_runs (run_id),
+        watch_id TEXT NOT NULL,
+        outcome TEXT NOT NULL CHECK (outcome IN ('changes', 'no_changes', 'partial', 'failed')),
+        summary_json TEXT NOT NULL,
+        finished_at_utc REAL NOT NULL
+    )
+    """,
+)
+
+# Each version lists only its additive statements; a later version only appends.
+_SCHEMA_STATEMENTS: dict[int, tuple[str, ...]] = {1: _SCHEMA_V1, 2: _SCHEMA_V2}
 
 
 @dataclass(frozen=True)
@@ -181,9 +355,10 @@ class MonitoringStore:
         return ProfileWriteResult(status, profile.watch_id, revision, content_sha256)
 
     def list_watches(self) -> list[dict[str, Any]]:
-        with self._connect_readonly() as conn:
-            if conn is None:
+        with self._connect_readonly() as handle:
+            if handle is None:
                 return []
+            conn, _version = handle
             rows = conn.execute(
                 "SELECT w.watch_id, w.current_revision, w.created_at_utc, w.updated_at_utc, "
                 "r.content_sha256, r.profile_json FROM watches AS w "
@@ -208,9 +383,10 @@ class MonitoringStore:
 
     def inspect_watch(self, watch_id: str) -> dict[str, Any]:
         validate_watch_id(watch_id)
-        with self._connect_readonly() as conn:
-            if conn is None:
+        with self._connect_readonly() as handle:
+            if handle is None:
                 raise _unknown_watch(watch_id)
+            conn, version = handle
             watch = conn.execute(
                 "SELECT current_revision, created_at_utc, updated_at_utc FROM watches "
                 "WHERE watch_id = ?",
@@ -233,6 +409,7 @@ class MonitoringStore:
                 "ORDER BY claimed_at_utc DESC, rowid DESC LIMIT ?",
                 (watch_id, RECENT_RUN_LIMIT),
             ).fetchall()
+            sweep = _sweep_status(conn, version, watch_id)
         current_revision, created_at, updated_at = watch
         current = [row for row in revisions if row[0] == current_revision]
         if len(current) != 1:
@@ -259,6 +436,7 @@ class MonitoringStore:
             "active_run": next((run for run in recent_runs if run["status"] == "running"), None),
             "run_count": run_count,
             "recent_runs": recent_runs,
+            "sweep": sweep,
         }
 
     def claim_run(self, watch_id: str, *, lease_seconds: int) -> RunClaim:
@@ -330,49 +508,469 @@ class MonitoringStore:
                 "run outcome must be succeeded or failed", details={"outcome": outcome}
             )
         with self._connect_writable(create=False) as conn, _immediate(conn):
-            row = conn.execute(
-                "SELECT owner_token_sha256, status, lease_expires_at_utc, recovered_by_run_id "
-                "FROM watch_runs WHERE run_id = ?",
-                (run_id,),
-            ).fetchone()
-            if row is None:
-                raise RunClaimError(
-                    "run does not exist", details={"reason": "unknown_run", "run_id": run_id}
-                )
-            token_sha256, status, lease_expires, recovered_by = row
-            if not hmac.compare_digest(token_sha256, _token_digest(owner_token)):
-                raise RunClaimError(
-                    "owner token does not match the run claim",
-                    details={"reason": "owner_mismatch", "run_id": run_id},
-                )
-            if status != "running":
-                raise RunClaimError(
-                    "run is no longer owned by this claimant",
-                    details={
-                        "reason": "stale_owner",
-                        "run_id": run_id,
-                        "status": status,
-                        "recovered_by_run_id": recovered_by,
-                    },
-                )
-            now = self._clock()
-            if lease_expires <= now:
-                raise RunClaimError(
-                    "run lease expired before finalization",
-                    details={
-                        "reason": "lease_expired",
-                        "run_id": run_id,
-                        "lease_expires_at_utc": lease_expires,
-                    },
-                )
+            _run_watch_id, now = self._fence_run(conn, run_id, owner_token)
             conn.execute(
                 "UPDATE watch_runs SET status = ?, finished_at_utc = ? "
                 "WHERE run_id = ? AND status = 'running'",
                 (outcome, now, run_id),
             )
 
+    def monitoring_root(self) -> Path:
+        return self.path.parent
+
+    def now(self) -> float:
+        """Read the store clock, the single time source for observation ordering."""
+        return self._clock()
+
+    def load_profile_revision(self, watch_id: str, revision: int) -> WatchProfile:
+        """Load and validate one stored profile revision of a watch."""
+        validate_watch_id(watch_id)
+        if type(revision) is not int or revision < 1:
+            raise MonitoringInputError(
+                "profile revision must be a positive integer", details={"revision": revision}
+            )
+        with self._connect_readonly() as handle:
+            if handle is None:
+                raise _unknown_watch(watch_id)
+            conn, _version = handle
+            watch = conn.execute("SELECT 1 FROM watches WHERE watch_id = ?", (watch_id,)).fetchone()
+            if watch is None:
+                raise _unknown_watch(watch_id)
+            row = conn.execute(
+                "SELECT content_sha256, profile_json FROM watch_revisions "
+                "WHERE watch_id = ? AND revision = ?",
+                (watch_id, revision),
+            ).fetchone()
+        if row is None:
+            raise MonitoringStateError(
+                "watch profile revision does not exist",
+                details={"reason": "revision_missing", "watch_id": watch_id, "revision": revision},
+            )
+        return _load_stored_profile(watch_id, revision, row[0], row[1])
+
+    def record_discoveries(self, claim: RunClaim, discoveries: Sequence[DiscoveredThread]) -> int:
+        """Record a run's discovery list; return the number of newly tracked threads.
+
+        A thread once selected stays tracked, whatever later discoveries decide.
+        """
+        for discovery in discoveries:
+            _validate_discovery(discovery)
+        newly_tracked = 0
+        with self._connect_writable(create=False) as conn, _immediate(conn):
+            now = self._fence_claim(conn, claim)
+            for discovery in discoveries:
+                conn.execute(
+                    "INSERT INTO watch_discoveries (run_id, watch_id, query, source_thread_id, "
+                    "rank, score, num_comments, selected, rejection_reason, observed_at_utc) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        claim.run_id,
+                        claim.watch_id,
+                        discovery.query,
+                        discovery.source_thread_id,
+                        discovery.rank,
+                        discovery.score,
+                        discovery.num_comments,
+                        int(discovery.selected),
+                        discovery.rejection_reason,
+                        now,
+                    ),
+                )
+                if _upsert_watch_thread(conn, claim, discovery, now):
+                    newly_tracked += 1
+        return newly_tracked
+
+    def refresh_queue(self, watch_id: str, limit: int) -> list[TrackedThread]:
+        """Tracked threads in FIFO order, at most `limit` of them.
+
+        Ordered by COALESCE(last_attempted_at_utc, first_discovered_at_utc) ascending, then
+        source_thread_id, so every tracked thread, including a newly discovered one, waits at
+        most ceil(tracked / limit) sweeps.
+        """
+        validate_watch_id(watch_id)
+        _validate_limit(limit)
+        with self._connect_sweep_readonly() as conn:
+            if conn is None:
+                return []
+            rows = conn.execute(
+                "SELECT source_thread_id, thread_url, subreddit, title, last_refreshed_at_utc, "
+                "current_revision_id FROM watch_threads WHERE watch_id = ? AND selected = 1 "
+                "ORDER BY COALESCE(last_attempted_at_utc, first_discovered_at_utc) ASC, "
+                "source_thread_id ASC LIMIT ?",
+                (watch_id, limit),
+            ).fetchall()
+        return [TrackedThread(*row) for row in rows]
+
+    def tracked_thread_count(self, watch_id: str) -> int:
+        validate_watch_id(watch_id)
+        with self._connect_sweep_readonly() as conn:
+            if conn is None:
+                return 0
+            return _count(conn, _TRACKED_THREADS_WHERE, watch_id)
+
+    def thread_history(self, watch_id: str, source_thread_id: str) -> ThreadHistory:
+        """Durable comment history of a thread; an untracked thread has an empty history."""
+        validate_watch_id(watch_id)
+        empty = ThreadHistory(source_thread_id, {}, None, None)
+        with self._connect_sweep_readonly() as conn:
+            if conn is None:
+                return empty
+            thread = conn.execute(
+                "SELECT current_revision_id FROM watch_threads "
+                "WHERE watch_id = ? AND source_thread_id = ?",
+                (watch_id, source_thread_id),
+            ).fetchone()
+            if thread is None:
+                return empty
+            comments = conn.execute(
+                "SELECT comment_id, current_text_sha256, source_created_utc, novelty, "
+                "first_observed_at_utc FROM watch_comments "
+                "WHERE watch_id = ? AND source_thread_id = ? ORDER BY comment_id",
+                (watch_id, source_thread_id),
+            ).fetchall()
+            current_revision_id = thread[0]
+            prior_observed_at = _novelty_cutoff(conn, watch_id, source_thread_id)
+            current = (
+                None
+                if current_revision_id is None
+                else self._revision_ref(conn, watch_id, current_revision_id)
+            )
+        known = {
+            comment_id: KnownComment(
+                comment_id, text_sha256, created_utc, _stored_novelty(novelty), first_observed
+            )
+            for comment_id, text_sha256, created_utc, novelty, first_observed in comments
+        }
+        return ThreadHistory(source_thread_id, known, current, prior_observed_at)
+
+    def record_acquisition(
+        self,
+        claim: RunClaim,
+        acquisition: AcquisitionRecord,
+        revision: RevisionRecord | None,
+    ) -> None:
+        """Record one successful acquisition, its comment history and optional revision."""
+        _validate_acquisition(acquisition)
+        with self._connect_writable(create=False) as conn, _immediate(conn):
+            now = self._fence_claim(conn, claim)
+            thread = _tracked_thread(conn, claim.watch_id, acquisition.source_thread_id)
+            current_revision_id, last_acquisition_id = thread
+            _validate_observed_at(conn, claim.watch_id, acquisition, now)
+            duplicate = conn.execute(
+                "SELECT 1 FROM watch_acquisitions WHERE acquisition_id = ?",
+                (acquisition.acquisition_id,),
+            ).fetchone()
+            if duplicate is not None:
+                raise MonitoringStateError(
+                    "acquisition was already recorded",
+                    details={
+                        "reason": "duplicate_acquisition",
+                        "acquisition_id": acquisition.acquisition_id,
+                    },
+                )
+            if revision is not None and revision.previous_revision_id != current_revision_id:
+                raise MonitoringStateError(
+                    "revision does not extend the thread's current revision",
+                    details={
+                        "reason": "revision_conflict",
+                        "source_thread_id": acquisition.source_thread_id,
+                        "current_revision_id": current_revision_id,
+                        "previous_revision_id": revision.previous_revision_id,
+                    },
+                )
+            raw_path = self._verified_artifact(acquisition.raw_path, acquisition.raw_sha256)
+            normalized_path = self._verified_artifact(
+                acquisition.normalized_path, acquisition.normalized_sha256
+            )
+            snapshot_path = (
+                None
+                if revision is None
+                else self._verified_artifact(revision.snapshot_path, revision.snapshot_sha256)
+            )
+            known = _known_comment_hashes(conn, claim.watch_id, acquisition.source_thread_id)
+            writes = _comment_writes(
+                acquisition, revision, known, first_acquisition=last_acquisition_id is None
+            )
+            conn.execute(
+                "INSERT INTO watch_acquisitions (acquisition_id, watch_id, source_thread_id, "
+                "run_id, observed_at_utc, raw_path, raw_sha256, normalized_path, "
+                "normalized_sha256, completeness, cache_status, parsed_comment_count, "
+                "reported_comment_count, absent_known_comment_count, revision_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    acquisition.acquisition_id,
+                    claim.watch_id,
+                    acquisition.source_thread_id,
+                    claim.run_id,
+                    acquisition.observed_at_utc,
+                    raw_path,
+                    acquisition.raw_sha256,
+                    normalized_path,
+                    acquisition.normalized_sha256,
+                    acquisition.completeness,
+                    acquisition.cache_status,
+                    acquisition.parsed_comment_count,
+                    acquisition.reported_comment_count,
+                    acquisition.absent_known_comment_count,
+                    None if revision is None else revision.revision_id,
+                ),
+            )
+            write = _AcquisitionWrite(claim, acquisition, now)
+            if revision is not None and snapshot_path is not None:
+                _insert_revision(conn, write, revision, snapshot_path)
+                current_revision_id = revision.revision_id
+            _apply_comment_writes(conn, write, writes)
+            conn.execute(
+                "UPDATE watch_threads SET last_attempted_at_utc = ?, last_refreshed_at_utc = ?, "
+                "last_acquisition_id = ?, current_revision_id = ? "
+                "WHERE watch_id = ? AND source_thread_id = ?",
+                (
+                    now,
+                    acquisition.observed_at_utc,
+                    acquisition.acquisition_id,
+                    current_revision_id,
+                    claim.watch_id,
+                    acquisition.source_thread_id,
+                ),
+            )
+
+    def record_failure(
+        self,
+        claim: RunClaim,
+        *,
+        stage: FailureStage,
+        target: str,
+        error: dict[str, Any],
+    ) -> None:
+        """Record a failed sweep step; a failed fetch still counts as an attempt."""
+        if stage not in _FAILURE_STAGES:
+            raise MonitoringInputError(
+                "failure stage must be search, fetch or analyze",
+                details={"reason": "invalid_stage", "stage": stage},
+            )
+        if not isinstance(target, str) or not target:
+            raise MonitoringInputError(
+                "failure target must be a non-empty string",
+                details={"reason": "invalid_target", "target": target},
+            )
+        error_json = _canonical_json(error, "error")
+        with self._connect_writable(create=False) as conn, _immediate(conn):
+            now = self._fence_claim(conn, claim)
+            conn.execute(
+                "INSERT INTO watch_fetch_failures (run_id, watch_id, stage, target, error_json, "
+                "observed_at_utc) VALUES (?, ?, ?, ?, ?, ?)",
+                (claim.run_id, claim.watch_id, stage, target, error_json, now),
+            )
+            if stage == "fetch":
+                _tracked_thread(conn, claim.watch_id, target)
+                conn.execute(
+                    "UPDATE watch_threads SET last_attempted_at_utc = ? "
+                    "WHERE watch_id = ? AND source_thread_id = ?",
+                    (now, claim.watch_id, target),
+                )
+
+    def pending_analyses(self, watch_id: str, limit: int) -> list[RevisionRef]:
+        """Unanalyzed current revisions, oldest first; superseded revisions are skipped."""
+        validate_watch_id(watch_id)
+        _validate_limit(limit)
+        with self._connect_sweep_readonly() as conn:
+            if conn is None:
+                return []
+            rows = conn.execute(
+                f"SELECT {_REVISION_REF_COLUMNS} {_PENDING_ANALYSES_FROM} "
+                "ORDER BY r.created_at_utc ASC, r.revision_id ASC LIMIT ?",
+                (watch_id, limit),
+            ).fetchall()
+        return [self._revision_ref_from_row(row) for row in rows]
+
+    def pending_analysis_count(self, watch_id: str) -> int:
+        validate_watch_id(watch_id)
+        with self._connect_sweep_readonly() as conn:
+            if conn is None:
+                return 0
+            return _pending_analysis_count(conn, watch_id)
+
+    def record_analysis(
+        self, claim: RunClaim, revision_id: str, analysis_path: Path, analysis_sha256: str
+    ) -> None:
+        """Record the analysis of a revision; an already analyzed revision is left untouched."""
+        with self._connect_writable(create=False) as conn, _immediate(conn):
+            now = self._fence_claim(conn, claim)
+            known_revision = conn.execute(
+                "SELECT 1 FROM watch_thread_revisions WHERE revision_id = ? AND watch_id = ?",
+                (revision_id, claim.watch_id),
+            ).fetchone()
+            if known_revision is None:
+                raise MonitoringStateError(
+                    "revision does not exist for this watch",
+                    details={
+                        "reason": "unknown_revision",
+                        "watch_id": claim.watch_id,
+                        "revision_id": revision_id,
+                    },
+                )
+            stored_path = self._verified_artifact(analysis_path, analysis_sha256)
+            analyzed = conn.execute(
+                "SELECT 1 FROM watch_revision_analyses WHERE revision_id = ?", (revision_id,)
+            ).fetchone()
+            if analyzed is not None:
+                # A retry after a committed analysis never overwrites the first record.
+                return
+            conn.execute(
+                "INSERT INTO watch_revision_analyses (revision_id, watch_id, analysis_path, "
+                "analysis_sha256, run_id, analyzed_at_utc) VALUES (?, ?, ?, ?, ?, ?)",
+                (revision_id, claim.watch_id, stored_path, analysis_sha256, claim.run_id, now),
+            )
+
+    def complete_sweep(
+        self, claim: RunClaim, outcome: SweepOutcome, summary: Mapping[str, Any]
+    ) -> None:
+        """Record the sweep outcome and finish its run in the same transaction."""
+        if outcome not in _SWEEP_OUTCOMES:
+            raise MonitoringInputError(
+                "sweep outcome must be changes, no_changes, partial or failed",
+                details={"reason": "invalid_outcome", "outcome": outcome},
+            )
+        summary_json = _canonical_json(dict(summary), "summary")
+        run_status: RunOutcome = "succeeded" if outcome in _SUCCEEDED_SWEEP_OUTCOMES else "failed"
+        with self._connect_writable(create=False) as conn, _immediate(conn):
+            now = self._fence_claim(conn, claim)
+            conn.execute(
+                "INSERT INTO watch_sweeps (run_id, watch_id, outcome, summary_json, "
+                "finished_at_utc) VALUES (?, ?, ?, ?, ?)",
+                (claim.run_id, claim.watch_id, outcome, summary_json, now),
+            )
+            conn.execute(
+                "UPDATE watch_runs SET status = ?, finished_at_utc = ? "
+                "WHERE run_id = ? AND status = 'running'",
+                (run_status, now, claim.run_id),
+            )
+
+    def sweep_status(self, watch_id: str) -> dict[str, Any]:
+        validate_watch_id(watch_id)
+        with self._connect_readonly() as handle:
+            if handle is None:
+                return _sweep_status(None, 0, watch_id)
+            conn, version = handle
+            return _sweep_status(conn, version, watch_id)
+
+    def _verified_artifact(self, path: Path, sha256: str) -> str:
+        """Verify an artifact inside the monitoring root; return its stored relative path."""
+        root = self.monitoring_root().resolve()
+        resolved = path.resolve()
+        details: dict[str, Any] = {"path": str(path), "monitoring_root": str(root)}
+        if not resolved.is_relative_to(root):
+            raise MonitoringStateError(
+                "artifact is outside the monitoring state directory",
+                details={"reason": "artifact_outside_state", **details},
+            )
+        try:
+            actual = _file_sha256(resolved)
+        except (FileNotFoundError, IsADirectoryError, NotADirectoryError) as error:
+            raise MonitoringStateError(
+                "artifact does not exist", details={"reason": "artifact_missing", **details}
+            ) from error
+        if not hmac.compare_digest(actual, sha256):
+            raise MonitoringStateError(
+                "artifact content does not match its recorded hash",
+                details={
+                    "reason": "artifact_hash_mismatch",
+                    "expected_sha256": sha256,
+                    "actual_sha256": actual,
+                    **details,
+                },
+            )
+        return resolved.relative_to(root).as_posix()
+
+    def _revision_ref(
+        self, conn: sqlite3.Connection, watch_id: str, revision_id: str
+    ) -> RevisionRef:
+        row = conn.execute(
+            f"SELECT {_REVISION_REF_COLUMNS} FROM watch_thread_revisions AS r "
+            "WHERE r.revision_id = ? AND r.watch_id = ?",
+            (revision_id, watch_id),
+        ).fetchone()
+        if row is None:
+            raise MonitoringStateError(
+                "thread current revision is missing",
+                details={
+                    "reason": "revision_missing",
+                    "watch_id": watch_id,
+                    "revision_id": revision_id,
+                },
+            )
+        return self._revision_ref_from_row(row)
+
+    def _revision_ref_from_row(self, row: tuple[Any, ...]) -> RevisionRef:
+        revision_id, thread_id, sequence, snapshot, snapshot_sha256, text_sha256, created = row
+        return RevisionRef(
+            revision_id=revision_id,
+            source_thread_id=thread_id,
+            sequence=int(sequence),
+            snapshot_path=self.monitoring_root() / snapshot,
+            snapshot_sha256=snapshot_sha256,
+            thread_text_sha256=text_sha256,
+            created_at_utc=created,
+        )
+
+    def _fence_run(
+        self, conn: sqlite3.Connection, run_id: str, owner_token: str
+    ) -> tuple[str, float]:
+        """Refuse unless the caller owns the live lease of the run; return its watch and now."""
+        row = conn.execute(
+            "SELECT watch_id, owner_token_sha256, status, lease_expires_at_utc, "
+            "recovered_by_run_id FROM watch_runs WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            raise RunClaimError(
+                "run does not exist", details={"reason": "unknown_run", "run_id": run_id}
+            )
+        run_watch_id, token_sha256, status, lease_expires, recovered_by = row
+        if not hmac.compare_digest(token_sha256, _token_digest(owner_token)):
+            raise RunClaimError(
+                "owner token does not match the run claim",
+                details={"reason": "owner_mismatch", "run_id": run_id},
+            )
+        if status != "running":
+            raise RunClaimError(
+                "run is no longer owned by this claimant",
+                details={
+                    "reason": "stale_owner",
+                    "run_id": run_id,
+                    "status": status,
+                    "recovered_by_run_id": recovered_by,
+                },
+            )
+        now = self._clock()
+        if lease_expires <= now:
+            raise RunClaimError(
+                "run lease expired before finalization",
+                details={
+                    "reason": "lease_expired",
+                    "run_id": run_id,
+                    "lease_expires_at_utc": lease_expires,
+                },
+            )
+        return str(run_watch_id), now
+
+    def _fence_claim(self, conn: sqlite3.Connection, claim: RunClaim) -> float:
+        """Fence a claim and verify it belongs to the watch its run was claimed for."""
+        run_watch_id, now = self._fence_run(conn, claim.run_id, claim.owner_token)
+        if run_watch_id != claim.watch_id:
+            raise RunClaimError(
+                "claim watch does not match the run claim",
+                details={
+                    "reason": "owner_mismatch",
+                    "run_id": claim.run_id,
+                    "watch_id": claim.watch_id,
+                    "run_watch_id": run_watch_id,
+                },
+            )
+        return now
+
     @contextmanager
-    def _connect_readonly(self) -> Iterator[sqlite3.Connection | None]:
+    def _connect_readonly(self) -> Iterator[tuple[sqlite3.Connection, int] | None]:
         if not self.path.exists():
             yield None
             return
@@ -383,9 +981,18 @@ class MonitoringStore:
                 yield None
                 return
             try:
-                yield conn
+                yield conn, version
             except sqlite3.Error as error:
                 raise _sqlite_failure(error, self.path, "read_failed") from error
+
+    @contextmanager
+    def _connect_sweep_readonly(self) -> Iterator[sqlite3.Connection | None]:
+        """Read sweep tables; a missing state or a pre-sweep schema reads as empty."""
+        with self._connect_readonly() as handle:
+            if handle is None or handle[1] < _SWEEP_SCHEMA_VERSION:
+                yield None
+                return
+            yield handle[0]
 
     @contextmanager
     def _connect_writable(self, *, create: bool) -> Iterator[sqlite3.Connection]:
@@ -411,10 +1018,14 @@ class MonitoringStore:
         with closing(self._open(f"{self.path.resolve().as_uri()}?mode={mode}")) as conn:
             conn.execute("PRAGMA foreign_keys = ON")
             with _immediate(conn):
-                if _require_supported_schema(conn, self.path, allow_uninitialized=True) == 0:
-                    for statement in _SCHEMA_V1:
-                        conn.execute(statement)
-                    conn.execute(f"PRAGMA application_id = {STATE_APPLICATION_ID}")
+                version = _require_supported_schema(conn, self.path, allow_uninitialized=True)
+                if version < STATE_SCHEMA_VERSION:
+                    # Additive evolution: apply every later version's statements in order.
+                    for schema_version in range(version + 1, STATE_SCHEMA_VERSION + 1):
+                        for statement in _SCHEMA_STATEMENTS[schema_version]:
+                            conn.execute(statement)
+                    if version == 0:
+                        conn.execute(f"PRAGMA application_id = {STATE_APPLICATION_ID}")
                     conn.execute(f"PRAGMA user_version = {STATE_SCHEMA_VERSION}")
             yield conn
 
@@ -611,7 +1222,7 @@ def _require_supported_schema(
                 "supported_schema_version": STATE_SCHEMA_VERSION,
             },
         )
-    if application_id == STATE_APPLICATION_ID and version == STATE_SCHEMA_VERSION:
+    if application_id == STATE_APPLICATION_ID and 1 <= version <= STATE_SCHEMA_VERSION:
         return int(version)
     if application_id == 0 and version == 0 and table_count == 0 and allow_uninitialized:
         return 0
@@ -677,3 +1288,6 @@ def _unknown_watch(watch_id: str) -> MonitoringStateError:
     return MonitoringStateError(
         "watch does not exist", details={"reason": "unknown_watch", "watch_id": watch_id}
     )
+
+
+# Only a thread's current revision is due: its snapshot contains every superseded one.

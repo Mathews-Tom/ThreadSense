@@ -1,0 +1,62 @@
+[
+  {
+    "kind": "Listing",
+    "data": {
+      "children": [
+        {
+          "kind": "t3",
+          "data": {
+            "id": "sc1bbb",
+            "title": "Resolving a sync conflict in a shared vault",
+            "selftext": "Our team vault shows conflict copies every morning after the nightly sync.",
+            "subreddit": "SyncTools",
+            "author": "vault_admin",
+            "permalink": "/r/SyncTools/comments/sc1bbb/resolving_a_sync_conflict_in_a_shared_vault/",
+            "score": 27,
+            "num_comments": 2,
+            "created_utc": 1760000050.0
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "Listing",
+    "data": {
+      "children": [
+        {
+          "kind": "t1",
+          "data": {
+            "id": "kb1",
+            "author": "vault_admin",
+            "body": "Conflict copies appear in the shared vault every morning after the nightly job runs.",
+            "score": 8,
+            "created_utc": 1760000120.0,
+            "parent_id": "t3_sc1bbb",
+            "permalink": "/r/SyncTools/comments/sc1bbb/resolving_a_sync_conflict_in_a_shared_vault/kb1/",
+            "replies": {
+              "kind": "Listing",
+              "data": {
+                "children": [
+                  {
+                    "kind": "t1",
+                    "data": {
+                      "id": "kb2",
+                      "author": "ops_helper",
+                      "body": "Check whether two machines run the nightly job at the same minute.",
+                      "score": 3,
+                      "created_utc": 1760000180.0,
+                      "parent_id": "t1_kb1",
+                      "permalink": "/r/SyncTools/comments/sc1bbb/resolving_a_sync_conflict_in_a_shared_vault/kb2/",
+                      "replies": ""
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+]

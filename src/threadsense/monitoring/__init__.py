@@ -14,16 +14,31 @@ from threadsense.monitoring.state import (
     RunClaim,
     monitoring_state_path,
 )
+from threadsense.monitoring.sweep import SweepResult, run_watch_sweep
+from threadsense.monitoring.sweep_records import (
+    CommentChange,
+    RevisionRef,
+    SweepOutcome,
+    ThreadHistory,
+    TrackedThread,
+)
 
 __all__ = [
     "STATE_SCHEMA_VERSION",
     "WATCH_PROFILE_VERSION",
+    "CommentChange",
     "MonitoringStore",
     "ProfileWriteResult",
+    "RevisionRef",
     "RunClaim",
+    "SweepOutcome",
+    "SweepResult",
+    "ThreadHistory",
+    "TrackedThread",
     "WatchLimits",
     "WatchProfile",
     "load_watch_profile_file",
     "monitoring_state_path",
     "parse_watch_profile",
+    "run_watch_sweep",
 ]
