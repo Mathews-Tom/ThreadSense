@@ -10,11 +10,6 @@ from threadsense.cli import main
 from threadsense.config import RedditConfig
 from threadsense.connectors.reddit import RedditConnector, RedditThreadRequest
 
-LIVE_REDDIT_URL = (
-    "https://www.reddit.com/r/ClaudeCode/comments/1ro0qbl/"
-    "anyone_actually_built_a_second_brain_that_isnt/"
-)
-
 
 def load_fixture(name: str) -> object:
     return json.loads(Path(f"tests/fixtures/reddit/raw/{name}").read_text(encoding="utf-8"))
@@ -109,20 +104,59 @@ def test_cli_fetch_reddit_writes_artifact(
     assert len(artifact["comments"]) == 2
 
 
-@pytest.mark.live_reddit
-def test_live_reddit_smoke() -> None:
-    output_path = Path("tests/fixtures/reddit/raw/live-smoke-output.json")
+def test_recorded_reddit_acquisition_smoke(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Replay committed Reddit acquisition evidence; no live Reddit claim."""
+    fixture = load_fixture("normal_thread.json")
+    assert isinstance(fixture, list)
+    thread_url = "https://www.reddit.com/r/ThreadSense/comments/abc123/normal_thread"
+    requests: list[str] = []
+
+    def recorded_transport(
+        url: str,
+        headers: Mapping[str, str],
+        params: Mapping[str, str | int | float | bool],
+        timeout: float,
+    ) -> object:
+        assert url == f"{thread_url}.json"
+        assert headers["User-Agent"] == "threadsense/recorded-acquisition-test"
+        assert params["limit"] == 500
+        assert timeout == 15
+        requests.append(url)
+        return fixture
+
+    connector = RedditConnector(
+        config=RedditConfig(
+            user_agent="threadsense/recorded-acquisition-test",
+            timeout_seconds=15,
+            max_retries=0,
+            backoff_seconds=0.1,
+            request_delay_seconds=0,
+            listing_limit=500,
+        ),
+        transport=recorded_transport,
+        sleeper=lambda value: None,
+    )
+    monkeypatch.setattr("threadsense.cli.build_reddit_connector", lambda config: connector)
+    monkeypatch.setenv("THREADSENSE_STORAGE_ROOT", str(tmp_path / "store"))
+    output_path = tmp_path / "recorded-smoke-output.json"
     exit_code = main(
         [
             "fetch",
             "reddit",
-            LIVE_REDDIT_URL,
+            thread_url,
             "--output",
             str(output_path),
         ]
     )
 
     assert exit_code == 0
+    assert requests == [f"{thread_url}.json"]
     artifact = json.loads(output_path.read_text(encoding="utf-8"))
     assert artifact["source"] == "reddit"
-    output_path.unlink(missing_ok=True)
+    assert artifact["post"]["id"] == "abc123"
+    assert artifact["total_comment_count"] == 3
+    assert len(artifact["comments"]) == 2
+    assert artifact["comments"][0]["replies"][0]["id"] == "c1a"

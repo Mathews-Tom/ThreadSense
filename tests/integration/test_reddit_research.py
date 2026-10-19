@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -10,11 +11,13 @@ from threadsense.cli import main
 from threadsense.cli_display import set_output_mode
 from threadsense.config import RedditConfig
 from threadsense.connectors.reddit import (
+    QueryParams,
     RedditConnector,
     RedditSearchMatch,
     RedditSearchRequest,
     RedditSearchResult,
     RedditThreadRequest,
+    RedditThreadResult,
 )
 
 
@@ -82,9 +85,19 @@ def test_research_reddit_builds_corpus_from_selected_subreddits(
                 ],
             )
 
-        def fetch_thread(self, scrape_request: RedditThreadRequest):
+        def fetch_thread(self, scrape_request: RedditThreadRequest) -> RedditThreadResult:
             for marker, fixture in fixtures.items():
                 if marker in scrape_request.post_url:
+
+                    def transport(
+                        url: str,
+                        headers: Mapping[str, str],
+                        params: QueryParams,
+                        timeout: float,
+                        fixture_payload: list[dict[str, Any]] = fixture,
+                    ) -> list[dict[str, Any]]:
+                        return fixture_payload
+
                     connector = RedditConnector(
                         config=RedditConfig(
                             user_agent=self._config.user_agent,
@@ -94,7 +107,7 @@ def test_research_reddit_builds_corpus_from_selected_subreddits(
                             request_delay_seconds=0,
                             listing_limit=self._config.listing_limit,
                         ),
-                        transport=lambda url, headers, params, timeout, fixture=fixture: fixture,
+                        transport=transport,
                         sleeper=lambda value: None,
                     )
                     return connector.fetch_thread(scrape_request)
@@ -105,6 +118,7 @@ def test_research_reddit_builds_corpus_from_selected_subreddits(
         lambda config: FixtureConnector(config.reddit),
     )
     monkeypatch.setenv("THREADSENSE_STORAGE_ROOT", str(tmp_path / "store"))
+    monkeypatch.setenv("THREADSENSE_RUNTIME_ENABLED", "false")
 
     exit_code = main(
         [
@@ -147,6 +161,7 @@ def test_research_reddit_rejects_unsupported_advanced_query_syntax(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.setenv("THREADSENSE_STORAGE_ROOT", str(tmp_path / "store"))
+    monkeypatch.setenv("THREADSENSE_RUNTIME_ENABLED", "false")
 
     exit_code = main(
         [

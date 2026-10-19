@@ -179,20 +179,18 @@ def _default_confidence(finding: object | None) -> float:
     return min(base, 0.95)
 
 
-def _default_why_now(finding: object | None) -> str:
+def _default_why_now(finding: AnalysisFinding | None) -> str:
     if finding is None:
         return (
             "The thread did not produce enough structured evidence for a stronger recommendation."
         )
     return (
-        f"{getattr(finding, 'theme_label').title()} is the strongest evidence cluster by severity "
+        f"{finding.theme_label.title()} is the strongest evidence cluster by severity "
         "and supporting comments in this thread."
     )
 
 
-def _default_expected_outcome(finding: object | None) -> str:
+def _default_expected_outcome(finding: AnalysisFinding | None) -> str:
     if finding is None:
         return "Clarify whether the thread contains a stable action signal."
-    return (
-        f"Reduce the most visible {getattr(finding, 'theme_label')} friction raised in the thread."
-    )
+    return f"Reduce the most visible {finding.theme_label} friction raised in the thread."

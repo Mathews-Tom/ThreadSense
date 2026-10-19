@@ -9,7 +9,8 @@ from threadsense.cli import main
 from threadsense.config import RedditConfig
 from threadsense.connectors.reddit import RedditConnector, RedditThreadRequest
 from threadsense.inference import InferenceResponse, InferenceTask
-from threadsense.models.canonical import load_canonical_thread
+from threadsense.models.analysis import load_analysis_artifact_file
+from threadsense.models.canonical import Thread, load_canonical_thread
 from threadsense.pipeline.analyze import analyze_thread
 
 
@@ -22,7 +23,8 @@ def build_analysis_artifact(tmp_path: Path) -> Path:
     return analysis_path
 
 
-def test_infer_analysis_uses_live_local_runtime(
+@pytest.mark.usefixtures("loopback_runtime")
+def test_infer_analysis_uses_loopback_runtime(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -46,6 +48,12 @@ def test_infer_analysis_uses_live_local_runtime(
     assert payload["used_fallback"] is False
     assert payload["output"]["headline"]
     assert payload["output"]["cited_theme_keys"]
+    findings = load_analysis_artifact_file(analysis_path).findings
+    assert set(payload["output"]["cited_theme_keys"]) <= {finding.theme_key for finding in findings}
+    assert payload["output"]["cited_comment_ids"]
+    assert set(payload["output"]["cited_comment_ids"]) <= {
+        comment_id for finding in findings for comment_id in finding.evidence_comment_ids
+    }
 
 
 def test_infer_analysis_falls_back_when_runtime_is_disabled(
@@ -74,6 +82,7 @@ def test_infer_analysis_falls_back_when_runtime_is_disabled(
     assert payload["used_fallback"] is True
 
 
+@pytest.mark.usefixtures("loopback_runtime")
 def test_end_to_end_fetch_normalize_analyze_and_infer(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -148,6 +157,15 @@ def test_end_to_end_fetch_normalize_analyze_and_infer(
     assert analysis_path.exists()
     assert infer_report["provider"] == "local_openai_compatible"
     assert infer_report["output"]["headline"]
+    findings = load_analysis_artifact_file(analysis_path).findings
+    assert infer_report["output"]["cited_theme_keys"]
+    assert set(infer_report["output"]["cited_theme_keys"]) <= {
+        finding.theme_key for finding in findings
+    }
+    assert infer_report["output"]["cited_comment_ids"]
+    assert set(infer_report["output"]["cited_comment_ids"]) <= {
+        comment_id for finding in findings for comment_id in finding.evidence_comment_ids
+    }
 
 
 def test_infer_analysis_loads_thread_context_for_summary(
@@ -214,5 +232,5 @@ def test_infer_analysis_loads_thread_context_for_summary(
     assert captured["task"] == "analysis_summary"
     assert captured["required"] is True
     thread = captured["thread"]
-    assert thread is not None
-    assert getattr(thread, "title") == "Deterministic analysis fixture thread"
+    assert isinstance(thread, Thread)
+    assert thread.title == "Deterministic analysis fixture thread"

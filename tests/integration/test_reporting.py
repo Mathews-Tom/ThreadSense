@@ -63,9 +63,12 @@ def build_analysis_artifact(tmp_path: Path) -> Path:
 
 
 def test_report_analysis_writes_json_artifact(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    monkeypatch.setenv("THREADSENSE_RUNTIME_ENABLED", "false")
+    monkeypatch.setenv("THREADSENSE_STORAGE_ROOT", str(tmp_path / "store"))
     analysis_path = build_analysis_artifact(tmp_path)
     report_path = tmp_path / "report.json"
     capsys.readouterr()
@@ -90,7 +93,8 @@ def test_report_analysis_writes_json_artifact(
     assert report_payload["artifact_kind"] == "thread_report"
 
 
-def test_report_analysis_writes_markdown_with_live_summary(
+@pytest.mark.usefixtures("loopback_runtime")
+def test_report_analysis_writes_markdown_with_loopback_summary(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -121,6 +125,7 @@ def test_report_analysis_writes_markdown_with_live_summary(
     assert "## Findings" in markdown
 
 
+@pytest.mark.usefixtures("loopback_runtime")
 def test_end_to_end_fetch_normalize_analyze_and_report(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -194,6 +199,7 @@ def test_end_to_end_fetch_normalize_analyze_and_report(
     assert report_exit == 0
     assert markdown_path.exists()
     assert "Representative Quotes" in markdown_path.read_text(encoding="utf-8")
+    assert report_output["summary_provider"] == "local_openai_compatible"
 
 
 def test_run_reddit_executes_the_full_pipeline(
@@ -229,6 +235,7 @@ def test_run_reddit_executes_the_full_pipeline(
         lambda config: FixtureConnector(config.reddit),
     )
     monkeypatch.setenv("THREADSENSE_STORAGE_ROOT", str(tmp_path / "store"))
+    monkeypatch.setenv("THREADSENSE_RUNTIME_ENABLED", "false")
 
     exit_code = main(
         [
@@ -249,7 +256,8 @@ def test_run_reddit_executes_the_full_pipeline(
     assert Path(payload["report"]["output_path"]).exists()
 
 
-def test_run_reddit_can_require_a_live_summary(
+@pytest.mark.usefixtures("loopback_runtime")
+def test_run_reddit_can_require_a_loopback_summary(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

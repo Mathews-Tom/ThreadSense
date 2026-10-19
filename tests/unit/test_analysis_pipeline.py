@@ -7,7 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from threadsense.config import AnalysisConfig
-from threadsense.contracts import AbstractionLevel, AnalysisContract
+from threadsense.contracts import AbstractionLevel, AnalysisContract, DomainType
 from threadsense.domains import load_domain_vocabulary
 from threadsense.models.analysis import load_analysis_artifact_file
 from threadsense.models.canonical import (
@@ -228,7 +228,7 @@ def test_analyze_thread_uses_requested_domain_vocabulary() -> None:
     analysis = analyze_thread(
         thread,
         Path("tests/fixtures/analysis/canonical_feedback_thread.json"),
-        config=AnalysisConfig(domain="hiring_careers"),
+        config=AnalysisConfig(domain=DomainType.HIRING_CAREERS),
     )
 
     assert [finding.theme_key for finding in analysis.findings] == ["process", "compensation"]
@@ -241,7 +241,7 @@ def test_analyze_thread_rejects_unknown_domain() -> None:
         analyze_thread(
             thread,
             load_canonical_fixture(),
-            config=AnalysisConfig(domain="missing_domain"),
+            config=AnalysisConfig.model_validate({"domain": "missing_domain"}),
         )
 
     assert "Input should be" in str(exc_info.value)

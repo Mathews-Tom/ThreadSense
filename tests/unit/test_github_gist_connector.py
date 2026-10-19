@@ -11,6 +11,7 @@ from threadsense.config import GitHubGistConfig
 from threadsense.connectors import FetchRequest, SourceConnector
 from threadsense.connectors.github_gist import (
     GitHubGistConnector,
+    GitHubGistResult,
     normalize_url,
     parse_timestamp,
 )
@@ -152,6 +153,7 @@ class TestGitHubGistConnector:
             FetchRequest(url="https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f")
         )
 
+        assert isinstance(result, GitHubGistResult)
         assert result.source_name == "github_gist"
         assert result.source_thread_id == "442a6bf555914893e9891c11519de94f"
         assert result.thread_title == "Deep Learning Curriculum"

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from threadsense.contracts import DomainType
 from threadsense.domains import load_domain_vocabulary
-from threadsense.models.canonical import Thread
+from threadsense.models.canonical import Comment, Thread
 from threadsense.pipeline.strategies.keyword_heuristic import build_comment_signal, classify_theme
 
 
@@ -81,7 +81,7 @@ def detect_domain(
 
 
 def _score_domain(
-    comments: list,
+    comments: list[Comment],
     domain: DomainType,
 ) -> DomainScore:
     vocabulary = load_domain_vocabulary(domain.value)

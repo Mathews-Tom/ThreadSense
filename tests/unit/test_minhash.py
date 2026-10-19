@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from threadsense.models.canonical import AuthorRef, Comment
 from threadsense.pipeline.strategies.keyword_heuristic import (
+    CommentSignal,
     _band_hashes,
     _build_candidate_pairs,
     _detect_duplicate_clusters_bruteforce,
@@ -25,6 +26,15 @@ def _comment(comment_id: str, body: str, score: int = 1) -> Comment:
         depth=0,
         permalink="https://example.com",
     )
+
+
+def _signals(comments: list[Comment]) -> list[CommentSignal]:
+    signals = []
+    for comment in comments:
+        signal = build_comment_signal(comment)
+        assert signal is not None, f"fixture comment {comment.comment_id} must yield a signal"
+        signals.append(signal)
+    return signals
 
 
 def test_token_shingles_generates_character_ngrams() -> None:
@@ -71,7 +81,7 @@ def test_build_candidate_pairs_finds_duplicates() -> None:
         _comment("c2", "the docs are slow and confusing"),
         _comment("c3", "performance is great keep going"),
     ]
-    signals = [build_comment_signal(c) for c in comments]
+    signals = _signals(comments)
     pairs = _build_candidate_pairs(signals)
     assert ("c1", "c2") in pairs or ("c2", "c1") in pairs
 
@@ -84,7 +94,7 @@ def test_bruteforce_and_minhash_agree_on_exact_duplicates() -> None:
         _comment("c4", "need better error messages please"),
         _comment("c5", "need better error messages please"),
     ]
-    signals = [build_comment_signal(c) for c in comments]
+    signals = _signals(comments)
 
     bruteforce = _detect_duplicate_clusters_bruteforce(signals, 0.88)
     minhash = _detect_duplicate_clusters_minhash(signals, 0.88)
@@ -100,7 +110,7 @@ def test_detect_duplicate_clusters_small_set_uses_bruteforce() -> None:
         _comment("c2", "duplicate text here"),
         _comment("c3", "unique comment body"),
     ]
-    signals = [build_comment_signal(c) for c in comments]
+    signals = _signals(comments)
     clusters = detect_duplicate_clusters(signals, 0.88)
     assert len(clusters) == 1
     assert set(clusters[0].comment_ids) == {"c1", "c2"}
@@ -112,7 +122,7 @@ def test_no_duplicates_yields_empty_clusters() -> None:
         _comment("c2", "second different comment"),
         _comment("c3", "third unrelated text"),
     ]
-    signals = [build_comment_signal(c) for c in comments]
+    signals = _signals(comments)
     clusters = detect_duplicate_clusters(signals, 0.88)
     assert clusters == []
 
@@ -126,7 +136,7 @@ def test_minhash_path_with_large_set() -> None:
         body = f"this is a repeated comment about error handling group {i}"
         comments.append(_comment(f"d{i}a", body))
         comments.append(_comment(f"d{i}b", body))
-    signals = [build_comment_signal(c) for c in comments]
+    signals = _signals(comments)
     clusters = detect_duplicate_clusters(signals, 0.88)
     cluster_sets = {frozenset(c.comment_ids) for c in clusters}
     for i in range(5):

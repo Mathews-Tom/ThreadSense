@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from threadsense.models.corpus import CorpusAnalysis, CorpusProvenance, DomainType
+from threadsense.contracts import DomainType
+from threadsense.models.corpus import CorpusAnalysis, CorpusProvenance
 from threadsense.pipeline.corpus_index import index_corpus, load_index, search_index
 
 

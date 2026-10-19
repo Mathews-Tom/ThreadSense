@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 
+import httpx
 import pytest
 
 from threadsense.cli import main
@@ -19,6 +21,7 @@ from threadsense.preflight import (
 def test_preflight_reports_ready_when_runtime_probe_succeeds(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
 ) -> None:
     def fake_send_json_request(
         url: str,
@@ -48,6 +51,11 @@ def test_preflight_reports_ready_when_runtime_probe_succeeds(
         "threadsense.inference.local_runtime.send_json_request",
         fake_send_json_request,
     )
+    monkeypatch.setenv("THREADSENSE_STORAGE_ROOT", str(tmp_path / "store"))
+    monkeypatch.setattr(
+        "threadsense.preflight.httpx.Client.head",
+        lambda self, url, headers: httpx.Response(200, request=httpx.Request("HEAD", url)),
+    )
 
     exit_code = main(["preflight"])
     output = capsys.readouterr().out
@@ -60,11 +68,13 @@ def test_preflight_reports_ready_when_runtime_probe_succeeds(
     statuses = {d["name"]: d["status"] for d in payload["diagnostics"]}
     assert statuses["python_version"] == "pass"
     assert statuses["storage_directory"] == "pass"
+    assert statuses["reddit_reachable"] == "pass"
 
 
 def test_preflight_reports_degraded_when_runtime_probe_fails(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(
         "threadsense.inference.local_runtime.LocalRuntimeClient.probe",
@@ -81,6 +91,11 @@ def test_preflight_reports_degraded_when_runtime_probe_fails(
             error="network_error: runtime endpoint is unreachable",
         ),
     )
+    monkeypatch.setenv("THREADSENSE_STORAGE_ROOT", str(tmp_path / "store"))
+    monkeypatch.setattr(
+        "threadsense.preflight.httpx.Client.head",
+        lambda self, url, headers: httpx.Response(200, request=httpx.Request("HEAD", url)),
+    )
 
     exit_code = main(["preflight"])
     output = capsys.readouterr().out
@@ -90,11 +105,16 @@ def test_preflight_reports_degraded_when_runtime_probe_fails(
     assert payload["status"] == "degraded"
     assert payload["runtime_check"]["ok"] is False
     assert "diagnostics" in payload
+    statuses = {d["name"]: d["status"] for d in payload["diagnostics"]}
+    assert statuses["reddit_reachable"] == "pass"
 
 
 def test_preflight_skip_runtime_includes_diagnostics_without_network(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    monkeypatch.setenv("THREADSENSE_STORAGE_ROOT", str(tmp_path / "store"))
     exit_code = main(["preflight", "--skip-runtime"])
     output = capsys.readouterr().out
     payload = json.loads(output)
@@ -127,8 +147,8 @@ def test_check_storage_directory_passes_for_writable_dir(
     assert "writable" in result.message
 
 
-def test_run_diagnostic_checks_skip_network_excludes_reddit() -> None:
-    config = AppConfig()
+def test_run_diagnostic_checks_skip_network_excludes_reddit(tmp_path: Path) -> None:
+    config = AppConfig.model_validate({"storage": {"root_dir": str(tmp_path / "store")}})
     checks = run_diagnostic_checks(config, skip_network=True)
     names = [c.name for c in checks]
     assert "python_version" in names

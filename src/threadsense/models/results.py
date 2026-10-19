@@ -164,7 +164,7 @@ class ReportResult:
     terminal_summary: RunTerminalSummary | None
 
     def to_dict(self) -> dict[str, Any]:
-        payload = {
+        payload: dict[str, Any] = {
             "status": self.status,
             "artifact_type": self.artifact_type,
             "input_path": str(self.input_path),
@@ -235,7 +235,7 @@ class CorpusReportResult:
     terminal_summary: ResearchTerminalSummary | None
 
     def to_dict(self) -> dict[str, Any]:
-        payload = {
+        payload: dict[str, Any] = {
             "status": self.status,
             "input_path": str(self.input_path),
             "output_path": str(self.output_path),
