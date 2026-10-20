@@ -1,0 +1,19 @@
+# Watch profile for the recorded issue-history sequence in phases.json.
+# Budgets cover every thread in each sweep, so each phase refreshes all tracked threads.
+profile_version = 1
+id = "export-issues"
+name = "Note export issue history"
+domain = "developer_tools"
+objective = "friction_analysis"
+abstraction_level = "operational"
+queries = ["export crash"]
+subreddits = ["DevNotes", "NoteApps"]
+refresh_interval_minutes = 60
+include_terms = []
+exclude_terms = []
+
+[limits]
+discovered_candidates = 10
+refreshed_threads = 10
+analyzed_revisions = 10
+presented_findings = 20

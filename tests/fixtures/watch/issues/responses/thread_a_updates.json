@@ -1,0 +1,108 @@
+[
+  {
+    "kind": "Listing",
+    "data": {
+      "children": [
+        {
+          "kind": "t3",
+          "data": {
+            "id": "ix1aaa",
+            "title": "Markdown export crashes on large vaults",
+            "selftext": "Every export crash happens halfway through a vault with thousands of notes.",
+            "subreddit": "DevNotes",
+            "author": "orbit_writer",
+            "permalink": "/r/DevNotes/comments/ix1aaa/markdown_export_crashes_on_large_vaults/",
+            "score": 52,
+            "num_comments": 6,
+            "created_utc": 1760000000.0
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "Listing",
+    "data": {
+      "children": [
+        {
+          "kind": "t1",
+          "data": {
+            "id": "ia1",
+            "author": "harbor_notes",
+            "body": "The markdown export crash happens every time my vault has more than five thousand notes; the exporter throws an error and writes nothing.",
+            "score": 4,
+            "created_utc": 1760000300.0,
+            "parent_id": "t3_ix1aaa",
+            "permalink": "/r/DevNotes/comments/ix1aaa/markdown_export_crashes_on_large_vaults/ia1/",
+            "replies": ""
+          }
+        },
+        {
+          "kind": "t1",
+          "data": {
+            "id": "ia2",
+            "author": "pine_dev",
+            "body": "Seeing the same markdown export crash on a vault with large attachments, the error dialog appears after a few minutes.",
+            "score": 4,
+            "created_utc": 1760000600.0,
+            "parent_id": "t3_ix1aaa",
+            "permalink": "/r/DevNotes/comments/ix1aaa/markdown_export_crashes_on_large_vaults/ia2/",
+            "replies": ""
+          }
+        },
+        {
+          "kind": "t1",
+          "data": {
+            "id": "ia3",
+            "author": "pine_dev",
+            "body": "Steps to reproduce: create a vault with five thousand notes, add one large attachment, then run the markdown export; the crash follows within minutes.",
+            "score": 4,
+            "created_utc": 1760007200.0,
+            "parent_id": "t3_ix1aaa",
+            "permalink": "/r/DevNotes/comments/ix1aaa/markdown_export_crashes_on_large_vaults/ia3/",
+            "replies": ""
+          }
+        },
+        {
+          "kind": "t1",
+          "data": {
+            "id": "ia4",
+            "author": "calm_tester",
+            "body": "I cannot reproduce the markdown export crash on 2.3.1 with ten thousand notes, the exporter finishes without any error for me.",
+            "score": 4,
+            "created_utc": 1760007300.0,
+            "parent_id": "t3_ix1aaa",
+            "permalink": "/r/DevNotes/comments/ix1aaa/markdown_export_crashes_on_large_vaults/ia4/",
+            "replies": ""
+          }
+        },
+        {
+          "kind": "t1",
+          "data": {
+            "id": "ia5",
+            "author": "harbor_notes",
+            "body": "Workaround: split the vault into two folders before the markdown export and the crash stops happening for me.",
+            "score": 4,
+            "created_utc": 1760007400.0,
+            "parent_id": "t3_ix1aaa",
+            "permalink": "/r/DevNotes/comments/ix1aaa/markdown_export_crashes_on_large_vaults/ia5/",
+            "replies": ""
+          }
+        },
+        {
+          "kind": "t1",
+          "data": {
+            "id": "ia6",
+            "author": "news_reader",
+            "body": "The markdown export crash is fixed in 2.4 according to the release notes, no error after updating.",
+            "score": 4,
+            "created_utc": 1760007500.0,
+            "parent_id": "t3_ix1aaa",
+            "permalink": "/r/DevNotes/comments/ix1aaa/markdown_export_crashes_on_large_vaults/ia6/",
+            "replies": ""
+          }
+        }
+      ]
+    }
+  }
+]

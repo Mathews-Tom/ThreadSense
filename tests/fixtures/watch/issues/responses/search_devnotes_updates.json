@@ -1,0 +1,78 @@
+{
+  "kind": "Listing",
+  "data": {
+    "after": null,
+    "children": [
+      {
+        "kind": "t3",
+        "data": {
+          "id": "ix1aaa",
+          "title": "Markdown export crashes on large vaults",
+          "selftext": "Every export crash happens halfway through a vault with thousands of notes.",
+          "subreddit": "DevNotes",
+          "author": "orbit_writer",
+          "permalink": "/r/DevNotes/comments/ix1aaa/markdown_export_crashes_on_large_vaults/",
+          "score": 52,
+          "num_comments": 6,
+          "created_utc": 1760000000.0
+        }
+      },
+      {
+        "kind": "t3",
+        "data": {
+          "id": "ix1bbb",
+          "title": "Exporter fails after the latest update",
+          "selftext": "Since updating, every export crash leaves my vault half written.",
+          "subreddit": "DevNotes",
+          "author": "lena_codes",
+          "permalink": "/r/DevNotes/comments/ix1bbb/exporter_fails_after_the_latest_update/",
+          "score": 31,
+          "num_comments": 2,
+          "created_utc": 1760003600.0
+        }
+      },
+      {
+        "kind": "t3",
+        "data": {
+          "id": "ix1ddd",
+          "title": "Login setup loop since the outage",
+          "selftext": "Not an export crash: the app keeps sending me back to the login setup since the outage.",
+          "subreddit": "DevNotes",
+          "author": "kai_sync",
+          "permalink": "/r/DevNotes/comments/ix1ddd/login_setup_loop_since_the_outage/",
+          "score": 18,
+          "num_comments": 2,
+          "created_utc": 1760090000.0
+        }
+      },
+      {
+        "kind": "t3",
+        "data": {
+          "id": "ix1eee",
+          "title": "Invoices doubled in the billing dashboard",
+          "selftext": "Not an export crash: every invoice shows up twice since the outage.",
+          "subreddit": "DevNotes",
+          "author": "ravi_ops",
+          "permalink": "/r/DevNotes/comments/ix1eee/invoices_doubled_in_the_billing_dashboard/",
+          "score": 22,
+          "num_comments": 2,
+          "created_utc": 1760093600.0
+        }
+      },
+      {
+        "kind": "t3",
+        "data": {
+          "id": "ix1fff",
+          "title": "Plugin crash wipes the cache folder",
+          "selftext": "An older export crash thread about the sync plugin cache.",
+          "subreddit": "DevNotes",
+          "author": "old_timer",
+          "permalink": "/r/DevNotes/comments/ix1fff/plugin_crash_wipes_the_cache_folder/",
+          "score": 9,
+          "num_comments": 2,
+          "created_utc": 1752000000.0
+        }
+      }
+    ]
+  }
+}

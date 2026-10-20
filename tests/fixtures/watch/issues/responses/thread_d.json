@@ -1,0 +1,56 @@
+[
+  {
+    "kind": "Listing",
+    "data": {
+      "children": [
+        {
+          "kind": "t3",
+          "data": {
+            "id": "ix1ddd",
+            "title": "Login setup loop since the outage",
+            "selftext": "Not an export crash: the app keeps sending me back to the login setup since the outage.",
+            "subreddit": "DevNotes",
+            "author": "kai_sync",
+            "permalink": "/r/DevNotes/comments/ix1ddd/login_setup_loop_since_the_outage/",
+            "score": 18,
+            "num_comments": 2,
+            "created_utc": 1760090000.0
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "Listing",
+    "data": {
+      "children": [
+        {
+          "kind": "t1",
+          "data": {
+            "id": "id1",
+            "author": "kai_sync",
+            "body": "Since the outage at https://status.example.com/incidents/77 the login setup screen is confusing and my config resets whenever I reopen the app.",
+            "score": 4,
+            "created_utc": 1760090100.0,
+            "parent_id": "t3_ix1ddd",
+            "permalink": "/r/DevNotes/comments/ix1ddd/login_setup_loop_since_the_outage/id1/",
+            "replies": ""
+          }
+        },
+        {
+          "kind": "t1",
+          "data": {
+            "id": "id2",
+            "author": "mira_ux",
+            "body": "The login setup screen also resets my config here, the confusing loop began right after that notice.",
+            "score": 4,
+            "created_utc": 1760090500.0,
+            "parent_id": "t3_ix1ddd",
+            "permalink": "/r/DevNotes/comments/ix1ddd/login_setup_loop_since_the_outage/id2/",
+            "replies": ""
+          }
+        }
+      ]
+    }
+  }
+]

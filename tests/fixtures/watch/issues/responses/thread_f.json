@@ -1,0 +1,56 @@
+[
+  {
+    "kind": "Listing",
+    "data": {
+      "children": [
+        {
+          "kind": "t3",
+          "data": {
+            "id": "ix1fff",
+            "title": "Plugin crash wipes the cache folder",
+            "selftext": "An older export crash thread about the sync plugin cache.",
+            "subreddit": "DevNotes",
+            "author": "old_timer",
+            "permalink": "/r/DevNotes/comments/ix1fff/plugin_crash_wipes_the_cache_folder/",
+            "score": 9,
+            "num_comments": 2,
+            "created_utc": 1752000000.0
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "Listing",
+    "data": {
+      "children": [
+        {
+          "kind": "t1",
+          "data": {
+            "id": "if1",
+            "author": "old_timer",
+            "body": "The sync plugin crash wipes the cache folder and every reload shows an error banner.",
+            "score": 4,
+            "created_utc": 1752000100.0,
+            "parent_id": "t3_ix1fff",
+            "permalink": "/r/DevNotes/comments/ix1fff/plugin_crash_wipes_the_cache_folder/if1/",
+            "replies": ""
+          }
+        },
+        {
+          "kind": "t1",
+          "data": {
+            "id": "if2",
+            "author": "cache_watch",
+            "body": "Same sync plugin crash here, the cache folder vanished and the error banner keeps returning.",
+            "score": 4,
+            "created_utc": 1752000400.0,
+            "parent_id": "t3_ix1fff",
+            "permalink": "/r/DevNotes/comments/ix1fff/plugin_crash_wipes_the_cache_folder/if2/",
+            "replies": ""
+          }
+        }
+      ]
+    }
+  }
+]

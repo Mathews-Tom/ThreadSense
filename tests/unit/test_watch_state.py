@@ -967,13 +967,13 @@ def test_list_watches_hot_journal_on_v1_state_recovers_without_upgrade(tmp_path:
     ],
     ids=["refresh_queue", "sweep_status", "thread_history", "claim"],
 )
-def test_store_version_4_state_is_refused_without_modification(
+def test_store_newer_schema_state_is_refused_without_modification(
     tmp_path: Path, operation: Callable[[MonitoringStore], object]
 ) -> None:
     store = store_at(tmp_path)
     store.save_profile(parse_watch_profile(fixture_payload()))
     with closing(sqlite3.connect(store.path)) as conn:
-        conn.execute("PRAGMA user_version = 4")
+        conn.execute(f"PRAGMA user_version = {STATE_SCHEMA_VERSION + 1}")
         conn.commit()
     before = directory_snapshot(store.path.parent)
 
@@ -981,7 +981,7 @@ def test_store_version_4_state_is_refused_without_modification(
         operation(store)
 
     assert raised.value.details["reason"] == "unsupported_schema_version"
-    assert raised.value.details["schema_version"] == 4
+    assert raised.value.details["schema_version"] == STATE_SCHEMA_VERSION + 1
     assert directory_snapshot(store.path.parent) == before
 
 
@@ -1500,6 +1500,12 @@ def create_v2_state_with_analysis(
     store.record_analysis(claim, initial.revision_id, path, sha256)
     store.complete_sweep(claim, "changes", {"refresh": {"pending": 0}})
     with closing(sqlite3.connect(store.path)) as conn:
+        # Tables of every later schema version go, so the file is a genuine version 2 state.
+        later_tables = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'watch_issue%'"
+        ).fetchall()
+        for (table,) in later_tables:
+            conn.execute(f"DROP TABLE {table}")
         conn.execute("DROP TABLE watch_digest_entries")
         conn.execute("DROP TABLE watch_digests")
         conn.execute("PRAGMA user_version = 2")
