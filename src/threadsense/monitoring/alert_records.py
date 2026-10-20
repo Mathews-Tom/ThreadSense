@@ -325,7 +325,6 @@ def build_report(
             "collection_basis",
             "discovery_sampling",
             "issue_policy",
-            "ranking_policy",
         )
     }
     previous = conn.execute(

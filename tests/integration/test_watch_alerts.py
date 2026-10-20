@@ -429,3 +429,25 @@ def test_alert_presentation_refuses_live_competing_claim_without_rewriting_histo
     code, reused = run_cli("watch", "alerts", "--id", WATCH_ID)
     assert code == 0 and reused["report_id"] == baseline["report_id"]
     assert reused["new_alert_ids"] == []
+
+
+def test_ranking_policy_change_preserves_new_evidence_comparison(
+    watch: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from threadsense.monitoring.ranking import DEFAULT_RANKING_POLICY, parse_ranking_policy
+
+    baseline = sweep(monkeypatch, "initial")
+    frozen = artifact_bytes(baseline)
+    document = DEFAULT_RANKING_POLICY.to_dict()
+    document["severity"]["high"] += 1
+    policy = parse_ranking_policy(document)
+    MonitoringStore(watch).select_ranking_policy(WATCH_ID, policy)
+    changed = sweep(monkeypatch, "search_omits_known")
+    assert changed["cohort_id"] == baseline["cohort_id"]
+    assert cited(changed, "reddit:ka4")
+    assert changed["new_alert_ids"]
+    assert read_report(changed)["basis"]["ranking_policy"]["policy_id"] == policy.policy_id
+    assert artifact_bytes(baseline) == frozen
+    code, replayed = run_cli("watch", "alerts", "--id", WATCH_ID)
+    assert code == 0 and replayed["alert_ids"] == changed["alert_ids"]
+    assert replayed["new_alert_ids"] == []

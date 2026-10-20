@@ -46,15 +46,25 @@ def run_alerts(scenario: Any) -> None:
             check(
                 result["status"] == "baseline" and not result["alert_ids"], "baseline became demand"
             )
-        elif phase in ("unchanged", "score_only", "partial", "backlog"):
+        elif phase in ("unchanged", "score_only", "partial"):
             check(not result["new_alert_ids"], f"{phase}: repeated or absent evidence alerted")
-        elif phase == "search_omits_known":
+        elif phase in ("search_omits_known", "edit", "reappear"):
+            expected = {
+                "search_omits_known": "reddit:ka4",
+                "edit": "reddit:kb2",
+                "reappear": "reddit:ka5",
+            }[phase]
             citations = [citation for event in result["alerts"] for citation in event["evidence"]]
             check(
-                any(citation["comment_id"] == "reddit:ka4" for citation in citations),
-                "new reply not cited",
+                any(item["comment_id"] == expected for item in citations),
+                f"{phase}: missing citation",
             )
-            check(result["new_alert_ids"], "new reply produced no alert")
+            check(result["new_alert_ids"], f"{phase}: changed evidence produced no alert")
+            if phase == "reappear":
+                check(
+                    not any(item["comment_id"] == "reddit:ka2" for item in citations),
+                    "known reappearing evidence alerted",
+                )
         for event in result["alerts"]:
             check(event["claims_are_verified"] is False, "claim presented as verified")
             check(event["evidence"], "uncited alert")
