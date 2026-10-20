@@ -26,6 +26,7 @@ from threadsense.decisions.annotate import AnnotationJob, annotate_canonical_thr
 from threadsense.decisions.client import TypedDecisionClient
 from threadsense.decisions.contracts import Requirement
 from threadsense.decisions.evaluate import EvaluationJob, evaluate_frozen_assessment
+from threadsense.decisions.policy import check_activation_policy, publish_policy_check
 from threadsense.decisions.runtime import CheckpointVerifier, load_pinned_runtime_manifest
 from threadsense.errors import DecisionInputError, ThreadSenseError
 from threadsense.evaluation import load_golden_manifest
@@ -1079,6 +1080,33 @@ def _build_decisions_parser(
         help="Replay a content-addressed generative capture offline without model requests.",
     )
     _add_config_argument(evaluate_parser)
+
+    policy_parser = decisions_subparsers.add_parser(
+        "policy",
+        help="Check typed decision activation eligibility offline; never activates anything.",
+    )
+    policy_subparsers = policy_parser.add_subparsers(dest="policy_command", required=True)
+    policy_check_parser = policy_subparsers.add_parser(
+        "check",
+        help="Check a saved evaluation against an optional activation policy.",
+    )
+    policy_check_parser.add_argument(
+        "--evaluation",
+        required=True,
+        type=Path,
+        help="Saved evaluation document (<evaluation_sha256>.json from decisions evaluate).",
+    )
+    policy_check_parser.add_argument(
+        "--policy",
+        type=Path,
+        help="Operator-authored activation policy JSON. Omitted: reported as policy_not_declared.",
+    )
+    policy_check_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        help="Artifact root. Defaults to <storage root>/<annotations dirname>.",
+    )
+    _add_config_argument(policy_check_parser)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2173,6 +2201,41 @@ def run_decisions_evaluate(config_path: Path | None, options: DecisionsEvaluateO
     return 0
 
 
+@dataclass(frozen=True)
+class DecisionsPolicyCheckOptions:
+    evaluation_path: Path
+    policy_path: Path | None
+    output_dir: Path | None
+
+
+def run_decisions_policy_check(
+    config_path: Path | None, options: DecisionsPolicyCheckOptions
+) -> int:
+    _logger, config = load_cli_context(config_path)
+    output_root, protected_roots = _annotation_roots(config, options.output_dir)
+    result = check_activation_policy(
+        policy_path=options.policy_path,
+        evaluation_path=options.evaluation_path,
+        runtime_manifest=load_pinned_runtime_manifest(),
+    )
+    declared_inputs = (options.evaluation_path, options.policy_path)
+    outcome = publish_policy_check(
+        result,
+        output_root=output_root,
+        protected_roots=protected_roots,
+        input_paths=tuple(path for path in declared_inputs if path is not None and path.exists()),
+    )
+    emit_payload(
+        {
+            "artifact_type": "decision_policy_check",
+            "status": result.eligibility.value,
+            "mode": "shadow",
+            **outcome.to_dict(),
+        }
+    )
+    return 0
+
+
 def _dispatch_decisions_command(args: argparse.Namespace) -> int:
     match args.decisions_command:
         case "annotate":
@@ -2198,8 +2261,25 @@ def _dispatch_decisions_command(args: argparse.Namespace) -> int:
                     generative_capture_path=args.generative_capture,
                 ),
             )
+        case "policy":
+            return _dispatch_decisions_policy_command(args)
         case _:
             raise _CommandDispatchError(args.decisions_command)
+
+
+def _dispatch_decisions_policy_command(args: argparse.Namespace) -> int:
+    match args.policy_command:
+        case "check":
+            return run_decisions_policy_check(
+                args.config,
+                DecisionsPolicyCheckOptions(
+                    evaluation_path=args.evaluation,
+                    policy_path=args.policy,
+                    output_dir=args.output_dir,
+                ),
+            )
+        case _:
+            raise _CommandDispatchError(args.policy_command)
 
 
 def _dispatch_watch_command(args: argparse.Namespace) -> int:
