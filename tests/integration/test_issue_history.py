@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import re
 import shutil
 import sqlite3
 import time
@@ -31,7 +32,7 @@ from threadsense.cli import main
 from threadsense.cli_display import set_output_mode
 from threadsense.monitoring import IssuePolicy, MonitoringStore
 from threadsense.monitoring.issue_records import issue_id_for, report_id_for
-from threadsense.monitoring.state import STATE_SCHEMA_VERSION
+from threadsense.monitoring.state import _SCHEMA_STATEMENTS, STATE_SCHEMA_VERSION
 
 FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "watch" / "issues"
 PROFILE_PATH = FIXTURE_DIR / "profile.toml"
@@ -717,6 +718,12 @@ def test_watch_digest_resume_pre_schema_five_pending_digest_renders_schema_one(
     crashed.markdown_path.unlink()
     with closing(sqlite3.connect(crashed.state_path)) as conn:
         conn.execute("DROP TABLE watch_digest_issue_views")
+        # Tables of versions after the issue-view version did not exist in a pre-view state.
+        for schema_version in range(PRE_VIEW_SCHEMA_VERSION + 2, STATE_SCHEMA_VERSION + 1):
+            for statement in _SCHEMA_STATEMENTS[schema_version]:
+                created = re.match(r"\s*CREATE TABLE (\w+)", statement)
+                if created is not None:
+                    conn.execute(f"DROP TABLE {created.group(1)}")
         conn.execute(f"PRAGMA user_version = {PRE_VIEW_SCHEMA_VERSION}")
         conn.commit()
     expire_dead_claim(monkeypatch, crashed.state_path)

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import sqlite3
 from collections.abc import Callable
 from contextlib import closing
@@ -47,6 +48,7 @@ from threadsense.monitoring import (
 from threadsense.monitoring.digest import build_digest_entries
 from threadsense.monitoring.issue_records import LINEAGE_MIN_CHARS, issue_id_for, report_id_for
 from threadsense.monitoring.state import (
+    _SCHEMA_STATEMENTS,
     STATE_SCHEMA_VERSION,
     MonitoringStore,
     monitoring_state_path,
@@ -73,6 +75,7 @@ ISSUE_F = issue_id_for(WATCH_ID, THREAD_F)
 SHARED_LINK = "https://status.example.com/incidents/77"
 LEASE_SECONDS = 600
 PRE_ISSUE_SCHEMA_VERSION = 3
+DIGEST_ISSUE_VIEW_SCHEMA_VERSION = 5
 LOGGER = logging.getLogger("threadsense.tests.issue_store")
 
 
@@ -880,6 +883,12 @@ def test_monitoring_store_pre_issue_schema_upgrades_and_ingests_prior_entries(
             conn.execute(f'DROP {kind.upper()} "{name}"')
         assert conn.execute("SELECT COUNT(*) FROM watch_digest_issue_views").fetchone() == (1,)
         conn.execute("DROP TABLE watch_digest_issue_views")
+        # Tables of versions after the issue-view version did not exist in a pre-issue state.
+        for schema_version in range(DIGEST_ISSUE_VIEW_SCHEMA_VERSION + 1, STATE_SCHEMA_VERSION + 1):
+            for statement in _SCHEMA_STATEMENTS[schema_version]:
+                created = re.match(r"\s*CREATE TABLE (\w+)", statement)
+                if created is not None:
+                    conn.execute(f"DROP TABLE {created.group(1)}")
         conn.execute(f"PRAGMA user_version = {PRE_ISSUE_SCHEMA_VERSION}")
         conn.commit()
     pre_issue_bytes = store.path.read_bytes()
@@ -890,7 +899,7 @@ def test_monitoring_store_pre_issue_schema_upgrades_and_ingests_prior_entries(
     claim = store.claim_run(WATCH_ID, lease_seconds=LEASE_SECONDS)
 
     assert query_rows(store.path, "PRAGMA user_version", ()) == [(STATE_SCHEMA_VERSION,)]
-    assert STATE_SCHEMA_VERSION == 5
+    assert STATE_SCHEMA_VERSION >= DIGEST_ISSUE_VIEW_SCHEMA_VERSION
     assert count_rows(store.path, "watch_digest_issue_views") == 0
     assert query_rows(
         store.path,

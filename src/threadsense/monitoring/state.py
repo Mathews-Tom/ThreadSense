@@ -39,6 +39,15 @@ from threadsense.monitoring.digest_records import (
     _validate_entry,
     digest_id_for,
 )
+from threadsense.monitoring.feedback_records import (
+    _FEEDBACK_SCHEMA_VERSION,
+    FEEDBACK_SCHEMA_STATEMENTS,
+    FeedbackRequest,
+    default_target_kind,
+    empty_feedback_history,
+    feedback_history,
+    record_feedback,
+)
 from threadsense.monitoring.issue_lineage import (
     _empty_issue_ingestion,
     _pending_issue_entries,
@@ -105,7 +114,7 @@ from threadsense.monitoring.sweep_records import (
     _validate_observed_at,
 )
 
-STATE_SCHEMA_VERSION = 5
+STATE_SCHEMA_VERSION = 6
 STATE_APPLICATION_ID = 0x54534D4E
 STATE_FILENAME = "state.sqlite3"
 BUSY_TIMEOUT_SECONDS = 5.0
@@ -300,6 +309,7 @@ _SCHEMA_STATEMENTS: dict[int, tuple[str, ...]] = {
     3: DIGEST_SCHEMA_STATEMENTS,
     4: ISSUE_SCHEMA_STATEMENTS,
     5: DIGEST_ISSUE_VIEW_STATEMENTS,
+    6: FEEDBACK_SCHEMA_STATEMENTS,
 }
 
 
@@ -1132,6 +1142,23 @@ class MonitoringStore:
             if version < _ISSUE_SCHEMA_VERSION:
                 return []
             return _list_issues(conn, watch_id)
+
+    def record_feedback(self, request: FeedbackRequest) -> dict[str, Any]:
+        """Append one validated preference or correction event, idempotent per key."""
+        with self._connect_writable(create=False) as conn, _immediate(conn):
+            self._require_watch(conn, request.watch_id)
+            return record_feedback(conn, request, self.now())
+
+    def feedback_history(self, watch_id: str, target_id: str | None = None) -> dict[str, Any]:
+        """Read preference and correction histories; read-only, never writes state."""
+        validate_watch_id(watch_id)
+        if target_id is not None:
+            default_target_kind(target_id)
+        with self._connect_known_watch_readonly(watch_id) as (conn, version):
+            if version < _FEEDBACK_SCHEMA_VERSION:
+                # A store from before feedback existed holds no feedback for any target.
+                return empty_feedback_history(watch_id)
+            return feedback_history(conn, watch_id, target_id)
 
     @staticmethod
     def _require_watch(conn: sqlite3.Connection, watch_id: str) -> None:

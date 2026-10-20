@@ -3,6 +3,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -25,6 +26,7 @@ from threadsense.monitoring import (
 )
 from threadsense.monitoring.digest_records import DigestEntryRecord
 from threadsense.monitoring.state import (
+    _SCHEMA_STATEMENTS,
     STATE_APPLICATION_ID,
     STATE_SCHEMA_VERSION,
     RunClaim,
@@ -760,6 +762,27 @@ def create_v1_state(store: MonitoringStore) -> None:
             (V1_HISTORY_RUN_ID, profile.watch_id, "0" * 64),
         )
         conn.commit()
+
+
+SCHEMA_OBJECT_PATTERN = re.compile(r"CREATE (TABLE|UNIQUE INDEX|INDEX|TRIGGER) (\w+)")
+
+
+def drop_schema_after(conn: sqlite3.Connection, version: int) -> None:
+    """Drop every object a schema version after `version` creates, as an older state lacks it."""
+    later_objects = [
+        (object_type, name)
+        for schema_version in sorted(_SCHEMA_STATEMENTS)
+        if schema_version > version
+        for statement in _SCHEMA_STATEMENTS[schema_version]
+        for object_type, name in SCHEMA_OBJECT_PATTERN.findall(statement)
+    ]
+    # Triggers and indexes first: dropping a table already drops its own.
+    for object_type, name in reversed(later_objects):
+        if object_type != "TABLE":
+            conn.execute(f"DROP {'TRIGGER' if object_type == 'TRIGGER' else 'INDEX'} {name}")
+    for object_type, name in reversed(later_objects):
+        if object_type == "TABLE":
+            conn.execute(f"DROP TABLE {name}")
 
 
 def schema_identity(store: MonitoringStore) -> tuple[int, int]:
@@ -1500,15 +1523,8 @@ def create_v2_state_with_analysis(
     store.record_analysis(claim, initial.revision_id, path, sha256)
     store.complete_sweep(claim, "changes", {"refresh": {"pending": 0}})
     with closing(sqlite3.connect(store.path)) as conn:
-        # Tables of every later schema version go, so the file is a genuine version 2 state.
-        later_tables = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'watch_issue%'"
-        ).fetchall()
-        for (table,) in later_tables:
-            conn.execute(f"DROP TABLE {table}")
-        conn.execute("DROP TABLE watch_digest_issue_views")
-        conn.execute("DROP TABLE watch_digest_entries")
-        conn.execute("DROP TABLE watch_digests")
+        # Objects of every later schema version go, so the file is a genuine version 2 state.
+        drop_schema_after(conn, 2)
         conn.execute("PRAGMA user_version = 2")
         conn.commit()
     return store, clock, initial, claim.run_id
@@ -1642,7 +1658,7 @@ def create_v4_state_with_pending_digest(
     assert digest is not None
     store.finalize_run(digest_claim.run_id, digest_claim.owner_token, "failed")
     with closing(sqlite3.connect(store.path)) as conn:
-        conn.execute("DROP TABLE watch_digest_issue_views")
+        drop_schema_after(conn, 4)
         conn.execute("PRAGMA user_version = 4")
         conn.commit()
     return store, clock, digest.digest_id
@@ -1660,7 +1676,7 @@ def test_store_v4_state_writable_call_adds_append_only_digest_issue_views(
     claim = store.claim_run(WATCH_ID, lease_seconds=600)
 
     assert schema_identity(store) == (STATE_APPLICATION_ID, STATE_SCHEMA_VERSION)
-    assert STATE_SCHEMA_VERSION == 5
+    assert STATE_SCHEMA_VERSION >= 5
     assert {
         table: query_state(store, f"SELECT * FROM {table} ORDER BY 1") for table in V4_KEPT_TABLES
     } == kept_before
@@ -1683,3 +1699,63 @@ def test_store_v4_state_writable_call_adds_append_only_digest_issue_views(
     assert query_state(store, "SELECT digest_id, view_json FROM watch_digest_issue_views") == [
         (digest_id, '{"entry_refs": []}')
     ]
+
+
+FEEDBACK_TABLES = ("watch_feedback_keys", "watch_preference_events", "watch_correction_events")
+
+
+def create_v5_state_with_history(tmp_path: Path) -> MonitoringStore:
+    """Record sweep history, then drop every later object so the file is a version 5 state."""
+    store, _clock, claim = tracked_store(tmp_path)
+    initial = record_initial(store, claim, FIRST_COMMENT)
+    path, sha256 = write_artifact(
+        store,
+        f"watches/{WATCH_ID}/threads/{THREAD_ID}/analyses/{initial.revision_id}/a.json",
+        b"analysis",
+    )
+    store.record_analysis(claim, initial.revision_id, path, sha256)
+    store.complete_sweep(claim, "changes", {"refresh": {"pending": 0}})
+    with closing(sqlite3.connect(store.path)) as conn:
+        drop_schema_after(conn, 5)
+        conn.execute("PRAGMA user_version = 5")
+        conn.commit()
+    return store
+
+
+def state_tables(store: MonitoringStore) -> list[str]:
+    return [
+        str(name)
+        for (name,) in query_state(
+            store,
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "AND name NOT LIKE 'sqlite_%' ORDER BY name",
+        )
+    ]
+
+
+def test_store_v5_state_writable_call_adds_empty_feedback_tables(tmp_path: Path) -> None:
+    store = create_v5_state_with_history(tmp_path)
+    v5_tables = state_tables(store)
+    rows_before = {
+        table: query_state(store, f"SELECT * FROM {table} ORDER BY 1") for table in v5_tables
+    }
+
+    repeated = store.save_profile(parse_watch_profile(fixture_payload()))
+
+    assert not set(FEEDBACK_TABLES) & set(v5_tables)
+    assert repeated.status == "unchanged"
+    assert schema_identity(store) == (STATE_APPLICATION_ID, STATE_SCHEMA_VERSION)
+    assert {
+        table: query_state(store, f"SELECT * FROM {table} ORDER BY 1") for table in v5_tables
+    } == rows_before
+    assert len(rows_before["watch_thread_revisions"]) == 1
+    assert set(v5_tables) | set(FEEDBACK_TABLES) <= set(state_tables(store))
+    for table in FEEDBACK_TABLES:
+        assert query_state(store, f"SELECT COUNT(*) FROM {table}") == [(0,)]
+    assert store.feedback_history(WATCH_ID) == {
+        "watch_id": WATCH_ID,
+        "preferences": [],
+        "effective_preferences": [],
+        "corrections": [],
+        "correction_view": [],
+    }
