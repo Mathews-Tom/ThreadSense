@@ -4,6 +4,10 @@ Every saved decision is produced by `threadsense decisions annotate` through a r
 socket. The service side returns a synthesized batch response built for the exact request the
 client sends; that is an engineering transport proving wiring, replay and assessment, not
 evidence about any model. Labels are the shipped engineering-authored fixture labels.
+
+`threadsense decisions policy check` runs over those evaluations. Its test-only eligible case uses
+a copy of the same label values disclosed as a constructed test fixture, checked against fixed
+engineering-only tolerances; it exercises the checker and never permits activation.
 """
 
 from __future__ import annotations
@@ -980,3 +984,361 @@ def test_decisions_evaluate_health_unavailable_annotations_count_labels_not_cove
         for item in case["items"]:
             if item["partition"] == "evaluation":
                 assert item["outcome"] == "not_covered"
+
+
+# --- 5. activation policy check ---------------------------------------------------------------
+
+POLICY_QUESTION = "theme"
+MISSING_LABELS_QUESTION = "actionability"
+POLICY_CHECKS_DIRNAME = "policy-checks"
+STALE_SHA256 = "0" * 64
+IDENTITY_KEYS = (
+    "runtime_manifest_sha256",
+    "checkpoint_revision",
+    "question_set_sha256",
+    "settings_sha256",
+    "context_policy_sha256",
+    "language",
+)
+# Engineering-only fixture tolerances, fixed before any run and never derived from outcomes.
+# They exercise the checker mechanics on constructed test-only evidence; not quality thresholds.
+TEST_ONLY_TOLERANCES: dict[str, float | int] = {
+    "max_error_rate": 1.0,
+    "min_decision_rate": 0.0,
+    "min_labeled_decided": 1,
+}
+CONSTRUCTED_ORIGIN = {
+    "kind": "constructed_test_fixture",
+    "authored_by": "ThreadSense integration tests, copied from the engineering fixture labels",
+    "method": "Label values copied unchanged; only the origin block is replaced.",
+    "disclosure": (
+        "Constructed test fixture built for tests to exercise the activation policy checker; "
+        "the label values are engineering expectations, not independent adjudication."
+    ),
+}
+TEST_ONLY_DISCLOSURE = (
+    "Test-only policy over a constructed test fixture, built for tests to exercise the "
+    "activation policy checker; its tolerances are not quality thresholds."
+)
+
+PolicyEdit = Callable[[dict[str, Any]], None]
+
+
+@dataclass(frozen=True)
+class PolicyEvidence:
+    """Evaluations of the same annotations under engineering and constructed test-only labels."""
+
+    engineering_path: Path
+    engineering: dict[str, Any]
+    constructed_path: Path
+    constructed: dict[str, Any]
+
+
+def write_constructed_dataset(harness: EvaluateHarness) -> Path:
+    """A dataset copy whose labels keep every value but disclose a constructed test origin."""
+    labels = read_json(DATASET_FIXTURE / "labels.json")
+    constructed = {**labels, "origin": dict(CONSTRUCTED_ORIGIN)}
+    assert constructed["labels"] == labels["labels"]
+    labels_bytes = (json.dumps(constructed, indent=2) + "\n").encode("utf-8")
+
+    def bind_constructed_labels(manifest: dict[str, Any]) -> None:
+        manifest["dataset_id"] = f"{manifest['dataset_id']}-constructed-test-only"
+        manifest["labels"]["sha256"] = hashlib.sha256(labels_bytes).hexdigest()
+
+    manifest_path = harness.dataset("constructed", bind_constructed_labels)
+    (manifest_path.parent / "labels.json").write_bytes(labels_bytes)
+    return manifest_path
+
+
+def evidence_policy(document: dict[str, Any], scope: str = "test_only") -> dict[str, Any]:
+    """A policy bound to every identity of ``document`` with the fixed fixture tolerances."""
+    bindings = {key: document["identity"][key] for key in IDENTITY_KEYS}
+    bindings["dataset_manifest_sha256"] = document["dataset"]["manifest_sha256"]
+    bindings["labels_sha256"] = document["dataset"]["labels"]["sha256"]
+    return {
+        "artifact_kind": "typed_decision_activation_policy",
+        "schema_version": 1,
+        "policy_id": f"integration-{scope}-{POLICY_QUESTION}",
+        "scope": scope,
+        "disclosure": TEST_ONLY_DISCLOSURE,
+        "decision": {"question_id": POLICY_QUESTION, "consumer": "semantic_reranking"},
+        "bindings": bindings,
+        "tolerances": dict(TEST_ONLY_TOLERANCES),
+    }
+
+
+def replace_field(*path: str, value: Any) -> PolicyEdit:
+    def edit(policy: dict[str, Any]) -> None:
+        target = policy
+        for key in path[:-1]:
+            target = target[key]
+        assert path[-1] in target
+        target[path[-1]] = value
+
+    return edit
+
+
+def run_policy_check(
+    harness: EvaluateHarness,
+    evaluation: Path,
+    policy: dict[str, Any] | None = None,
+    output_dir: Path | None = None,
+) -> tuple[int, dict[str, Any]]:
+    argv = ["decisions", "policy", "check", "--evaluation", str(evaluation)]
+    if policy is not None:
+        # A non-finite tolerance is written as its literal JSON token, for example `NaN`.
+        policy_path = write_json(harness.work_root / "policies" / "policy.json", policy)
+        argv += ["--policy", str(policy_path)]
+    if output_dir is not None:
+        argv += ["--output-dir", str(output_dir)]
+    return harness.run_cli(*argv)
+
+
+def published_policy_check(harness: EvaluateHarness, payload: dict[str, Any]) -> dict[str, Any]:
+    path = Path(payload["policy_check_path"])
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == payload["policy_check_sha256"]
+    assert path.stem == payload["policy_check_sha256"]
+    assert path.parent.name == POLICY_CHECKS_DIRNAME
+    assert path.resolve().is_relative_to((harness.store_root / "annotations").resolve())
+    document = read_json(path)
+    assert document["artifact_kind"] == "typed_decision_policy_check"
+    assert document["mode"] == "shadow"
+    assert document["activation"]["performed"] is False
+    assert document["activation"]["permitted"] is payload["activation_permitted"]
+    assert [reason["code"] for reason in document["reasons"]] == payload["reasons"]
+    return document
+
+
+def audit_refs(entries: Sequence[dict[str, Any]]) -> list[tuple[str, str]]:
+    return sorted((entry["thread_id"], entry["comment_id"]) for entry in entries)
+
+
+@pytest.fixture
+def policy_evidence(harness: EvaluateHarness) -> PolicyEvidence:
+    annotations = list(harness.annotate_all().values())
+    engineering_code, engineering = harness.evaluate(annotations)
+    constructed_manifest = write_constructed_dataset(harness)
+    constructed_code, constructed = harness.evaluate(
+        annotations, manifest_path=constructed_manifest
+    )
+    assert (engineering_code, constructed_code) == (0, 0), (engineering, constructed)
+    engineering_path = Path(engineering["evaluation_path"])
+    constructed_path = Path(constructed["evaluation_path"])
+    return PolicyEvidence(
+        engineering_path=engineering_path,
+        engineering=read_json(engineering_path),
+        constructed_path=constructed_path,
+        constructed=read_json(constructed_path),
+    )
+
+
+def test_decisions_policy_check_engineering_evidence_without_policy_reports_not_eligible(
+    harness: EvaluateHarness, policy_evidence: PolicyEvidence
+) -> None:
+    # Act
+    exit_code, payload = run_policy_check(harness, policy_evidence.engineering_path)
+
+    # Assert
+    assert exit_code == 0, payload
+    assert payload["artifact_type"] == "decision_policy_check"
+    assert payload["mode"] == "shadow"
+    assert payload["status"] == payload["eligibility"] == "not_eligible"
+    assert payload["activation_permitted"] is False
+    assert {"policy_not_declared", "held_out_labels_not_independent"} <= set(payload["reasons"])
+    document = published_policy_check(harness, payload)
+    assert document["eligibility"] == "not_eligible"
+    assert document["policy"] is None
+
+
+def test_decisions_policy_check_repeat_run_reproduces_content_addressed_document(
+    harness: EvaluateHarness, policy_evidence: PolicyEvidence
+) -> None:
+    # Arrange
+    first_code, first = run_policy_check(harness, policy_evidence.engineering_path)
+    first_bytes = Path(first["policy_check_path"]).read_bytes()
+
+    # Act
+    second_code, second = run_policy_check(harness, policy_evidence.engineering_path)
+
+    # Assert
+    assert (first_code, second_code) == (0, 0)
+    assert second["policy_check_sha256"] == first["policy_check_sha256"]
+    assert second["policy_check_path"] == first["policy_check_path"]
+    assert Path(second["policy_check_path"]).read_bytes() == first_bytes
+
+
+def test_decisions_policy_check_constructed_test_only_evidence_is_eligible_without_activation(
+    harness: EvaluateHarness, policy_evidence: PolicyEvidence
+) -> None:
+    # Arrange
+    constructed = policy_evidence.constructed
+    assert constructed["claims"]["label_origin"] == "constructed_test_fixture"
+    assert constructed["claims"]["independent_adjudication"] is False
+    assert constructed["partitions"] == policy_evidence.engineering["partitions"]
+    policy = evidence_policy(constructed)
+
+    # Act
+    exit_code, payload = run_policy_check(harness, policy_evidence.constructed_path, policy)
+
+    # Assert
+    assert exit_code == 0, payload
+    assert payload["status"] == payload["eligibility"] == "eligible"
+    assert payload["scope"] == "test_only"
+    assert payload["reasons"] == []
+    assert payload["activation_permitted"] is False
+    document = published_policy_check(harness, payload)
+    assert document["activation"]["permitted"] is False
+    assert document["activation"]["performed"] is False
+    assert {check["status"] for check in document["checks"]} == {"passed"}
+
+
+@pytest.mark.parametrize(
+    ("edit", "evidence", "expected"),
+    [
+        pytest.param(
+            replace_field("bindings", "checkpoint_revision", value="0" * 40),
+            "constructed",
+            ["stale_checkpoint_binding"],
+            id="stale_checkpoint_revision",
+        ),
+        pytest.param(
+            replace_field("bindings", "question_set_sha256", value=STALE_SHA256),
+            "constructed",
+            ["stale_question_binding"],
+            id="stale_question_set_sha256",
+        ),
+        pytest.param(
+            replace_field("bindings", "labels_sha256", value=STALE_SHA256),
+            "constructed",
+            ["stale_dataset_binding"],
+            id="stale_labels_sha256",
+        ),
+        pytest.param(
+            replace_field("bindings", "settings_sha256", value=""),
+            "constructed",
+            ["unbound_binding"],
+            id="unbound_settings_sha256",
+        ),
+        pytest.param(
+            replace_field("scope", value="runtime"),
+            "constructed",
+            ["held_out_labels_not_independent"],
+            id="scope_runtime",
+        ),
+        pytest.param(
+            replace_field("tolerances", "max_error_rate", value=float("nan")),
+            "constructed",
+            ["nonfinite_value"],
+            id="nan_max_error_rate",
+        ),
+        pytest.param(
+            replace_field("tolerances", "min_decision_rate", value=1.5),
+            "constructed",
+            ["tolerance_invalid"],
+            id="min_decision_rate_out_of_range",
+        ),
+        pytest.param(
+            replace_field("tolerances", "min_labeled_decided", value=1_000_000),
+            "constructed",
+            ["insufficient_labeled_items"],
+            id="min_labeled_decided_unreachable",
+        ),
+        pytest.param(
+            replace_field("decision", "question_id", value=MISSING_LABELS_QUESTION),
+            "constructed",
+            ["held_out_labels_missing"],
+            id="question_without_held_out_labels",
+        ),
+        pytest.param(None, "missing", ["evidence_missing"], id="evidence_missing"),
+        pytest.param(
+            None,
+            "engineering",
+            ["test_fixture_origin_mismatch"],
+            id="engineering_evidence_test_only_policy",
+        ),
+    ],
+)
+def test_decisions_policy_check_one_field_invalidation_reports_exactly_one_reason(
+    harness: EvaluateHarness,
+    policy_evidence: PolicyEvidence,
+    edit: PolicyEdit | None,
+    evidence: str,
+    expected: list[str],
+) -> None:
+    # Arrange
+    if evidence == "engineering":
+        evaluation, document = policy_evidence.engineering_path, policy_evidence.engineering
+    else:
+        evaluation, document = policy_evidence.constructed_path, policy_evidence.constructed
+    if evidence == "missing":
+        evaluation = harness.work_root / "missing" / f"{STALE_SHA256}.json"
+        assert not evaluation.exists()
+    policy = evidence_policy(document)
+    if edit is not None:
+        edit(policy)
+
+    # Act
+    exit_code, payload = run_policy_check(harness, evaluation, policy)
+
+    # Assert
+    assert exit_code == 0, payload
+    assert payload["status"] == payload["eligibility"] == "not_eligible"
+    assert payload["activation_permitted"] is False
+    assert payload["reasons"] == expected
+    published_policy_check(harness, payload)
+
+
+def test_decisions_policy_check_output_inside_protected_storage_refuses(
+    harness: EvaluateHarness, policy_evidence: PolicyEvidence
+) -> None:
+    # Arrange
+    protected = harness.store_root / "normalized" / POLICY_CHECKS_DIRNAME
+    policy = evidence_policy(policy_evidence.constructed)
+
+    # Act
+    exit_code, payload = run_policy_check(
+        harness, policy_evidence.constructed_path, policy, output_dir=protected
+    )
+
+    # Assert
+    assert exit_code == 1
+    assert_error(payload, "decision_input_error", "output_inside_protected_storage")
+    assert not protected.exists()
+
+
+def test_decisions_policy_check_held_out_audit_reconciles_with_evaluation_partition(
+    harness: EvaluateHarness, policy_evidence: PolicyEvidence
+) -> None:
+    # Arrange
+    evaluation = policy_evidence.constructed
+    audit = evaluation["audit"]
+    metrics = evaluation["partitions"]["evaluation"]["questions"][POLICY_QUESTION]
+
+    # Act
+    exit_code, payload = run_policy_check(
+        harness, policy_evidence.constructed_path, evidence_policy(evaluation)
+    )
+
+    # Assert
+    assert exit_code == 0, payload
+    held_out = published_policy_check(harness, payload)["held_out"]
+    assert held_out["partition"] == "evaluation"
+    assert held_out["question_id"] == POLICY_QUESTION
+    assert (held_out["eligible"], held_out["abstained"], held_out["decided"]) == (
+        metrics["eligible"],
+        metrics["abstained"],
+        metrics["decided"],
+    )
+    assert held_out["labeled_decided"] == metrics["labels"]["labeled_decided"]
+    assert held_out["error_rate"] == metrics["labels"]["error_rate"]
+    in_partition = {
+        kind: [entry for entry in audit[kind] if entry["partition"] == "evaluation"]
+        for kind in ("rejected", "excluded", "abstained")
+    }
+    question_abstained = [
+        entry for entry in in_partition["abstained"] if entry["question_id"] == POLICY_QUESTION
+    ]
+    assert audit_refs(held_out["audit"]["rejected"]) == audit_refs(in_partition["rejected"])
+    assert audit_refs(held_out["audit"]["excluded"]) == audit_refs(in_partition["excluded"])
+    assert audit_refs(held_out["audit"]["abstained"]) == audit_refs(question_abstained)
+    assert len(question_abstained) == metrics["abstained"]
