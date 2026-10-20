@@ -102,7 +102,7 @@ Bounds, output shapes and refusal reasons: [docs/usage.md](docs/usage.md).
 
 ### Operator feedback
 
-`feedback record` appends one operator event about a digest entry, a thread revision or an issue of a watch, and `feedback list` shows a watch's feedback history without writing state. Feedback comes in two separate kinds stored in separate append-only tables. A preference (`useful`, `irrelevant`, `already_known`, `wrong_audience`) is a subjective presentation signal, and the latest preference for a scope supersedes earlier ones without deleting them. A correction (`misclassified`, `unsupported`, `duplicate`, `missing_evidence`) is an auditable operator assertion recorded beside the unchanged original; it is not a truth label. Every event carries a watch-scoped idempotency key: repeating a key with identical feedback returns the original event, and reusing it for different feedback is refused. Targets are resolved before anything is written, so an unknown target or a target owned by another watch is refused. This release records preferences as presentation signals only: no command reorders digests by them yet. Corrections never change evidence, findings, counts, issue membership or written digests and reports.
+`feedback record` appends one operator event about a digest entry, a thread revision or an issue of a watch, and `feedback list` shows a watch's feedback history without writing state. Feedback comes in two separate kinds stored in separate append-only tables. A preference (`useful`, `irrelevant`, `already_known`, `wrong_audience`) is a subjective presentation signal, and the latest preference for a scope supersedes earlier ones without deleting them. A correction (`misclassified`, `unsupported`, `duplicate`, `missing_evidence`) is an auditable operator assertion recorded beside the unchanged original; it is not a truth label. Every event carries a watch-scoped idempotency key: repeating a key with identical feedback returns the original event, and reusing it for different feedback is refused. Targets are resolved before anything is written, so an unknown target or a target owned by another watch is refused. New digests present their entries in a ranked order with a reason per ranking component, and a preference changes only that presentation order: it never selects, hides or drops an entry. Corrections are not a ranking input, and they never change evidence, findings, counts, issue membership or written digests and reports.
 
 ```bash
 uv run threadsense feedback record --watch agent-memory --target ENTRY_ID --kind preference --value useful --key KEY
@@ -111,6 +111,23 @@ uv run threadsense feedback list --watch agent-memory [--target TARGET_ID]
 ```
 
 Target kinds, output shapes and refusal reasons: [docs/usage.md](docs/usage.md).
+
+### Ranking and explanations
+
+A digest selects the same entries it always has (the oldest unpresented ones) and then presents them in a ranked order. Each entry's score is the sum of bounded integer components from the watch's active ranking policy: finding severity, the profile objective's weight on the finding's existing action signal, the most novel kind of new evidence, a capped count of novel comments, and the operator's latest preferences per scope clamped to a bound. Ties fall back to the existing deterministic order and finally the entry id. No semantic component is scored: it is disclosed as `not_eligible` and contributes nothing. Ranking never hides, drops or rewrites an entry.
+
+Ranking policies are immutable TOML documents identified by a content hash (`pol-` ids). Every watch starts on a built-in default policy. `watch policy` shows the active policy and its selection history, `--set` records a policy file and selects it, and `--select` switches back to any recorded policy or the default. Selecting appends an event and affects only digests recorded afterwards; written digests are never rewritten.
+
+Each digest records the exact basis it was ranked from: the profile revision, the policy id and the latest preference sequence. `watch explain` replays that basis for one entry and refuses unless the replayed ranking equals the one in the written digest, so the historical order and its reasons are proven rather than restated. `--current` additionally shows how the same entries would rank under the current basis, derived on demand and never recorded.
+
+```bash
+uv run threadsense watch policy --id agent-memory
+uv run threadsense watch policy --id agent-memory --set PATH
+uv run threadsense watch policy --id agent-memory --select POLICY_ID
+uv run threadsense watch explain --id agent-memory --entry ENTRY_ID [--current]
+```
+
+Policy format, allowed ranges, output shapes and refusal reasons: [docs/usage.md](docs/usage.md).
 
 ### Typed decision annotations (shadow)
 
@@ -210,6 +227,8 @@ uv run threadsense research reddit \
 | `inspect`         | Examine persisted artifacts                         |
 | `batch run`       | Process multiple threads                            |
 | `watch`           | Save, sweep, digest and schedule research profiles  |
+| `watch explain`   | Replay and explain a digest entry's rank            |
+| `watch policy`    | Show or select a watch's ranking policy             |
 | `issues`          | Inspect and link cross-thread issue history         |
 | `feedback record` | Record an operator preference or correction         |
 | `feedback list`   | List a watch's preferences and corrections          |

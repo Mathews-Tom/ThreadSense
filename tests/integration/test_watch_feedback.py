@@ -2,7 +2,8 @@
 
 Replays tests/fixtures/watch/incremental/ (synthesized Reddit payloads; see its README.md,
 never live data) through in-process `threadsense.cli.main` with JSON output: `watch run`,
-`watch digest`, `issues inspect` and the `feedback record|list` commands.
+`watch digest`, `watch explain`, `watch policy`, `issues inspect` and the
+`feedback record|list` commands.
 """
 
 from __future__ import annotations
@@ -10,9 +11,12 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import re
 import sqlite3
+import time
 from contextlib import closing, redirect_stdout
 from dataclasses import dataclass, replace
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +32,7 @@ from threadsense.cli import main
 from threadsense.cli_display import set_output_mode
 from threadsense.config import AppConfig
 from threadsense.connectors.reddit import RedditConnector
+from threadsense.monitoring import MonitoringStore
 from threadsense.monitoring.state import STATE_FILENAME
 
 FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "watch" / "incremental"
@@ -774,3 +779,820 @@ def test_feedback_history_after_later_run_and_digest_is_unchanged(
     assert history_after == history_before
     assert (later["target_id"], later["sequence"]) == (presented, 2)
     assert (later["scope_kind"], later["scope_key"]) == ("entry", presented)
+
+
+# Ranking: digest artifacts, explanations and policy files.
+
+LATER_PHASES = ("unchanged", "score_only", "search_omits_known")
+SEVERITY_ORDER = {"high": 3, "medium": 2, "low": 1}
+KIND_ORDER = {"finding": 0, "thread_update": 1}
+COMPONENTS = ["severity", "objective", "novelty", "evidence", "preference", "semantic"]
+POLICY_ID = re.compile(r"pol-[0-9a-f]{32}")
+EntryKey = tuple[str, str, str | None]
+
+
+class ProcessDeathError(BaseException):
+    """Simulates the process dying mid-digest: nothing in the CLI may handle it."""
+
+
+@dataclass(frozen=True)
+class DigestFiles:
+    digest_id: str
+    status: str
+    json_path: Path
+    markdown_path: Path
+
+    def document(self) -> dict[str, Any]:
+        document: dict[str, Any] = json.loads(self.json_path.read_text(encoding="utf-8"))
+        return document
+
+    def hashes(self) -> tuple[str, str]:
+        return (
+            hashlib.sha256(self.json_path.read_bytes()).hexdigest(),
+            hashlib.sha256(self.markdown_path.read_bytes()).hexdigest(),
+        )
+
+
+def digests_of(state_path: Path, watch_id: str) -> list[DigestFiles]:
+    rows = query_rows(
+        state_path,
+        "SELECT digest_id, status, json_path, markdown_path FROM watch_digests "
+        "WHERE watch_id = ? ORDER BY sequence",
+        (watch_id,),
+    )
+    root = state_path.parent
+    return [
+        DigestFiles(str(digest_id), str(status), root / str(json_rel), root / str(markdown_rel))
+        for digest_id, status, json_rel, markdown_rel in rows
+    ]
+
+
+def latest_digest(state_path: Path, watch_id: str) -> DigestFiles:
+    return digests_of(state_path, watch_id)[-1]
+
+
+def present_digest(watch_id: str) -> dict[str, Any]:
+    exit_code, payload = run_cli("watch", "digest", "--id", watch_id)
+    assert exit_code == 0, payload
+    assert payload["status"] == "presented", payload
+    return payload
+
+
+def run_later_phases(monkeypatch: pytest.MonkeyPatch, watch_id: str) -> dict[str, Any]:
+    """Replay phases after `initial` up to the next new revision; return its run payload."""
+    payloads = [watch_run(monkeypatch, watch_id, name) for name in LATER_PHASES]
+    assert payloads[-1]["digest"]["status"] == "presented", payloads[-1]
+    return payloads[-1]
+
+
+def entry_payloads(state_path: Path, watch_id: str) -> dict[str, str]:
+    rows = query_rows(
+        state_path,
+        "SELECT entry_id, payload_json FROM watch_digest_entries WHERE watch_id = ?",
+        (watch_id,),
+    )
+    return {str(entry_id): str(payload_json) for entry_id, payload_json in rows}
+
+
+def top_finding(state_path: Path, watch_id: str) -> str:
+    """Thread B's unpresented finding with the higher severity."""
+    severities = {
+        str(entry_id): SEVERITY_ORDER[str(json.loads(payload_json)["severity"])]
+        for entry_id, payload_json in query_rows(
+            state_path,
+            "SELECT entry_id, payload_json FROM watch_digest_entries "
+            "WHERE watch_id = ? AND source_thread_id = ? AND kind = 'finding' "
+            "AND digest_id IS NULL",
+            (watch_id, THREAD_B),
+        )
+    }
+    assert len(set(severities.values())) == 2, severities
+    return max(severities, key=severities.__getitem__)
+
+
+def entry_key(entry: dict[str, Any]) -> EntryKey:
+    """An entry's evidence identity, equal across watches replaying the same fixture."""
+    theme_key = entry.get("theme_key")
+    return (str(entry["kind"]), str(entry["source_thread_id"]), theme_key)
+
+
+def keys_by_id(document: dict[str, Any]) -> dict[str, EntryKey]:
+    return {str(entry["entry_id"]): entry_key(entry) for entry in document["entries"]}
+
+
+def ranked_items(document: dict[str, Any]) -> list[dict[str, Any]]:
+    order: list[dict[str, Any]] = document["ranking"]["order"]
+    return order
+
+
+def ranked_ids(document: dict[str, Any]) -> list[str]:
+    return [str(item["entry_id"]) for item in ranked_items(document)]
+
+
+def item_for(document: dict[str, Any], entry_id: str) -> dict[str, Any]:
+    [item] = [item for item in ranked_items(document) if item["entry_id"] == entry_id]
+    return item
+
+
+def component(item: dict[str, Any], name: str) -> dict[str, Any]:
+    [found] = [part for part in item["components"] if part["component"] == name]
+    result: dict[str, Any] = found
+    return result
+
+
+def evidence_by_key(document: dict[str, Any]) -> dict[EntryKey, tuple[Any, ...]]:
+    """Each entry's evidence facts: counts, severity and novel comment text hashes."""
+    projections: dict[EntryKey, tuple[Any, ...]] = {}
+    for entry in document["entries"]:
+        novel_key = "novel_evidence" if entry["kind"] == "finding" else "novel_comments"
+        comments = tuple(
+            (comment["comment_id"], comment["kind"], comment["text_sha256"], comment["excerpt"])
+            for comment in entry[novel_key]
+        )
+        projections[entry_key(entry)] = (
+            entry.get("severity"),
+            entry.get("finding_comment_count"),
+            comments,
+        )
+    return projections
+
+
+def explain(watch_id: str, entry_id: str, *flags: str) -> tuple[int, dict[str, Any]]:
+    return run_cli("watch", "explain", "--id", watch_id, "--entry", entry_id, *flags)
+
+
+def explain_ok(watch_id: str, entry_id: str, *flags: str) -> dict[str, Any]:
+    exit_code, payload = explain(watch_id, entry_id, *flags)
+    assert exit_code == 0, payload
+    assert payload["artifact_type"] == "watch_explanation", payload
+    return payload
+
+
+def policy_status(watch_id: str) -> dict[str, Any]:
+    exit_code, payload = run_cli("watch", "policy", "--id", watch_id)
+    assert exit_code == 0, payload
+    assert (payload["artifact_type"], payload["status"]) == ("ranking_policy", "ok")
+    return payload
+
+
+def set_policy(watch_id: str, path: Path) -> tuple[int, dict[str, Any]]:
+    return run_cli("watch", "policy", "--id", watch_id, "--set", str(path))
+
+
+def selection(exit_code: int, payload: dict[str, Any]) -> dict[str, Any]:
+    assert exit_code == 0, payload
+    assert payload["artifact_type"] == "ranking_policy_selection", payload
+    return payload
+
+
+def select_policy(watch_id: str, policy_id: str) -> dict[str, Any]:
+    return selection(*run_cli("watch", "policy", "--id", watch_id, "--select", policy_id))
+
+
+def toml_value(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int | str):
+        return json.dumps(value)
+    raise AssertionError(f"unsupported policy value {value!r}")
+
+
+def toml_lines(table: dict[str, Any], prefix: str) -> list[str]:
+    scalars = {key: value for key, value in table.items() if not isinstance(value, dict)}
+    lines = [f"{key} = {toml_value(value)}" for key, value in scalars.items()]
+    for key, value in table.items():
+        if isinstance(value, dict):
+            name = f"{prefix}.{key}" if prefix else key
+            lines += ["", f"[{name}]", *toml_lines(value, name)]
+    return lines
+
+
+def write_policy(path: Path, document: dict[str, Any]) -> Path:
+    """Write a policy document (the `watch policy` active_policy shape) as TOML."""
+    path.write_text("\n".join(toml_lines(document, "")) + "\n", encoding="utf-8")
+    return path
+
+
+def renamed_policy(document: dict[str, Any], name: str) -> dict[str, Any]:
+    copied: dict[str, Any] = json.loads(json.dumps(document))
+    copied["name"] = name
+    return copied
+
+
+def custom_policy(document: dict[str, Any], name: str) -> dict[str, Any]:
+    """The given policy with a different `useful` preference weight."""
+    custom = renamed_policy(document, name)
+    custom["preference"]["useful"] = int(document["preference"]["useful"]) // 4
+    assert custom["preference"]["useful"] != document["preference"]["useful"]
+    return custom
+
+
+def zero_weights(table: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: zero_weights(value) if isinstance(value, dict) else 0 for key, value in table.items()
+    }
+
+
+def flat_policy(document: dict[str, Any], name: str) -> dict[str, Any]:
+    """Every weight and the preference bound 0, so every entry scores 0."""
+    flat = renamed_policy(document, name)
+    for key, value in document.items():
+        if isinstance(value, dict):
+            flat[key] = zero_weights(value)
+    return flat
+
+
+def assert_components_within_policy(
+    item: dict[str, Any], policy: dict[str, Any], objective: str
+) -> None:
+    points = {part["component"]: part["points"] for part in item["components"]}
+    evidence = policy["evidence"]
+    bound = int(policy["preference"]["bound"])
+    assert [part["component"] for part in item["components"]] == COMPONENTS, item
+    assert item["score"] == sum(value for value in points.values() if value is not None), item
+    assert points["severity"] in {0, *policy["severity"].values()}, item
+    assert points["objective"] in {0, *policy["objective"][objective].values()}, item
+    assert points["novelty"] in {0, *policy["novelty"].values()}, item
+    evidence_cap = evidence["points_per_novel_comment"] * evidence["max_counted_comments"]
+    assert 0 <= points["evidence"] <= evidence_cap, item
+    assert -bound <= points["preference"] <= bound, item
+
+
+def baseline_key(item: dict[str, Any]) -> tuple[int, int, int, int, int, str, str]:
+    """The documented baseline: kind, severity, markers, comment count, theme, entry id."""
+    tie = item["tie_break"]
+    return (
+        KIND_ORDER[str(tie["kind"])],
+        -SEVERITY_ORDER.get(str(tie["severity"]), 0),
+        -int(tie["issue_markers"]),
+        -int(tie["request_markers"]),
+        -int(tie["comment_count"]),
+        str(tie["theme_key"] or ""),
+        str(tie["entry_id"]),
+    )
+
+
+def ranking_signature(document: dict[str, Any]) -> list[tuple[Any, ...]]:
+    """Each ranked entry by evidence identity, without its watch-specific entry id."""
+    keys = keys_by_id(document)
+    return [
+        (
+            keys[str(item["entry_id"])],
+            item["rank"],
+            item["score"],
+            item["components"],
+            {key: value for key, value in item["tie_break"].items() if key != "entry_id"},
+        )
+        for item in ranked_items(document)
+    ]
+
+
+def expire_dead_claim(monkeypatch: pytest.MonkeyPatch, state_path: Path) -> None:
+    """Run the CLI store on a clock past the dead digest run's lease."""
+    [(expires,)] = query_rows(
+        state_path, "SELECT MAX(lease_expires_at_utc) FROM watch_runs WHERE status = 'running'"
+    )
+    assert expires is not None
+    offset = float(expires) + 1.0 - time.time()
+    monkeypatch.setattr(
+        "threadsense.cli.MonitoringStore",
+        partial(MonitoringStore, clock=lambda: time.time() + offset),
+    )
+
+
+# 11. A preference reorders presentation only; evidence, counts and payloads are unchanged.
+
+
+def test_watch_digest_irrelevant_preference_moves_finding_last_without_changing_evidence(
+    watches: TwoWatches,
+) -> None:
+    # Arrange
+    state_path = watches.state_path
+    policy = policy_status(WATCH_ID)["active_policy"]
+    payloads_before = entry_payloads(state_path, WATCH_ID)
+    target = top_finding(state_path, WATCH_ID)
+    preference = record_new(
+        Feedback(WATCH_ID, target, "r-irrelevant", value="irrelevant", target_kind="finding")
+    )
+    payloads_after_feedback = entry_payloads(state_path, WATCH_ID)
+
+    # Act
+    control_result = present_digest(OTHER_WATCH_ID)
+    treated_result = present_digest(WATCH_ID)
+    control = latest_digest(state_path, OTHER_WATCH_ID).document()
+    treated_files = latest_digest(state_path, WATCH_ID)
+    treated = treated_files.document()
+
+    # Assert
+    assert payloads_after_feedback == payloads_before
+    assert entry_payloads(state_path, WATCH_ID) == payloads_before
+    for result, document, watch_id in (
+        (control_result, control, OTHER_WATCH_ID),
+        (treated_result, treated, WATCH_ID),
+    ):
+        stored = entry_payloads(state_path, watch_id)
+        assert document["entries"] == [json.loads(stored[item]) for item in result["entry_ids"]]
+        assert sorted(ranked_ids(document)) == sorted(result["entry_ids"])
+        assert result["ranking"]["ranked_entry_ids"] == ranked_ids(document)
+    assert evidence_by_key(treated) == evidence_by_key(control)
+    assert len(evidence_by_key(treated)) == len(treated["entries"]) == 3
+    assert treated["backlog"] == control["backlog"]
+    assert treated_result["backlog"] == control_result["backlog"]
+    control_keys, treated_keys = keys_by_id(control), keys_by_id(treated)
+    target_key = treated_keys[target]
+    control_order = [control_keys[entry_id] for entry_id in ranked_ids(control)]
+    treated_order = [treated_keys[entry_id] for entry_id in ranked_ids(treated)]
+    assert control_order[0] == target_key
+    assert treated_order == [*(key for key in control_order if key != target_key), target_key]
+    moved = component(item_for(treated, target), "preference")
+    assert moved["points"] == policy["preference"]["irrelevant"]
+    assert [match["feedback_id"] for match in moved["matched"]] == [preference["feedback_id"]]
+    control_scores = {control_keys[str(i["entry_id"])]: i["score"] for i in ranked_items(control)}
+    treated_scores = {treated_keys[str(i["entry_id"])]: i["score"] for i in ranked_items(treated)}
+    assert treated_scores == {
+        **control_scores,
+        target_key: control_scores[target_key] + moved["points"],
+    }
+    assert control["ranking"]["basis"]["preference_sequence"] == 0
+    assert treated["ranking"]["basis"]["preference_sequence"] == preference["sequence"] == 1
+    markdown = treated_files.markdown_path.read_text(encoding="utf-8")
+    positions = [markdown.index(f"- Entry: {entry_id}\n") for entry_id in ranked_ids(treated)]
+    assert positions == sorted(positions)
+
+
+# 12. Explain replays the recorded order after new feedback, restarts and policy switches.
+
+
+def test_watch_explain_after_new_feedback_and_policy_switch_replays_recorded_rank(
+    watches: TwoWatches, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Arrange
+    state_path = watches.state_path
+    initial = policy_status(WATCH_ID)
+    default_id = str(initial["default_policy_id"])
+    target = top_finding(state_path, WATCH_ID)
+    irrelevant = record_new(
+        Feedback(WATCH_ID, target, "e-irrelevant", value="irrelevant", target_kind="finding")
+    )
+    present_digest(WATCH_ID)
+    earlier = latest_digest(state_path, WATCH_ID)
+    earlier_hashes = earlier.hashes()
+    recorded = explain_ok(WATCH_ID, target)
+    custom_path = write_policy(
+        tmp_path / "custom.toml", custom_policy(initial["active_policy"], "explain-custom")
+    )
+
+    # Act
+    useful = record_new(
+        Feedback(WATCH_ID, target, "e-useful", value="useful", target_kind="finding")
+    )
+    custom = selection(*set_policy(WATCH_ID, custom_path))
+    hashes_after_set = earlier.hashes()
+    run_later_phases(monkeypatch, WATCH_ID)
+    later = latest_digest(state_path, WATCH_ID)
+    reselected = select_policy(WATCH_ID, default_id)
+    replayed = explain_ok(WATCH_ID, target)
+    current = explain_ok(WATCH_ID, target, "--current")
+
+    # Assert
+    assert (recorded["status"], recorded["replay"]) == ("ranked", "matches_written_digest")
+    assert (recorded["basis"]["policy_id"], recorded["basis"]["preference_sequence"]) == (
+        default_id,
+        irrelevant["sequence"],
+    )
+    assert recorded["ranking"] == item_for(earlier.document(), target)
+    preference = component(recorded["ranking"], "preference")
+    assert [match["feedback_id"] for match in preference["matched"]] == [irrelevant["feedback_id"]]
+    assert (replayed["status"], replayed["replay"]) == ("ranked", "matches_written_digest")
+    for key in ("basis", "ranking", "order", "semantic", "digest"):
+        assert replayed[key] == recorded[key], key
+    assert current["ranking"] == recorded["ranking"]
+    assert current["current"]["recorded"] is False
+    assert current["current"]["basis"]["policy_id"] == default_id
+    assert current["current"]["basis"]["preference_sequence"] == useful["sequence"] == 2
+    assert current["current"]["score"] != recorded["ranking"]["score"]
+    current_preference = component(current["current"], "preference")
+    assert [match["feedback_id"] for match in current_preference["matched"]] == [
+        useful["feedback_id"]
+    ]
+    assert (custom["status"], reselected["status"]) == ("selected", "selected")
+    assert reselected["previous_policy_id"] == custom["policy_id"]
+    assert later.digest_id != earlier.digest_id
+    later_basis = later.document()["ranking"]["basis"]
+    assert (later_basis["policy_id"], later_basis["policy_name"]) == (
+        custom["policy_id"],
+        "explain-custom",
+    )
+    assert later_basis["preference_sequence"] == useful["sequence"]
+    assert hashes_after_set == earlier_hashes
+    assert earlier.hashes() == earlier_hashes
+
+
+# 13. Switching policies appends selections and never rewrites earlier digests.
+
+
+def test_watch_policy_switch_back_appends_selections_without_rewriting_digests(
+    watches: TwoWatches, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Arrange
+    state_path = watches.state_path
+    initial = policy_status(WATCH_ID)
+    default_id = str(initial["default_policy_id"])
+    first_digest = latest_digest(state_path, WATCH_ID)
+    first_hashes = first_digest.hashes()
+    custom_path = write_policy(
+        tmp_path / "custom.toml", custom_policy(initial["active_policy"], "switch-custom")
+    )
+
+    # Act
+    selected = selection(*set_policy(WATCH_ID, custom_path))
+    repeated = selection(*set_policy(WATCH_ID, custom_path))
+    custom_result = present_digest(WATCH_ID)
+    second_digest = latest_digest(state_path, WATCH_ID)
+    second_hashes = second_digest.hashes()
+    switched_back = select_policy(WATCH_ID, default_id)
+    repeated_back = select_policy(WATCH_ID, default_id)
+    run_later_phases(monkeypatch, WATCH_ID)
+    final = policy_status(WATCH_ID)
+    digests = digests_of(state_path, WATCH_ID)
+
+    # Assert
+    custom_id = str(selected["policy_id"])
+    assert (initial["active_policy_id"], initial["selections"]) == (default_id, [])
+    assert POLICY_ID.fullmatch(custom_id) is not None
+    assert custom_id != default_id
+    assert (selected["status"], selected["previous_policy_id"]) == ("selected", default_id)
+    assert selected["active_policy"]["name"] == "switch-custom"
+    assert (repeated["status"], repeated["policy_id"], repeated["previous_policy_id"]) == (
+        "unchanged",
+        custom_id,
+        custom_id,
+    )
+    assert (
+        switched_back["status"],
+        switched_back["policy_id"],
+        switched_back["previous_policy_id"],
+    ) == ("selected", default_id, custom_id)
+    assert switched_back["active_policy"] == initial["active_policy"]
+    assert (repeated_back["status"], repeated_back["policy_id"]) == ("unchanged", default_id)
+    assert [
+        (item["sequence"], item["policy_id"], item["name"]) for item in final["selections"]
+    ] == [(1, custom_id, "switch-custom"), (2, default_id, initial["active_policy"]["name"])]
+    assert final["active_policy_id"] == default_id
+    assert custom_result["ranking"]["policy_id"] == custom_id
+    assert [digest.status for digest in digests] == ["written"] * 3
+    assert [digest.document()["ranking"]["basis"]["policy_id"] for digest in digests] == [
+        default_id,
+        custom_id,
+        default_id,
+    ]
+    assert query_rows(
+        state_path,
+        "SELECT d.sequence, r.policy_id FROM watch_digest_rankings AS r "
+        "JOIN watch_digests AS d ON d.digest_id = r.digest_id "
+        "WHERE r.watch_id = ? ORDER BY d.sequence",
+        (WATCH_ID,),
+    ) == [(1, default_id), (2, custom_id), (3, default_id)]
+    assert first_digest.hashes() == first_hashes
+    assert second_digest.hashes() == second_hashes
+
+
+# 14. Preferences on every scope add up, then are bounded with a reason.
+
+
+def test_watch_digest_useful_preferences_on_every_scope_bound_preference_points(
+    watches: TwoWatches,
+) -> None:
+    # Arrange
+    state_path = watches.state_path
+    own = watches.main
+    policy = policy_status(WATCH_ID)["active_policy"]
+    target = top_finding(state_path, WATCH_ID)
+    requests = [
+        Feedback(WATCH_ID, target, "b-entry"),
+        Feedback(WATCH_ID, target, "b-finding", target_kind="finding"),
+        Feedback(WATCH_ID, own.revision_b, "b-observation"),
+        Feedback(WATCH_ID, own.issue_b, "b-issue"),
+    ]
+    recorded = [record_new(request) for request in requests]
+
+    # Act
+    present_digest(WATCH_ID)
+    document = latest_digest(state_path, WATCH_ID).document()
+
+    # Assert
+    useful = int(policy["preference"]["useful"])
+    bound = int(policy["preference"]["bound"])
+    preference = component(item_for(document, target), "preference")
+    matched = preference["matched"]
+    assert [match["feedback_id"] for match in matched] == feedback_ids(recorded)
+    assert [(match["scope_kind"], match["value"], match["points"]) for match in matched] == [
+        ("entry", "useful", useful),
+        ("finding", "useful", useful),
+        ("thread", "useful", useful),
+        ("issue", "useful", useful),
+    ]
+    assert matched[3]["scope_key"] == own.issue_b
+    assert preference["unbounded_points"] == 4 * useful
+    assert 4 * useful > bound
+    assert (preference["points"], preference["bound"]) == (bound, bound)
+    assert "bounded" in preference["reason"]
+    assert str(4 * useful) in preference["reason"]
+    objective = str(document["ranking"]["basis"]["objective"])
+    for item in ranked_items(document):
+        assert_components_within_policy(item, policy, objective)
+        semantic = component(item, "semantic")
+        assert (semantic["points"], semantic["status"]) == (None, "not_eligible")
+    assert document["ranking"]["semantic"]["status"] == "not_eligible"
+
+
+# 15. Equal scores fall back to the baseline order, then the entry id, on every replay.
+
+
+def test_watch_digest_equal_scores_order_by_baseline_then_entry_id(
+    watches: TwoWatches, tmp_path: Path
+) -> None:
+    # Arrange
+    state_path = watches.state_path
+    base = policy_status(WATCH_ID)["active_policy"]
+    flat_path = write_policy(tmp_path / "flat.toml", flat_policy(base, "flat-ties"))
+    selected = selection(*set_policy(WATCH_ID, flat_path))
+
+    # Act
+    result = present_digest(WATCH_ID)
+    document = latest_digest(state_path, WATCH_ID).document()
+    items = ranked_items(document)
+    first = [explain_ok(WATCH_ID, str(item["entry_id"])) for item in items]
+    second = [explain_ok(WATCH_ID, str(item["entry_id"])) for item in items]
+
+    # Assert
+    assert selected["status"] == "selected"
+    assert document["ranking"]["basis"]["policy_id"] == selected["policy_id"]
+    assert len(items) == 3
+    assert {item["score"] for item in items} == {0}
+    assert all(part["points"] in (0, None) for item in items for part in item["components"])
+    assert all(item["tie_break"]["entry_id"] == item["entry_id"] for item in items)
+    assert items == sorted(items, key=baseline_key)
+    assert [item["rank"] for item in items] == [1, 2, 3]
+    assert [item["kind"] for item in items] == ["finding", "finding", "thread_update"]
+    finding_severities = [SEVERITY_ORDER[str(item["tie_break"]["severity"])] for item in items[:2]]
+    assert finding_severities[0] > finding_severities[1]
+    assert result["ranking"]["ranked_entry_ids"] == ranked_ids(document)
+    expected_order = [
+        {"rank": item["rank"], "entry_id": item["entry_id"], "score": item["score"]}
+        for item in items
+    ]
+    for item, explained, again in zip(items, first, second, strict=True):
+        assert explained == again
+        assert explained["replay"] == "matches_written_digest"
+        assert explained["ranking"] == item
+        assert explained["order"] == expected_order
+
+
+# 16. Corrections are never a ranking input.
+
+
+def test_watch_digest_with_corrections_ranks_identically_to_control_watch(
+    watches: TwoWatches,
+) -> None:
+    # Arrange
+    state_path = watches.state_path
+    target = top_finding(state_path, WATCH_ID)
+    corrections = [
+        record_new(Feedback(WATCH_ID, target, "c-misclassified", "correction", "misclassified")),
+        record_new(
+            Feedback(
+                WATCH_ID, watches.main.revision_b, "c-unsupported", "correction", "unsupported"
+            )
+        ),
+    ]
+
+    # Act
+    present_digest(OTHER_WATCH_ID)
+    treated_result = present_digest(WATCH_ID)
+    control = latest_digest(state_path, OTHER_WATCH_ID).document()
+    treated = latest_digest(state_path, WATCH_ID).document()
+
+    # Assert
+    assert feedback_ids(list_feedback(WATCH_ID)["corrections"]) == feedback_ids(corrections)
+    assert len(ranking_signature(treated)) == 3
+    assert ranking_signature(treated) == ranking_signature(control)
+    assert treated["ranking"]["corrections"] == "not_a_ranking_input"
+    assert control["ranking"]["corrections"] == "not_a_ranking_input"
+    assert treated["ranking"]["basis"]["preference_sequence"] == 0
+    assert treated_result["ranking"]["preference_sequence"] == 0
+    assert all(component(item, "preference")["matched"] == [] for item in ranked_items(treated))
+
+
+# 17. A resumed digest keeps the ranking basis recorded before the crash.
+
+
+def test_watch_digest_resume_after_crash_keeps_recorded_ranking_basis(
+    watches: TwoWatches, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Arrange
+    state_path = watches.state_path
+    target = top_finding(state_path, WATCH_ID)
+
+    def die(*args: Any, **kwargs: Any) -> None:
+        raise ProcessDeathError
+
+    with monkeypatch.context() as patch:
+        patch.setattr(MonitoringStore, "complete_digest", die)
+        with pytest.raises(ProcessDeathError):
+            run_cli("watch", "digest", "--id", WATCH_ID)
+    crashed = latest_digest(state_path, WATCH_ID)
+    crashed_json = crashed.json_path.read_bytes()
+    crashed_markdown = crashed.markdown_path.read_bytes()
+    crashed_ranking = json.loads(crashed_json)["ranking"]
+    expire_dead_claim(monkeypatch, state_path)
+    preference = record_new(
+        Feedback(WATCH_ID, target, "x-irrelevant", value="irrelevant", target_kind="finding")
+    )
+    pending = explain_ok(WATCH_ID, target)
+
+    # Act
+    exit_code, resumed = run_cli("watch", "digest", "--id", WATCH_ID)
+    written = latest_digest(state_path, WATCH_ID)
+    after = explain_ok(WATCH_ID, target, "--current")
+
+    # Assert
+    assert crashed.status == "pending"
+    assert crashed_ranking["basis"]["preference_sequence"] == 0
+    assert preference["sequence"] == 1
+    assert (pending["status"], pending["replay"]) == ("ranked", "pending_digest")
+    assert pending["ranking"] == item_for({"ranking": crashed_ranking}, target)
+    assert exit_code == 0, resumed
+    assert (resumed["status"], resumed["resumed"]) == ("presented", True)
+    assert resumed["digest_id"] == crashed.digest_id == written.digest_id
+    assert written.status == "written"
+    assert resumed["ranking"]["preference_sequence"] == 0
+    assert resumed["ranking"]["ranked_entry_ids"] == [
+        item["entry_id"] for item in crashed_ranking["order"]
+    ]
+    assert crashed.json_path.read_bytes() == crashed_json
+    assert crashed.markdown_path.read_bytes() == crashed_markdown
+    assert (after["replay"], after["ranking"]) == ("matches_written_digest", pending["ranking"])
+    assert component(after["ranking"], "preference")["matched"] == []
+    assert after["current"]["basis"]["preference_sequence"] == preference["sequence"]
+    assert after["current"]["score"] < after["ranking"]["score"]
+
+
+# 18. Explain refuses unknown, foreign, malformed and tampered references.
+
+
+@pytest.mark.parametrize(
+    ("label", "reason"),
+    [
+        ("unknown", "unknown_entry"),
+        ("other_watch", "cross_watch_target"),
+        ("malformed", "invalid_entry_id"),
+    ],
+)
+def test_watch_explain_invalid_entry_reference_refuses_with_reason(
+    watches: TwoWatches, label: str, reason: str
+) -> None:
+    # Arrange
+    entry_ids = {
+        "unknown": "ent-" + "0" * 32,
+        "other_watch": watches.other.finding_a,
+        "malformed": "ent-not-an-entry",
+    }
+    state_before = watches.state_path.read_bytes()
+
+    # Act
+    exit_code, payload = explain(WATCH_ID, entry_ids[label])
+
+    # Assert
+    assert exit_code == 1
+    assert error_reason(payload) == reason
+    assert watches.state_path.read_bytes() == state_before
+
+
+def test_watch_explain_tampered_digest_artifact_refuses_hash_mismatch(
+    watches: TwoWatches,
+) -> None:
+    # Arrange
+    entry_id = watches.main.finding_a
+    before = explain_ok(WATCH_ID, entry_id)
+    digest = digests_of(watches.state_path, WATCH_ID)[0]
+    with digest.json_path.open("ab") as handle:
+        handle.write(b" ")
+
+    # Act
+    exit_code, payload = explain(WATCH_ID, entry_id)
+
+    # Assert
+    assert (before["status"], before["replay"]) == ("ranked", "matches_written_digest")
+    assert before["digest"]["digest_id"] == digest.digest_id
+    assert exit_code == 1
+    assert error_reason(payload) == "artifact_hash_mismatch"
+
+
+def test_watch_explain_ranked_artifact_without_basis_refuses_basis_missing(
+    watches: TwoWatches,
+) -> None:
+    # Arrange
+    entry_id = watches.main.finding_a
+    digest = digests_of(watches.state_path, WATCH_ID)[0]
+    with closing(sqlite3.connect(watches.state_path)) as conn, conn:
+        conn.execute("DROP TRIGGER watch_digest_rankings_no_delete")
+        conn.execute("DELETE FROM watch_digest_rankings WHERE digest_id = ?", (digest.digest_id,))
+
+    # Act
+    exit_code, payload = explain(WATCH_ID, entry_id)
+
+    # Assert
+    assert exit_code == 1
+    assert error_reason(payload) == "ranking_basis_missing"
+
+
+def test_watch_explain_unpresented_entry_reports_no_digest_and_no_ranking(
+    watches: TwoWatches,
+) -> None:
+    # Arrange
+    entry_id = watches.main.finding_b
+    [(digest_id,)] = query_rows(
+        watches.state_path,
+        "SELECT digest_id FROM watch_digest_entries WHERE entry_id = ?",
+        (entry_id,),
+    )
+
+    # Act
+    payload = explain_ok(WATCH_ID, entry_id)
+    with_current = explain_ok(WATCH_ID, entry_id, "--current")
+
+    # Assert
+    assert digest_id is None
+    assert (payload["status"], payload["digest"], payload["ranking"]) == ("unpresented", None, None)
+    assert "current" not in payload
+    current = with_current["current"]
+    assert (current["recorded"], current["entry_id"], current["rank_scope"]) == (
+        False,
+        entry_id,
+        "entry_only",
+    )
+    assert "rank" not in current
+    assert current["score"] == sum(
+        part["points"] for part in current["components"] if part["points"] is not None
+    )
+
+
+# 19. Invalid policy files are refused and select nothing.
+
+
+def invalid_policy(label: str, base: dict[str, Any]) -> dict[str, Any]:
+    document = renamed_policy(base, "invalid-policy")
+    match label:
+        case "unknown_field":
+            document["comment"] = "not a policy field"
+        case "missing_objective":
+            del document["objective"][next(iter(document["objective"]))]
+        case "out_of_range_weight":
+            document["severity"]["high"] = 101
+        case "bool_weight":
+            document["severity"]["high"] = True
+        case "semantic_weights":
+            document["semantic"] = {"annotation_weight": 10}
+        case _:
+            raise AssertionError(label)
+    return document
+
+
+@pytest.mark.parametrize(
+    ("label", "field"),
+    [
+        ("unknown_field", "document"),
+        ("missing_objective", "objective"),
+        ("out_of_range_weight", "severity.high"),
+        ("bool_weight", "severity.high"),
+        ("semantic_weights", "document"),
+    ],
+)
+def test_watch_policy_set_invalid_policy_file_refuses_without_selection(
+    watches: TwoWatches, tmp_path: Path, label: str, field: str
+) -> None:
+    # Arrange
+    state_path = watches.state_path
+    status_before = policy_status(WATCH_ID)
+    tables = ("watch_ranking_policies", "watch_ranking_selections")
+    rows_before = {
+        table: sorted(query_rows(state_path, f"SELECT * FROM {table}"), key=repr)
+        for table in tables
+    }
+    path = write_policy(
+        tmp_path / f"{label}.toml", invalid_policy(label, status_before["active_policy"])
+    )
+
+    # Act
+    exit_code, payload = set_policy(WATCH_ID, path)
+
+    # Assert
+    assert exit_code == 1
+    assert error_reason(payload) == "invalid_ranking_policy"
+    assert payload["error"]["details"]["field"] == field
+    assert policy_status(WATCH_ID) == status_before
+    assert {
+        table: sorted(query_rows(state_path, f"SELECT * FROM {table}"), key=repr)
+        for table in tables
+    } == rows_before

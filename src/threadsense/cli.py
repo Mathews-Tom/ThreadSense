@@ -46,8 +46,10 @@ from threadsense.monitoring import (
     render_launchd,
     run_watch_sweep,
 )
+from threadsense.monitoring.explain import explain_digest_entry
 from threadsense.monitoring.feedback_records import FEEDBACK_KINDS
 from threadsense.monitoring.issues import issue_policy
+from threadsense.monitoring.ranking import load_ranking_policy_file
 from threadsense.monitoring.schedule import (
     ScheduleFormat,
     render_install_instructions,
@@ -696,6 +698,7 @@ def _build_watch_parser(subparsers: argparse._SubParsersAction[argparse.Argument
     watch_inspect_parser.add_argument("--id", dest="watch_id", required=True, help="Watch id.")
     _add_config_argument(watch_inspect_parser)
     _build_watch_execution_parsers(watch_subparsers)
+    _build_watch_ranking_parsers(watch_subparsers)
 
 
 def _build_issues_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -876,6 +879,56 @@ def _build_watch_execution_parsers(
         help="Working directory for scheduled runs (defaults to the current directory).",
     )
     _add_config_argument(watch_schedule_parser)
+
+
+def _build_watch_ranking_parsers(
+    watch_subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    watch_explain_parser = watch_subparsers.add_parser(
+        "explain",
+        help=(
+            "Explain a digest entry's rank. Read-only: replays the recorded profile, policy "
+            "and preference basis and refuses unless it equals the written digest."
+        ),
+    )
+    watch_explain_parser.add_argument("--id", dest="watch_id", required=True, help="Watch id.")
+    watch_explain_parser.add_argument(
+        "--entry",
+        dest="entry_id",
+        required=True,
+        help="Digest entry id (ent-).",
+    )
+    watch_explain_parser.add_argument(
+        "--current",
+        action="store_true",
+        help="Also show how the same entries would rank now; derived on demand, never recorded.",
+    )
+    _add_config_argument(watch_explain_parser)
+
+    watch_policy_parser = watch_subparsers.add_parser(
+        "policy",
+        help=(
+            "Show or select a watch's ranking policy. Policies are immutable and "
+            "content-addressed (pol- ids); selecting appends a selection event, affects only "
+            "digests recorded afterwards and never rewrites written digests."
+        ),
+    )
+    watch_policy_parser.add_argument("--id", dest="watch_id", required=True, help="Watch id.")
+    policy_group = watch_policy_parser.add_mutually_exclusive_group()
+    policy_group.add_argument(
+        "--set",
+        dest="policy_path",
+        type=Path,
+        default=None,
+        help="Path to a TOML ranking policy to record (if new) and select.",
+    )
+    policy_group.add_argument(
+        "--select",
+        dest="policy_id",
+        default=None,
+        help="Recorded policy id (pol-) to switch back to, including the built-in default.",
+    )
+    _add_config_argument(watch_policy_parser)
 
 
 def _build_research_parser(
@@ -1921,6 +1974,57 @@ def run_watch_schedule(
     return 0
 
 
+def run_watch_explain(
+    config_path: Path | None, watch_id: str, entry_id: str, include_current: bool
+) -> int:
+    store = load_monitoring_store(config_path)
+    explanation = explain_digest_entry(store, watch_id, entry_id, include_current=include_current)
+    emit_payload(
+        {
+            "artifact_type": "watch_explanation",
+            "status": "ok",
+            "state_path": str(store.path),
+            **explanation,
+        }
+    )
+    return 0
+
+
+def run_watch_policy(
+    config_path: Path | None,
+    watch_id: str,
+    policy_path: Path | None,
+    policy_id: str | None,
+) -> int:
+    store = load_monitoring_store(config_path)
+    if policy_path is not None:
+        result = store.select_ranking_policy(watch_id, load_ranking_policy_file(policy_path))
+    elif policy_id is not None:
+        result = store.select_stored_ranking_policy(watch_id, policy_id)
+    else:
+        emit_payload(
+            {
+                "artifact_type": "ranking_policy",
+                "status": "ok",
+                "state_path": str(store.path),
+                **store.ranking_policy_status(watch_id),
+            }
+        )
+        return 0
+    emit_payload(
+        {
+            "artifact_type": "ranking_policy_selection",
+            "status": result["status"],
+            "state_path": str(store.path),
+            "watch_id": watch_id,
+            "policy_id": result["policy_id"],
+            "previous_policy_id": result["previous_policy_id"],
+            "active_policy": store.ranking_policy_status(watch_id)["active_policy"],
+        }
+    )
+    return 0
+
+
 @dataclass(frozen=True)
 class DecisionsAnnotateOptions:
     input_path: Path
@@ -2039,6 +2143,10 @@ def _dispatch_watch_command(args: argparse.Namespace) -> int:
             return run_watch_schedule(
                 args.config, args.watch_id, args.schedule_format, args.workspace
             )
+        case "explain":
+            return run_watch_explain(args.config, args.watch_id, args.entry_id, args.current)
+        case "policy":
+            return run_watch_policy(args.config, args.watch_id, args.policy_path, args.policy_id)
         case _:
             raise _CommandDispatchError(args.command)
 

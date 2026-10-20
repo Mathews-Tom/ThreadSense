@@ -25,6 +25,7 @@ from threadsense.monitoring.digest import (
     DigestResult,
     build_digest_entries,
     present_watch_digest,
+    rank_pending_digest,
     render_digest_json,
     render_digest_markdown,
 )
@@ -375,7 +376,10 @@ def test_present_watch_digest_first_analysis_presents_deterministic_evidence_ent
         result.issues["threads_created"],
         result.issues["reports_recorded"],
     ) == (1, 1, 1)
-    assert artifact["schema_version"] == 2
+    assert artifact["schema_version"] == 3
+    assert sorted(item["entry_id"] for item in artifact["ranking"]["order"]) == sorted(
+        result.entry_ids
+    )
     assert artifact["issues"] == expected_single_thread_view(
         list(result.entry_ids),
         finding_id=expected_finding_id(revision_id, "latency"),
@@ -577,7 +581,10 @@ def test_present_watch_digest_crash_before_complete_resumes_same_digest(
     assert (resumed.digest_id, resumed.sequence) == (pending["pending_digest_id"], 1)
     assert list(resumed.entry_ids) == crashed_ids
     crashed_artifact = json.loads(crashed_files[json_name])
-    assert crashed_artifact["schema_version"] == 2
+    assert crashed_artifact["schema_version"] == 3
+    assert sorted(item["entry_id"] for item in crashed_artifact["ranking"]["order"]) == sorted(
+        crashed_ids
+    )
     assert [ref["entry_id"] for ref in crashed_artifact["issues"]["entry_refs"]] == crashed_ids
     assert harness.digest_files() == crashed_files
     assert harness.query(
@@ -610,7 +617,9 @@ def test_present_watch_digest_differing_existing_artifact_is_artifact_conflict(
     assert (status["unpresented_entries"], status["digest_count"]) == (2, 0)
 
 
-def write_pending(digest: PendingDigest) -> tuple[bytes, bytes]:
+def write_pending(store: MonitoringStore, digest: PendingDigest) -> tuple[bytes, bytes]:
+    """Write the artifacts the digest step would publish: ranked from the recorded basis."""
+    digest = rank_pending_digest(store, WATCH_ID, digest)
     json_bytes = render_digest_json(WATCH_ID, digest)
     markdown_bytes = render_digest_markdown(WATCH_ID, digest)
     digest.json_path.parent.mkdir(parents=True, exist_ok=True)
@@ -628,7 +637,7 @@ def test_complete_digest_tampered_artifact_is_refused_and_presents_nothing(
     harness.materialize(claim)
     digest = harness.store.begin_digest(claim, 10)
     assert digest is not None
-    json_bytes, markdown_bytes = write_pending(digest)
+    json_bytes, markdown_bytes = write_pending(harness.store, digest)
     digest.markdown_path.write_bytes(markdown_bytes + b"tampered\n")
 
     with pytest.raises(MonitoringStateError) as raised:
@@ -649,7 +658,7 @@ def test_complete_digest_stale_claim_is_fenced_and_next_run_resumes(tmp_path: Pa
     harness.materialize(stale)
     digest = harness.store.begin_digest(stale, 10)
     assert digest is not None
-    json_bytes, markdown_bytes = write_pending(digest)
+    json_bytes, markdown_bytes = write_pending(harness.store, digest)
     harness.clock.now = stale.lease_expires_at_utc + 1.0
     current = harness.store.claim_run(WATCH_ID, lease_seconds=600)
 
@@ -833,16 +842,26 @@ def test_render_digest_markdown_hostile_source_text_is_escaped(tmp_path: Path) -
 
 
 def begin_ingested_digest(harness: Harness) -> tuple[RunClaim, PendingDigest]:
-    """Materialize, ingest issue evidence and begin a digest under one held claim."""
+    """Materialize, ingest issue evidence and begin a digest under one held claim, ranked."""
     claim = harness.claim()
     harness.materialize(claim)
     ingest_issue_evidence(harness.store, claim, ISSUE_POLICY)
     digest = harness.store.begin_digest(claim, 10)
     assert digest is not None
-    return claim, digest
+    return claim, rank_pending_digest(harness.store, WATCH_ID, digest)
 
 
-def test_begin_digest_new_digest_records_issue_view_rendered_as_schema_two(
+def pre_issue(digest: PendingDigest) -> PendingDigest:
+    """The same digest as recorded before issue views (and so rankings) existed."""
+    return replace(digest, issue_view=None, ranking_basis=None, ranking=None)
+
+
+def pre_ranking(digest: PendingDigest) -> PendingDigest:
+    """The same digest as recorded with an issue view but before rankings existed."""
+    return replace(digest, ranking_basis=None, ranking=None)
+
+
+def test_begin_digest_new_digest_records_issue_view_rendered_as_schema_three(
     tmp_path: Path,
 ) -> None:
     harness = Harness(tmp_path)
@@ -859,11 +878,27 @@ def test_begin_digest_new_digest_records_issue_view_rendered_as_schema_two(
     )
     assert digest.resumed is False
     assert digest.issue_view == expected
-    assert (artifact["schema_version"], artifact["issues"]) == (2, expected)
+    assert (artifact["schema_version"], artifact["issues"]) == (3, expected)
+    assert artifact["ranking"] == digest.ranking
+    assert sorted(item["entry_id"] for item in artifact["ranking"]["order"]) == sorted(
+        str(entry["entry_id"]) for entry in digest.entries
+    )
     [(stored_digest_id, view_json)] = harness.query(
         "SELECT digest_id, view_json FROM watch_digest_issue_views"
     )
     assert (stored_digest_id, json.loads(view_json)) == (digest.digest_id, expected)
+    assert digest.ranking_basis is not None
+    assert harness.query(
+        "SELECT digest_id, profile_revision, policy_id, preference_sequence "
+        "FROM watch_digest_rankings"
+    ) == [
+        (
+            digest.digest_id,
+            digest.ranking_basis.profile_revision,
+            digest.ranking_basis.policy_id,
+            digest.ranking_basis.preference_sequence,
+        )
+    ]
 
 
 def test_render_digest_json_without_issue_view_renders_schema_one_bytes(
@@ -872,7 +907,6 @@ def test_render_digest_json_without_issue_view_renders_schema_one_bytes(
     harness = Harness(tmp_path)
     harness.sweep({"c1": "latency"}, findings=[("latency", ["c1"])])
     _, digest = begin_ingested_digest(harness)
-    pre_issue = replace(digest, issue_view=None)
     schema_one = {
         "artifact_type": "watch_digest",
         "schema_version": 1,
@@ -884,7 +918,7 @@ def test_render_digest_json_without_issue_view_renders_schema_one_bytes(
         "backlog": digest.backlog,
     }
 
-    rendered = render_digest_json(WATCH_ID, pre_issue)
+    rendered = render_digest_json(WATCH_ID, pre_issue(digest))
 
     text = json.dumps(schema_one, indent=2, sort_keys=True, ensure_ascii=False, allow_nan=False)
     assert rendered == (text + "\n").encode("utf-8")
@@ -898,8 +932,8 @@ def test_render_digest_markdown_without_issue_view_omits_only_issue_lines(
     harness.sweep({"c1": "steps to reproduce: export twice"}, findings=[("latency", ["c1"])])
     _, digest = begin_ingested_digest(harness)
 
-    with_issues = render_digest_markdown(WATCH_ID, digest).decode("utf-8").splitlines()
-    without = render_digest_markdown(WATCH_ID, replace(digest, issue_view=None))
+    with_issues = render_digest_markdown(WATCH_ID, pre_ranking(digest)).decode("utf-8").splitlines()
+    without = render_digest_markdown(WATCH_ID, pre_issue(digest))
 
     start = with_issues.index("## Issues")
     first_entry = next(index for index, line in enumerate(with_issues) if line.startswith("## 1. "))
@@ -1046,3 +1080,49 @@ def test_begin_digest_resumed_digest_renders_recorded_issue_view_bytes(tmp_path:
     assert resumed.issue_view == digest.issue_view
     assert render_digest_json(WATCH_ID, resumed) == json_bytes
     assert render_digest_markdown(WATCH_ID, resumed) == markdown_bytes
+
+
+def test_render_digest_recorded_basis_without_materialized_ranking_is_refused(
+    tmp_path: Path,
+) -> None:
+    harness = Harness(tmp_path)
+    harness.sweep({"c1": "latency"}, findings=[("latency", ["c1"])])
+    claim = harness.claim()
+    harness.materialize(claim)
+    digest = harness.store.begin_digest(claim, 10)
+    assert digest is not None
+    assert digest.ranking_basis is not None
+    assert digest.ranking is None
+
+    for renderer in (render_digest_json, render_digest_markdown):
+        with pytest.raises(MonitoringStateError) as raised:
+            renderer(WATCH_ID, digest)
+        assert raised.value.details["reason"] == "ranking_not_materialized"
+        assert raised.value.details["digest_id"] == digest.digest_id
+    assert not digest.json_path.exists()
+    assert not digest.markdown_path.exists()
+
+
+def test_render_digest_pre_ranking_digest_renders_schema_two_in_selection_order(
+    tmp_path: Path,
+) -> None:
+    harness = Harness(tmp_path)
+    harness.sweep({"c1": "one", "c2": "two"}, findings=[("alpha", ["c1"]), ("beta", ["c2"])])
+    _, digest = begin_ingested_digest(harness)
+    selection = [str(entry["entry_id"]) for entry in digest.entries]
+    legacy = pre_ranking(digest)
+
+    artifact = json.loads(render_digest_json(WATCH_ID, legacy))
+    lines = render_digest_markdown(WATCH_ID, legacy).decode("utf-8").splitlines()
+
+    assert artifact["schema_version"] == 2
+    assert "ranking" not in artifact
+    assert artifact["issues"] == digest.issue_view
+    assert [entry["entry_id"] for entry in artifact["entries"]] == selection
+    assert "## Ranking" not in lines
+    assert not [line for line in lines if line.startswith("- Rank ")]
+    assert [
+        line.removeprefix("- Entry: ") for line in lines if line.startswith("- Entry: ")
+    ] == selection
+    ranked_lines = render_digest_markdown(WATCH_ID, digest).decode("utf-8").splitlines()
+    assert "## Ranking" in ranked_lines

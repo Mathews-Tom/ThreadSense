@@ -78,6 +78,24 @@ from threadsense.monitoring.profiles import (
     parse_watch_profile,
     validate_watch_id,
 )
+from threadsense.monitoring.ranking import RankingBasis, RankingInputs, RankingPolicy
+from threadsense.monitoring.ranking_records import (
+    _RANKING_SCHEMA_VERSION,
+    RANKING_SCHEMA_STATEMENTS,
+    EntryPresentation,
+    _active_policy_id,
+    _ensure_policy,
+    _entry_presentation,
+    _insert_basis,
+    _preference_sequence,
+    _preferences_upto,
+    _ranking_policy_status,
+    _require_entry_id,
+    _require_policy_id,
+    _select_policy,
+    _stored_basis,
+    _stored_policy,
+)
 from threadsense.monitoring.sweep_records import (
     _FAILURE_STAGES,
     _PENDING_ANALYSES_FROM,
@@ -114,7 +132,7 @@ from threadsense.monitoring.sweep_records import (
     _validate_observed_at,
 )
 
-STATE_SCHEMA_VERSION = 6
+STATE_SCHEMA_VERSION = 7
 STATE_APPLICATION_ID = 0x54534D4E
 STATE_FILENAME = "state.sqlite3"
 BUSY_TIMEOUT_SECONDS = 5.0
@@ -310,6 +328,7 @@ _SCHEMA_STATEMENTS: dict[int, tuple[str, ...]] = {
     4: ISSUE_SCHEMA_STATEMENTS,
     5: DIGEST_ISSUE_VIEW_STATEMENTS,
     6: FEEDBACK_SCHEMA_STATEMENTS,
+    7: RANKING_SCHEMA_STATEMENTS,
 }
 
 
@@ -998,6 +1017,10 @@ class MonitoringStore:
                     backlog=pending.backlog,
                     resumed=True,
                     issue_view=_stored_digest_issue_view(conn, claim.watch_id, pending.digest_id),
+                    ranking_basis=_stored_basis(
+                        conn, STATE_SCHEMA_VERSION, claim.watch_id, pending.digest_id
+                    ),
+                    ranking=None,
                 )
             entry_ids = tuple(_unpresented_entry_ids(conn, claim.watch_id, limit))
             if not entry_ids:
@@ -1027,6 +1050,15 @@ class MonitoringStore:
             _insert_digest_issue_view(
                 conn, claim.watch_id, digest_id, view=issue_view, created_at_utc=now
             )
+            # The order is materialized later from exactly these recorded inputs.
+            policy_id = _active_policy_id(conn, claim.watch_id)
+            _ensure_policy(conn, _stored_policy(conn, policy_id), now)
+            basis = RankingBasis(
+                profile_revision=claim.profile_revision,
+                policy_id=policy_id,
+                preference_sequence=_preference_sequence(conn, claim.watch_id),
+            )
+            _insert_basis(conn, claim.watch_id, digest_id, basis, now)
         return PendingDigest(
             digest_id=digest_id,
             sequence=sequence,
@@ -1037,6 +1069,8 @@ class MonitoringStore:
             backlog=backlog,
             resumed=False,
             issue_view=issue_view,
+            ranking_basis=basis,
+            ranking=None,
         )
 
     def complete_digest(
@@ -1159,6 +1193,78 @@ class MonitoringStore:
                 # A store from before feedback existed holds no feedback for any target.
                 return empty_feedback_history(watch_id)
             return feedback_history(conn, watch_id, target_id)
+
+    def select_ranking_policy(self, watch_id: str, policy: RankingPolicy) -> dict[str, Any]:
+        """Record a policy revision if new and make it the watch's active policy."""
+        validate_watch_id(watch_id)
+        with self._connect_writable(create=False) as conn, _immediate(conn):
+            self._require_watch(conn, watch_id)
+            return _select_policy(conn, watch_id, policy, self.now())
+
+    def select_stored_ranking_policy(self, watch_id: str, policy_id: str) -> dict[str, Any]:
+        """Switch back to a recorded policy (or the built-in default) without rewriting."""
+        validate_watch_id(watch_id)
+        _require_policy_id(policy_id)
+        with self._connect_writable(create=False) as conn, _immediate(conn):
+            self._require_watch(conn, watch_id)
+            return _select_policy(conn, watch_id, _stored_policy(conn, policy_id), self.now())
+
+    def ranking_policy_status(self, watch_id: str) -> dict[str, Any]:
+        validate_watch_id(watch_id)
+        with self._connect_known_watch_readonly(watch_id) as (conn, version):
+            return _ranking_policy_status(
+                conn if version >= _RANKING_SCHEMA_VERSION else None, watch_id
+            )
+
+    def ranking_inputs(self, watch_id: str, basis: RankingBasis) -> RankingInputs:
+        """The immutable inputs a recorded (or current) ranking basis names."""
+        validate_watch_id(watch_id)
+        with self._connect_known_watch_readonly(watch_id) as (conn, version):
+            policy = _stored_policy(
+                conn if version >= _RANKING_SCHEMA_VERSION else None, basis.policy_id
+            )
+            preferences = _preferences_upto(
+                conn if version >= _FEEDBACK_SCHEMA_VERSION else None,
+                watch_id,
+                basis.preference_sequence,
+            )
+        profile = self.load_profile_revision(watch_id, basis.profile_revision)
+        return RankingInputs(
+            basis=basis,
+            policy=policy,
+            objective=profile.objective.value,
+            preferences=preferences,
+        )
+
+    def current_ranking_basis(self, watch_id: str) -> RankingBasis:
+        """The basis a digest recorded now would use; deriving it writes nothing."""
+        validate_watch_id(watch_id)
+        with self._connect_known_watch_readonly(watch_id) as (conn, version):
+            revision = conn.execute(
+                "SELECT current_revision FROM watches WHERE watch_id = ?", (watch_id,)
+            ).fetchone()[0]
+            return RankingBasis(
+                profile_revision=int(revision),
+                policy_id=_active_policy_id(
+                    conn if version >= _RANKING_SCHEMA_VERSION else None, watch_id
+                ),
+                preference_sequence=_preference_sequence(
+                    conn if version >= _FEEDBACK_SCHEMA_VERSION else None, watch_id
+                ),
+            )
+
+    def entry_presentation(self, watch_id: str, entry_id: str) -> EntryPresentation:
+        validate_watch_id(watch_id)
+        _require_entry_id(entry_id)
+        with self._connect_known_watch_readonly(watch_id) as (conn, version):
+            if version < _DIGEST_SCHEMA_VERSION:
+                raise MonitoringStateError(
+                    "digest entry does not exist",
+                    details={"reason": "unknown_entry", "watch_id": watch_id, "entry_id": entry_id},
+                )
+            return _entry_presentation(
+                conn, version, watch_id, entry_id, self.monitoring_root().absolute()
+            )
 
     @staticmethod
     def _require_watch(conn: sqlite3.Connection, watch_id: str) -> None:

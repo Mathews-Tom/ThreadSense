@@ -24,6 +24,7 @@ from threadsense.monitoring.sweep_records import (
 )
 
 if TYPE_CHECKING:
+    from threadsense.monitoring.ranking import RankingBasis
     from threadsense.monitoring.state import RunClaim
 
 EntryKind = Literal["thread_update", "finding"]
@@ -115,6 +116,10 @@ class PendingDigest:
     resumed: bool
     # None only for a digest recorded before issue views existed (state schema < 5).
     issue_view: dict[str, Any] | None
+    # None only for a digest recorded before rankings existed (state schema < 7).
+    ranking_basis: RankingBasis | None
+    # Materialized from `ranking_basis` before rendering; never stored in the state.
+    ranking: dict[str, Any] | None
 
 
 @dataclass(frozen=True)

@@ -283,16 +283,19 @@ def finding_refs(digest_json: dict[str, Any], thread_id: str) -> list[dict[str, 
     ]
 
 
-def test_watch_run_issue_journey_presents_schema_two_digests_with_issue_view(
+def test_watch_run_issue_journey_presents_schema_three_digests_with_issue_view(
     journey: dict[str, PhaseRun],
 ) -> None:
     for name in PRESENTING_PHASES:
         step = journey[name]
         digest_json = step.presented_json()
+        entry_ids = [entry["entry_id"] for entry in digest_json["entries"]]
+        ranked_ids = [item["entry_id"] for item in digest_json["ranking"]["order"]]
 
         assert step.exit_code == 0, name
         assert step.digest["status"] == "presented", name
-        assert digest_json["schema_version"] == 2, name
+        assert digest_json["schema_version"] == 3, name
+        assert sorted(ranked_ids) == sorted(entry_ids), name
         assert digest_json["issues"]["semantic_grouping"] == "not_eligible", name
         assert step.digest["issues"]["policy_sha256"] == DEFAULT_POLICY.sha256(), name
     initial = journey["initial"].digest["issues"]
@@ -703,7 +706,10 @@ def test_watch_digest_resume_after_crash_renders_identical_issue_view_bytes(
     assert crashed.json_path.read_bytes() == crashed.json_bytes
     assert crashed.markdown_path.read_bytes() == crashed.markdown_bytes
     resumed = json.loads(crashed.json_path.read_text(encoding="utf-8"))
-    assert resumed["schema_version"] == 2
+    assert resumed["schema_version"] == 3
+    assert sorted(item["entry_id"] for item in resumed["ranking"]["order"]) == sorted(
+        entry["entry_id"] for entry in resumed["entries"]
+    )
     assert {ref["issue_id"] for ref in resumed["issues"]["entry_refs"]} == {
         issue_id_for(WATCH_ID, thread) for thread in INITIAL_THREADS
     }

@@ -364,9 +364,11 @@ uv run threadsense watch inspect --id ID [--config PATH]
 uv run threadsense watch run --id ID [--lease-seconds N] [--config PATH]
 uv run threadsense watch digest --id ID [--lease-seconds N] [--config PATH]
 uv run threadsense watch schedule --id ID --format launchd|cron [--workspace DIR] [--config PATH]
+uv run threadsense watch explain --id ID --entry ENTRY_ID [--current] [--config PATH]
+uv run threadsense watch policy --id ID [--set PATH | --select POLICY_ID] [--config PATH]
 ```
 
-Output follows [output-modes.md](output-modes.md): human when stdout is a TTY and JSON otherwise, with `--output-format` overriding. In `json` mode the payload is printed to stdout. In `human` mode a successful payload is printed to stdout as syntax-highlighted JSON, and an error is a red panel on stderr showing the error code, message and details. In `quiet` mode a success prints only its `status` (`created`, `revised`, `unchanged`, `ok`, `presented`, `no_entries`, `rendered`, or the sweep outcome for `watch run`) and an error prints `error: <message>`, both on stdout. Failures exit with code `1`; `watch run` also exits `1` for a `partial` or `failed` sweep and still prints its payload. In `json` mode errors print:
+Output follows [output-modes.md](output-modes.md): human when stdout is a TTY and JSON otherwise, with `--output-format` overriding. In `json` mode the payload is printed to stdout. In `human` mode a successful payload is printed to stdout as syntax-highlighted JSON, and an error is a red panel on stderr showing the error code, message and details. In `quiet` mode a success prints only its `status` (`created`, `revised`, `unchanged`, `ok`, `presented`, `no_entries`, `rendered`, `selected`, the explanation status for `watch explain`, or the sweep outcome for `watch run`) and an error prints `error: <message>`, both on stdout. Failures exit with code `1`; `watch run` also exits `1` for a `partial` or `failed` sweep and still prints its payload. In `json` mode errors print:
 
 ```json
 {"status": "error", "error": {"type": "...", "code": "...", "message": "...", "details": {}}}
@@ -565,11 +567,18 @@ Each analyzed revision is turned into digest entries, once, and entries are pres
   "entry_ids": ["ent-..."],
   "materialized_entries": 1,
   "backlog": {"presentation_limit": 10, "presented_in_digest": 1, "...": "..."},
-  "issues": {"run_id": "...", "policy_sha256": "...", "entries": 1, "...": "..."}
+  "issues": {"run_id": "...", "policy_sha256": "...", "entries": 1, "...": "..."},
+  "ranking": {
+    "profile_revision": 1, "policy_id": "pol-...", "preference_sequence": 0,
+    "objective": "friction_analysis", "policy_name": "objective-default",
+    "ranked_entry_ids": ["ent-..."]
+  }
 }
 ```
 
 `status` is `presented` when a digest was written or resumed, and `no_entries` when nothing is waiting; then `digest_id`, `sequence`, `json_path`, `markdown_path` and `backlog` are `null` and `entry_ids` is empty. `materialized_entries` counts entries created by this invocation. The command exits `0` in both cases. `issues` is the issue-evidence ingestion result described under [`issues`](#issues) (counts of entries, new issues, lineage assignments, reports, exact copies, evidence, updates, comparisons, suggestions, `suggestions_truncated` and refusals), present whether or not a digest was presented.
+
+`ranking` summarizes the basis the digest was ranked from and its entries in ranked order; `entry_ids` keeps selection order. It is `null` when no digest was presented and for a resumed digest recorded before rankings existed, which keeps its original unranked order. See [`watch explain`](#watch-explain) and [`watch policy`](#watch-policy).
 
 `backlog` fields:
 
@@ -636,6 +645,206 @@ Overlap is controlled by the run claim, regardless of scheduler: `watch run` ref
   "install_instructions": ["..."]
 }
 ```
+
+### `watch explain`
+
+Explain one digest entry's rank. Read-only: `explain` never writes state.
+
+```bash
+uv run threadsense watch explain --id agent-memory --entry ent-... [--current]
+```
+
+Every digest records the basis its order was ranked from: the profile revision, the ranking policy id and the latest preference sequence of the watch. `explain` replays that basis against the stored entry payloads, the stored issue references and the hash-verified analysis artifacts, and for a written digest it refuses unless the replayed ranking equals the `ranking` recorded in the digest JSON artifact. The historical order and its reasons are therefore proven rather than restated, and later preferences, policy selections or profile revisions never change them.
+
+```json
+{
+  "artifact_type": "watch_explanation",
+  "status": "ranked",
+  "state_path": "<resolved storage root>/monitoring/state.sqlite3",
+  "watch_id": "agent-memory",
+  "entry_id": "ent-...",
+  "digest": {
+    "digest_id": "dig-...", "sequence": 3, "status": "written",
+    "json_path": "<monitoring directory>/watches/agent-memory/digests/000003-dig-....json",
+    "entry_count": 4
+  },
+  "replay": "matches_written_digest",
+  "basis": {
+    "profile_revision": 1, "policy_id": "pol-...", "preference_sequence": 2,
+    "objective": "friction_analysis", "policy_name": "objective-default"
+  },
+  "semantic": {"status": "not_eligible", "reason": "no eligible semantic ranking policy exists; ..."},
+  "ranking": {
+    "rank": 1, "entry_id": "ent-...", "kind": "finding", "score": 66,
+    "components": [
+      {"component": "severity", "points": 30, "severity": "high", "reason": "finding severity high"},
+      {"component": "objective", "points": 20, "objective": "friction_analysis", "signal_type": "issue", "action_type": "...", "recommended_owner": "...", "reason": "objective friction_analysis weights issue signals"},
+      {"component": "novelty", "points": 10, "novelty_kind": "new_source_event", "reason": "most novel evidence is new_source_event"},
+      {"component": "evidence", "points": 6, "novel_comments": 3, "counted_comments": 3, "reason": "3 of 3 novel comments counted (cap 5)"},
+      {"component": "preference", "points": 0, "unbounded_points": 0, "bound": 60, "matched": [], "reason": "no operator preference applies"},
+      {"component": "semantic", "points": null, "status": "not_eligible", "reason": "..."}
+    ],
+    "tie_break": {
+      "kind": "finding", "severity": "high", "issue_markers": 2, "request_markers": 0,
+      "comment_count": 7, "theme_key": "...", "entry_id": "ent-..."
+    }
+  },
+  "order": [{"rank": 1, "entry_id": "ent-...", "score": 66}, {"rank": 2, "entry_id": "ent-...", "score": 40}]
+}
+```
+
+`status` describes the entry, not the command:
+
+- `ranked`: the entry is in a digest recorded with a ranking basis. `replay` is `matches_written_digest` for a written digest and `pending_digest` for a digest recorded but not yet written, which a later `watch digest` or `watch run` writes in exactly this order. `ranking` is the entry's full ranking item and `order` lists every entry of that digest by rank.
+- `unranked`: the entry is in a digest recorded before rankings existed. That digest presents selection order; `ranking` is `null` and `position` is the entry's 1-based position.
+- `unpresented`: the entry is waiting for a digest; `digest` and `ranking` are `null`.
+
+Components, all integers from the policy except `semantic`:
+
+- `severity`: the policy's points for the finding's severity; `0` for thread updates
+- `objective`: the profile objective's points for the finding's existing action signal type (`issue`, `request`, `mixed` or `discussion`, classified from the analysis's issue markers, request markers and comment count); `0` for thread updates
+- `novelty`: the points of the most novel kind among the entry's new comments; `0` without new comments
+- `evidence`: `points_per_novel_comment` times the number of new comments, counting at most `max_counted_comments`
+- `preference`: for each scope the entry belongs to (the entry, its finding stream, its thread and its issue), the points of the latest preference in that scope up to the recorded preference sequence; the sum is clamped to `-bound..bound`. `matched` lists each applied preference with its `feedback_id`, `sequence`, `value`, `scope_kind`, `scope_key` and `points`, and `unbounded_points` keeps the sum before clamping
+- `semantic`: always `not_eligible` with `points` `null`; it contributes nothing
+
+`score` is the sum of the integer points. Higher scores come first; ties fall back to `tie_break`: findings before thread updates, then higher severity, more issue markers, more request markers, more comments, theme key and finally entry id. Corrections are not a ranking input.
+
+`--current` adds a `current` object: the same entries ranked under the watch's current basis (latest profile revision, active policy and latest preference sequence), with `"recorded": false`, its `basis` and the entry's ranking item. It is derived on demand and never recorded. For an unpresented entry, `current` scores that entry on its own: it has `"rank_scope": "entry_only"` and no `rank`, because its position among the next digest's entries is not known until that digest selects them.
+
+Refusals exit `1` and write nothing; the `reason` is in `details`:
+
+- `invalid_entry_id` (`monitoring_input_error`): `--entry` is not an `ent-` id
+- `unknown_watch`: no such watch
+- `unknown_entry`: no such digest entry
+- `cross_watch_target`: the entry belongs to a different watch
+- `ranking_replay_mismatch`: the replayed ranking differs from the one in the written digest
+- `artifact_hash_mismatch` or `artifact_missing`: the written digest JSON, or an analysis artifact the ranking reads, no longer matches its recorded hash or is gone
+- `unknown_policy` or `ranking_policy_unreadable`: the recorded policy is missing or no longer hashes to its id
+- `digest_state_unreadable` or `ranking_input_unreadable`: a stored digest, entry payload or ranking input cannot be read
+- `ranking_basis_missing`: a written digest artifact contains a ranking but its recorded ranking basis is missing
+
+### `watch policy`
+
+Show or select the ranking policy a watch's new digests use.
+
+```bash
+uv run threadsense watch policy --id agent-memory
+uv run threadsense watch policy --id agent-memory --set ranking-policy.toml
+uv run threadsense watch policy --id agent-memory --select pol-...
+```
+
+Without `--set` or `--select` the command is read-only and prints the active policy and the watch's selection history:
+
+```json
+{
+  "artifact_type": "ranking_policy",
+  "status": "ok",
+  "state_path": "<resolved storage root>/monitoring/state.sqlite3",
+  "watch_id": "agent-memory",
+  "active_policy_id": "pol-...",
+  "active_policy": {"policy_version": 1, "name": "objective-default", "severity": {"high": 30, "...": "..."}, "...": "..."},
+  "default_policy_id": "pol-...",
+  "selections": [{"sequence": 1, "policy_id": "pol-...", "name": "friction-first", "selected_at_utc": 1767225600.0}]
+}
+```
+
+A watch with no selections uses the built-in default policy. Policies are immutable and content-addressed: the `pol-` id is derived from the SHA-256 of the policy's canonical JSON, so the same document always has the same id. `--set PATH` validates a TOML policy file, records it if its id is new and selects it. `--select POLICY_ID` switches back to a policy already recorded in the state database, or to the built-in default by its `default_policy_id`. Selecting appends a selection event; earlier selections stay in the history. A selection affects only digests recorded afterwards: digests already recorded, including a pending digest that is resumed later, keep the basis recorded with them, and written digests are never rewritten.
+
+```json
+{
+  "artifact_type": "ranking_policy_selection",
+  "status": "selected",
+  "state_path": "<resolved storage root>/monitoring/state.sqlite3",
+  "watch_id": "agent-memory",
+  "policy_id": "pol-...",
+  "previous_policy_id": "pol-...",
+  "active_policy": {"policy_version": 1, "name": "friction-first", "...": "..."}
+}
+```
+
+`status` is `selected` when the active policy changed and `unchanged` when the policy was already active; no selection event is appended then.
+
+A policy file has exactly the tables and keys below; every key is required, values are TOML integers, and unknown keys are refused. This document is the built-in default, so `--set` with it selects the default policy's id:
+
+```toml
+policy_version = 1
+name = "objective-default"
+
+[severity]
+high = 30
+medium = 20
+low = 10
+
+[objective.friction_analysis]
+issue = 20
+mixed = 15
+request = 5
+discussion = 0
+
+[objective.feature_demand]
+issue = 5
+mixed = 15
+request = 20
+discussion = 0
+
+[objective.sentiment_mapping]
+issue = 5
+mixed = 5
+request = 5
+discussion = 10
+
+[objective.competitive_intelligence]
+issue = 10
+mixed = 15
+request = 10
+discussion = 5
+
+[objective.general_survey]
+issue = 0
+mixed = 0
+request = 0
+discussion = 0
+
+[novelty]
+new_source_event = 10
+edited = 5
+newly_observed_historical = 2
+initial_observation = 0
+
+[evidence]
+points_per_novel_comment = 2
+max_counted_comments = 5
+
+[preference]
+useful = 40
+irrelevant = -40
+already_known = -25
+wrong_audience = -30
+bound = 60
+```
+
+| Field | Allowed values |
+| --- | --- |
+| `policy_version` | `1` |
+| `name` | lowercase slug of 1-64 characters: letters, digits and hyphens, starting and ending with a letter or digit |
+| `severity.high`, `.medium`, `.low` | `0` to `100` |
+| `objective.<objective>.issue`, `.mixed`, `.request`, `.discussion` | `-100` to `100`, for each of the five profile objectives |
+| `novelty.new_source_event`, `.edited`, `.newly_observed_historical`, `.initial_observation` | `0` to `100` |
+| `evidence.points_per_novel_comment` | `0` to `20` |
+| `evidence.max_counted_comments` | `0` to `50` |
+| `preference.useful` | `0` to `100` |
+| `preference.irrelevant`, `.already_known`, `.wrong_audience` | `-100` to `0` |
+| `preference.bound` | `0` to `100` |
+
+Refusals exit `1` and write nothing; the `reason` is in `details`:
+
+- `policy_file_missing` (`monitoring_input_error`): the `--set` file does not exist
+- `policy_file_unreadable` (`monitoring_input_error`): the `--set` path cannot be read as a file (for example a directory, unreadable permissions or invalid UTF-8)
+- `invalid_ranking_policy` (`monitoring_input_error`): the file is not valid TOML, or a field is missing, unknown, not an integer or out of range; `details.field` names the field that failed validation
+- `unknown_policy`: `--select` names a malformed id or a policy not recorded in this state database
+- `unknown_watch`: no such watch
+- `ranking_policy_unreadable`: a stored policy no longer hashes to its recorded id
 
 ### State location
 
@@ -780,11 +989,11 @@ Candidates must have first evidence within `candidate_window_days` of the new th
 
 ### Digest issue section
 
-A digest created by a state database at schema version `5` is a `schema_version: 2` JSON artifact with a top-level `issues` section, and its Markdown artifact gains an Issues section and per-entry issue lines. A digest still pending from an earlier schema version keeps `schema_version: 1` and no issue section. See [artifacts.md](artifacts.md) for the recorded shape.
+A digest created by a state database at schema version `5` or `6` is a `schema_version: 2` JSON artifact with a top-level `issues` section (at schema version `7` it is `schema_version: 3` and also carries a `ranking` section; see [`watch explain`](#watch-explain)), and its Markdown artifact gains an Issues section and per-entry issue lines. A digest still pending from an earlier schema version keeps `schema_version: 1` and no issue section. See [artifacts.md](artifacts.md) for the recorded shape.
 
 ## `feedback`
 
-Record and read operator feedback about a watch's digest entries, thread revisions and issues. Feedback has two kinds kept in separate append-only tables. A preference is a subjective presentation signal; this release records preferences only, and no command reorders digests by them yet. A correction is an operator assertion recorded beside the unchanged original: it never edits evidence, findings, counts, issue membership or written digests and reports, and it is not a truth label or training data.
+Record and read operator feedback about a watch's digest entries, thread revisions and issues. Feedback has two kinds kept in separate append-only tables. A preference is a subjective presentation signal: digests recorded after it rank its entries accordingly (see [`watch policy`](#watch-policy)), and it never selects, hides or drops an entry. A correction is an operator assertion recorded beside the unchanged original: it never edits evidence, findings, counts, issue membership or written digests and reports, and it is not a truth label, training data or a ranking input.
 
 ```bash
 uv run threadsense feedback record --watch ID --target TARGET_ID --kind preference|correction --value VALUE --key KEY [--target-kind entry|finding|observation|issue] [--note TEXT] [--config PATH]

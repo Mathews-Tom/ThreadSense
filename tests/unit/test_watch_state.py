@@ -25,6 +25,8 @@ from threadsense.monitoring import (
     parse_watch_profile,
 )
 from threadsense.monitoring.digest_records import DigestEntryRecord
+from threadsense.monitoring.feedback_records import feedback_request
+from threadsense.monitoring.ranking import DEFAULT_RANKING_POLICY
 from threadsense.monitoring.state import (
     _SCHEMA_STATEMENTS,
     STATE_APPLICATION_ID,
@@ -1758,4 +1760,59 @@ def test_store_v5_state_writable_call_adds_empty_feedback_tables(tmp_path: Path)
         "effective_preferences": [],
         "corrections": [],
         "correction_view": [],
+    }
+
+
+RANKING_TABLES = ("watch_ranking_policies", "watch_ranking_selections", "watch_digest_rankings")
+
+
+def create_v6_state_with_feedback(tmp_path: Path) -> MonitoringStore:
+    """Record sweep history and one preference, then drop later objects: a version 6 state."""
+    store, _clock, claim = tracked_store(tmp_path)
+    initial = record_initial(store, claim, FIRST_COMMENT)
+    store.complete_sweep(claim, "changes", {"refresh": {"pending": 0}})
+    store.record_feedback(
+        feedback_request(
+            WATCH_ID,
+            idempotency_key="key-1",
+            kind="preference",
+            value="useful",
+            target_id=initial.revision_id,
+            target_kind=None,
+            note=None,
+        )
+    )
+    with closing(sqlite3.connect(store.path)) as conn:
+        drop_schema_after(conn, 6)
+        conn.execute("PRAGMA user_version = 6")
+        conn.commit()
+    return store
+
+
+def test_store_v6_state_writable_call_adds_empty_ranking_tables(tmp_path: Path) -> None:
+    store = create_v6_state_with_feedback(tmp_path)
+    v6_tables = state_tables(store)
+    rows_before = {
+        table: query_state(store, f"SELECT * FROM {table} ORDER BY 1") for table in v6_tables
+    }
+
+    repeated = store.save_profile(parse_watch_profile(fixture_payload()))
+
+    assert not set(RANKING_TABLES) & set(v6_tables)
+    assert set(FEEDBACK_TABLES) <= set(v6_tables)
+    assert repeated.status == "unchanged"
+    assert schema_identity(store) == (STATE_APPLICATION_ID, STATE_SCHEMA_VERSION)
+    assert {
+        table: query_state(store, f"SELECT * FROM {table} ORDER BY 1") for table in v6_tables
+    } == rows_before
+    assert len(rows_before["watch_preference_events"]) == 1
+    assert set(v6_tables) | set(RANKING_TABLES) <= set(state_tables(store))
+    for table in RANKING_TABLES:
+        assert query_state(store, f"SELECT COUNT(*) FROM {table}") == [(0,)]
+    assert store.ranking_policy_status(WATCH_ID) == {
+        "watch_id": WATCH_ID,
+        "active_policy_id": DEFAULT_RANKING_POLICY.policy_id,
+        "active_policy": DEFAULT_RANKING_POLICY.to_dict(),
+        "default_policy_id": DEFAULT_RANKING_POLICY.policy_id,
+        "selections": [],
     }
