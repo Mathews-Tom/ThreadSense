@@ -215,12 +215,12 @@ class AnnotationsScenario:
         self.baseline_analysis()
         self.required_real_annotation()
         self.server_memory_observation()
-        self.input_and_baseline_unchanged()
         self.deterministic_replay()
         self.optional_unavailable()
         self.required_unavailable()
         self.refused_output_location()
         self.refused_endpoint()
+        self.input_and_baseline_unchanged()
 
     def core_without_model(self) -> None:
         completed = subprocess.run(
