@@ -674,9 +674,12 @@ def _check_comment_copies(
     by_thread: Mapping[str, Partition],
     violations: list[dict[str, Any]],
 ) -> IntegrityCheck:
+    excluded_digests = {_normalized_text_sha256(body) for body in ("", "[deleted]", "[removed]")}
     groups: dict[tuple[str, str], list[Member]] = {}
     for item in corpus:
         for comment in item.comments:
+            if comment.normalized_text_sha256 in excluded_digests:
+                continue
             key = ("normalized_text_sha256", comment.normalized_text_sha256)
             member = {"thread_id": comment.thread_id, "comment_id": comment.comment_id}
             groups.setdefault(key, []).append(member)

@@ -342,6 +342,60 @@ def test_load_label_set_duplicate_label_raises_labels_invalid(tmp_path: Path) ->
     assert (details["comment_id"], details["question_id"]) == ("fixture:neg-1", "request_intent")
 
 
+@pytest.mark.parametrize(
+    ("first_body", "second_body"),
+    [
+        (" \t", "\n "),
+        ("[deleted]", "[deleted]"),
+        (" \t[DeLeTeD]\n", "[DELETED] "),
+        ("[removed]", "[removed]"),
+        ("\n[ReMoVeD] ", "\t[REMOVED]\n"),
+    ],
+)
+def test_check_partition_integrity_non_substantive_comments_preserve_rows(
+    tmp_path: Path, first_body: str, second_body: str
+) -> None:
+    manifest_path = _copy_dataset(tmp_path)
+    manifest = load_evaluation_manifest(manifest_path)
+    original = load_corpus(manifest, manifest_path.parent)
+    original_identities = [
+        (comment.thread_id, comment.comment_id, comment.index)
+        for item in original
+        for comment in item.comments
+    ]
+    labels = load_label_set(manifest, manifest_path.parent)
+
+    def edit_negation(payload: Payload) -> None:
+        payload["thread"]["comments"][2]["body"] = first_body
+
+    def edit_repetition(payload: Payload) -> None:
+        payload["thread"]["comments"][4]["body"] = second_body
+
+    _edit_thread(manifest_path, "fixture:eng-negation", edit_negation)
+    _edit_thread(manifest_path, "fixture:eng-repetition", edit_repetition)
+    manifest = load_evaluation_manifest(manifest_path)
+    corpus = load_corpus(manifest, manifest_path.parent)
+    by_id = {item.entry.thread_id: item for item in corpus}
+
+    assert by_id["fixture:eng-negation"].entry.partition is Partition.DEVELOPMENT
+    assert by_id["fixture:eng-repetition"].entry.partition is Partition.EVALUATION
+    assert [
+        (comment.thread_id, comment.comment_id, comment.index)
+        for item in corpus
+        for comment in item.comments
+    ] == original_identities
+    assert [len(item.comments) for item in corpus] == [len(item.comments) for item in original]
+    assert by_id["fixture:eng-negation"].thread.comments[2].body == first_body
+    assert by_id["fixture:eng-repetition"].thread.comments[4].body == second_body
+    assert (
+        by_id["fixture:eng-negation"].comments[2].normalized_text_sha256
+        == by_id["fixture:eng-repetition"].comments[4].normalized_text_sha256
+    )
+    assert load_label_set(manifest, manifest_path.parent) == labels
+    _validate_labels(manifest_path)
+    assert check_partition_integrity(manifest, corpus).to_dict()["status"] == "passed"
+
+
 def test_check_partition_integrity_comment_copy_across_partitions_raises_partition_leak(
     tmp_path: Path,
 ) -> None:

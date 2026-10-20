@@ -399,7 +399,7 @@ Checks run in order and every violation is collected; any violation refuses the 
 | --- | --- |
 | `thread_partition` | Each thread id appears in exactly one partition |
 | `thread_copies` | Threads sharing snapshot bytes or a non-empty title and body share a partition |
-| `comment_copies` | Comments with the same casefolded, whitespace-collapsed text in different threads share a partition; copies inside one thread are allowed |
+| `comment_copies` | Comments with the same casefolded, whitespace-collapsed text in different threads share a partition; normalized empty text, `[deleted]` and `[removed]` are excluded from copy grouping only, and all comment rows are retained; copies inside one thread are allowed |
 | `issue_groups` | All members of an authored repeated-issue group share a partition |
 
 The document records each passed check with `groups_checked` and a short `detail`.
