@@ -1,5 +1,8 @@
 """Record issue evidence: report lineage, initial memberships and bounded suggestions.
 
+An origin discovered after its copy is recorded as a ledger correction event in the ingestion
+summary; recorded reports and memberships never change.
+
 Owned by `MonitoringStore`: `_record_issue_evidence` runs inside a transaction the store has
 already fenced against stale run owners. Every SQL value is a bound parameter; f-strings only
 splice constant column lists and placeholder runs defined in these modules.
@@ -9,7 +12,6 @@ from __future__ import annotations
 
 import json
 import math
-import re
 import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -18,6 +20,16 @@ from typing import TYPE_CHECKING, Any
 
 from threadsense.errors import MonitoringInputError
 from threadsense.monitoring.digest_records import _ENTRY_ID_PATTERN
+from threadsense.monitoring.issue_corrections import (
+    _SHA256_PATTERN,
+    LineageCorrection,
+    LineageProjection,
+    OriginMatch,
+    _effective_origin_match,
+    _late_origin_corrections,
+    _lineage_events_json,
+    _load_lineage_projection,
+)
 from threadsense.monitoring.issue_records import (
     LINEAGE_MIN_CHARS,
     SHARED_LINK_REFUSAL,
@@ -32,6 +44,7 @@ from threadsense.monitoring.issue_records import (
     _current_issue,
     _insert_membership,
     _issue_refusal,
+    _issue_unreadable,
     _matches,
     _MembershipEvent,
     _stored_str_list,
@@ -49,7 +62,6 @@ if TYPE_CHECKING:
 # Store helpers. Every SQL value is a bound parameter; f-strings only splice the constant
 # column lists and placeholder runs defined in this module.
 
-_SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 _SECONDS_PER_DAY = 86400.0
 _SEED_REASON = "first finding evidence recorded for this thread"
 # The issue's home thread's latest membership event, correlated with `watch_issues AS i`.
@@ -63,14 +75,6 @@ _CANDIDATES_SQL = (
     "WHERE i.watch_id = ? AND i.created_sequence < ? AND i.anchor_utc BETWEEN ? AND ? "
     f"AND {_HOME_CURRENT_ISSUE} IS NOT ? "
     "ORDER BY ABS(i.anchor_utc - ?) ASC, i.home_thread_id ASC LIMIT ?"
-)
-_ORIGIN_SQL = (
-    "SELECT r.report_id, r.source_thread_id, r.record_sequence "
-    "FROM watch_issue_evidence AS ev "
-    "JOIN watch_issue_reports AS r ON r.report_id = ev.report_id "
-    "WHERE ev.watch_id = ? AND ev.text_sha256 = ? AND r.lineage = 'firsthand' "
-    "AND r.report_id != ? AND r.source_created_utc <= ? "
-    "ORDER BY r.record_sequence ASC LIMIT 1"
 )
 _PENDING_ENTRIES_SQL = (
     "SELECT e.entry_id, e.source_thread_id, e.revision_id, e.theme_key, e.payload_json, "
@@ -94,12 +98,15 @@ class _IssueBatch:
     policy: IssuePolicy
     policy_sha256: str
     now: float
+    # Effective lineage of the watch; this batch's corrections advance it as they are found.
+    lineage: LineageProjection
 
 
 @dataclass
 class _IssueTally:
-    """Running counts of one ingestion batch."""
+    """Running counts of one ingestion batch, with the lineage corrections it appended."""
 
+    lineage_corrections: list[LineageCorrection]
     threads_created: int = 0
     lineage_assignments: int = 0
     reports_recorded: int = 0
@@ -354,6 +361,7 @@ def _record_issue_evidence(
         policy=policy,
         policy_sha256=policy.sha256(),
         now=now,
+        lineage=_load_lineage_projection(conn, claim.watch_id),
     )
     known_policy = conn.execute(
         "SELECT 1 FROM watch_issue_policies WHERE policy_sha256 = ?", (batch.policy_sha256,)
@@ -364,7 +372,7 @@ def _record_issue_evidence(
             "VALUES (?, ?, ?)",
             (batch.policy_sha256, policy.canonical_json(), now),
         )
-    tally = _IssueTally()
+    tally = _IssueTally(lineage_corrections=[])
     created: list[str] = []
     recorded: dict[str, int] = {}
     copies: dict[str, list[_ExactCopy]] = {}
@@ -405,8 +413,9 @@ def _record_issue_evidence(
         suggestions=tally.suggestions,
         suggestions_truncated=tally.suggestions_truncated,
         refusals=tally.refusals,
+        lineage_corrections=len(tally.lineage_corrections),
     )
-    _insert_ingestion(conn, batch, result)
+    _insert_ingestion(conn, batch, result, tally.lineage_corrections)
     return result
 
 
@@ -524,11 +533,24 @@ def _record_report(
     origin_report_id: str | None
     if stored is None:
         copy = _insert_report(conn, batch, entry, report)
+        # The new report may be the earlier-posted origin of reports already recorded.
+        tally.lineage_corrections.extend(
+            _late_origin_corrections(
+                conn,
+                batch.lineage,
+                discovered_report_id=report_id,
+                content_chars=report.content_chars,
+                discovery_entry_id=entry.entry_id,
+                run_id=batch.run_id,
+                policy_sha256=batch.policy_sha256,
+            )
+        )
         origin_report_id = None if copy is None else copy.origin_report_id
         tally.reports_recorded += 1
         tally.exact_copies += 0 if copy is None else 1
     else:
-        origin_report_id = None if stored[0] is None else str(stored[0])
+        recorded_origin = None if stored[0] is None else str(stored[0])
+        origin_report_id = batch.lineage.effective_origin(report_id, recorded_origin)
     # A copy's cues belong to its origin unless the reposter added text the origin never had.
     records_cues = origin_report_id is None or (
         conn.execute(
@@ -568,12 +590,15 @@ def _insert_report(
 ) -> _ExactCopy | None:
     """Insert a new report with its lineage fixed now; earlier rows of this batch are visible."""
     report_id = report_id_for(batch.watch_id, entry.source_thread_id, report.comment_id)
-    origin = None
+    origin: OriginMatch | None = None
     if report.content_chars >= LINEAGE_MIN_CHARS:
-        origin = conn.execute(
-            _ORIGIN_SQL,
-            (batch.watch_id, report.text_sha256, report_id, float(report.source_created_utc)),
-        ).fetchone()
+        origin = _effective_origin_match(
+            conn,
+            batch.lineage,
+            report_id=report_id,
+            text_sha256=report.text_sha256,
+            source_created_utc=float(report.source_created_utc),
+        )
     sequence = conn.execute(
         "SELECT COALESCE(MAX(record_sequence), 0) + 1 FROM watch_issue_reports WHERE watch_id = ?",
         (batch.watch_id,),
@@ -595,7 +620,7 @@ def _insert_report(
             report.permalink,
             float(report.source_created_utc),
             "firsthand" if origin is None else "exact_copy",
-            None if origin is None else str(origin[0]),
+            None if origin is None else origin.report_id,
             entry.entry_id,
             batch.now,
             batch.run_id,
@@ -605,9 +630,9 @@ def _insert_report(
         return None
     return _ExactCopy(
         report_id=report_id,
-        origin_report_id=str(origin[0]),
-        origin_thread_id=str(origin[1]),
-        origin_sequence=int(origin[2]),
+        origin_report_id=origin.report_id,
+        origin_thread_id=origin.source_thread_id,
+        origin_sequence=origin.record_sequence,
     )
 
 
@@ -735,13 +760,13 @@ def _compare_candidates(
         ),
     ).fetchall()
     tally.comparisons += len(rows)
-    own = _thread_signals(conn, batch.watch_id, thread_id)
+    own = _thread_signals(conn, batch, thread_id)
     unconfirmed: list[_Comparison] = []
     refused: list[_Comparison] = []
     for candidate_thread_id, candidate_anchor in rows:
         comparison = _compare(
             own,
-            _thread_signals(conn, batch.watch_id, str(candidate_thread_id)),
+            _thread_signals(conn, batch, str(candidate_thread_id)),
             candidate_thread_id=str(candidate_thread_id),
             gap_seconds=abs(float(candidate_anchor) - anchor),
         )
@@ -781,7 +806,8 @@ def _compare(
     )
 
 
-def _thread_signals(conn: sqlite3.Connection, watch_id: str, thread_id: str) -> _ThreadSignals:
+def _thread_signals(conn: sqlite3.Connection, batch: _IssueBatch, thread_id: str) -> _ThreadSignals:
+    watch_id = batch.watch_id
     themes: set[str] = set()
     phrases: set[str] = set()
     for entry_id, theme_key, phrases_json in conn.execute(
@@ -799,19 +825,54 @@ def _thread_signals(conn: sqlite3.Connection, watch_id: str, thread_id: str) -> 
         (watch_id, thread_id),
     ).fetchall():
         links.update(_stored_str_list(str(links_json), report_id=report_id, entry_id=entry_id))
-    copies = conn.execute(
-        "SELECT r.report_id, o.source_thread_id FROM watch_issue_reports AS r "
-        "JOIN watch_issue_reports AS o ON o.report_id = r.copy_of_report_id "
-        "WHERE r.watch_id = ? AND r.source_thread_id = ? AND r.lineage = 'exact_copy'",
+    # Exact copies by effective lineage: a correction overrides the recorded origin.
+    origins: dict[str, str] = {}
+    for report_id, recorded_origin in conn.execute(
+        "SELECT report_id, copy_of_report_id FROM watch_issue_reports "
+        "WHERE watch_id = ? AND source_thread_id = ?",
         (watch_id, thread_id),
-    ).fetchall()
+    ).fetchall():
+        origin = batch.lineage.effective_origin(
+            str(report_id), None if recorded_origin is None else str(recorded_origin)
+        )
+        if origin is not None:
+            origins[str(report_id)] = origin
+    origin_threads = _origin_threads(conn, watch_id, set(origins.values()))
     return _ThreadSignals(
         thread_id=thread_id,
         themes=frozenset(themes),
         key_phrases=frozenset(phrases),
         links=frozenset(links),
-        copies=frozenset((str(report_id), str(origin)) for report_id, origin in copies),
+        copies=frozenset(
+            (report_id, origin_threads[origin]) for report_id, origin in origins.items()
+        ),
     )
+
+
+def _origin_threads(
+    conn: sqlite3.Connection, watch_id: str, origin_ids: set[str]
+) -> dict[str, str]:
+    """The source thread of each origin report, in one bounded query of the watch."""
+    if not origin_ids:
+        return {}
+    ids = sorted(origin_ids)
+    placeholders = ", ".join("?" for _ in ids)
+    threads = {
+        str(report_id): str(thread_id)
+        for report_id, thread_id in conn.execute(
+            "SELECT report_id, source_thread_id FROM watch_issue_reports "
+            f"WHERE watch_id = ? AND report_id IN ({placeholders})",
+            (watch_id, *ids),
+        ).fetchall()
+    }
+    missing = [origin_id for origin_id in ids if origin_id not in threads]
+    if missing:
+        raise _issue_unreadable(
+            "exact-copy origin report is not recorded for this watch",
+            watch_id=watch_id,
+            report_ids=missing,
+        )
+    return threads
 
 
 def _insert_suggestion(
@@ -846,7 +907,13 @@ def _insert_suggestion(
     )
 
 
-def _insert_ingestion(conn: sqlite3.Connection, batch: _IssueBatch, result: IssueIngestion) -> None:
+def _insert_ingestion(
+    conn: sqlite3.Connection,
+    batch: _IssueBatch,
+    result: IssueIngestion,
+    corrections: Sequence[LineageCorrection],
+) -> None:
+    """Append the ingestion's ledger row: its summary and the correction events it found."""
     recorded = conn.execute(
         "SELECT 1 FROM watch_issue_ingestions WHERE run_id = ?", (batch.run_id,)
     ).fetchone()
@@ -863,7 +930,7 @@ def _insert_ingestion(conn: sqlite3.Connection, batch: _IssueBatch, result: Issu
             batch.run_id,
             batch.watch_id,
             batch.policy_sha256,
-            _canonical_json(result.to_dict(), "summary"),
+            _canonical_json({**result.to_dict(), **_lineage_events_json(corrections)}, "summary"),
             batch.now,
         ),
     )

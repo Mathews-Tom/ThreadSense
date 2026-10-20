@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from threadsense.errors import MonitoringInputError, MonitoringStateError
+from threadsense.monitoring.issue_corrections import LineageProjection, _load_lineage_projection
 from threadsense.monitoring.issue_records import (
     ISSUE_ID_PATTERN,
     MAX_REASON_CHARS,
@@ -311,17 +312,33 @@ def _issue_members(conn: sqlite3.Connection, watch_id: str, issue_id: str) -> li
 
 
 def _issue_counts(
-    conn: sqlite3.Connection, watch_id: str, member_thread_ids: Sequence[str]
+    conn: sqlite3.Connection,
+    watch_id: str,
+    member_thread_ids: Sequence[str],
+    projection: LineageProjection,
 ) -> dict[str, Any]:
-    row = conn.execute(
-        "SELECT COUNT(DISTINCT source_thread_id), COUNT(DISTINCT community), "
-        "COUNT(DISTINCT author_sha256), COALESCE(SUM(author_sha256 IS NULL), 0), COUNT(*), "
-        "COALESCE(SUM(lineage = 'firsthand'), 0), COALESCE(SUM(lineage = 'exact_copy'), 0) "
+    """Observation counts over every member report; lineage counts use effective lineage."""
+    rows = conn.execute(
+        "SELECT report_id, source_thread_id, community, author_sha256, copy_of_report_id "
         "FROM watch_issue_reports WHERE watch_id = ? "
         f"AND source_thread_id IN ({_placeholders(len(member_thread_ids))})",
         (watch_id, *member_thread_ids),
-    ).fetchone()
-    counts: dict[str, Any] = {key: int(value) for key, value in zip(_COUNT_KEYS, row, strict=True)}
+    ).fetchall()
+    copies = sum(
+        1
+        for report_id, _thread, _community, _author, recorded_origin in rows
+        if projection.effective_origin(str(report_id), recorded_origin) is not None
+    )
+    values = (
+        len({row[1] for row in rows}),
+        len({row[2] for row in rows if row[2] is not None}),
+        len({row[3] for row in rows if row[3] is not None}),
+        sum(1 for row in rows if row[3] is None),
+        len(rows),
+        len(rows) - copies,
+        copies,
+    )
+    counts: dict[str, Any] = dict(zip(_COUNT_KEYS, values, strict=True))
     counts["independence"] = {
         "status": "not_verified",
         "verified_independent_reports": None,
@@ -330,18 +347,31 @@ def _issue_counts(
     return counts
 
 
+def _copied_from(projection: LineageProjection, report_id: str, text_sha256: str) -> str | None:
+    """The origin an update's cue was copied from: its report's correction proves that text."""
+    correction = projection.correction_for(report_id)
+    if correction is None or correction.text_sha256 != text_sha256:
+        return None
+    return correction.origin_report_id
+
+
 def _update_counts(
-    conn: sqlite3.Connection, watch_id: str, member_thread_ids: Sequence[str]
+    conn: sqlite3.Connection,
+    watch_id: str,
+    member_thread_ids: Sequence[str],
+    projection: LineageProjection,
 ) -> dict[str, int]:
+    """Update counts by kind, excluding cues copied from an origin that records them itself."""
     counts: dict[str, int] = dict.fromkeys(UPDATE_KINDS, 0)
-    for kind, count in conn.execute(
-        "SELECT kind, COUNT(*) FROM watch_issue_updates WHERE watch_id = ? "
-        f"AND source_thread_id IN ({_placeholders(len(member_thread_ids))}) GROUP BY kind",
+    for kind, report_id, text_sha256 in conn.execute(
+        "SELECT kind, report_id, text_sha256 FROM watch_issue_updates WHERE watch_id = ? "
+        f"AND source_thread_id IN ({_placeholders(len(member_thread_ids))})",
         (watch_id, *member_thread_ids),
     ).fetchall():
         if kind not in counts:
             raise _issue_unreadable("stored update kind is not recognized", kind=kind)
-        counts[kind] = int(count)
+        if _copied_from(projection, str(report_id), str(text_sha256)) is None:
+            counts[kind] += 1
     return counts
 
 
@@ -385,6 +415,12 @@ def _member_suggestions(
 
 def _issue_summary(conn: sqlite3.Connection, watch_id: str, issue_id: str) -> dict[str, Any]:
     """One issue as a list item: state, members, counts and open suggestions."""
+    return _summarize_issue(conn, watch_id, issue_id, _load_lineage_projection(conn, watch_id))
+
+
+def _summarize_issue(
+    conn: sqlite3.Connection, watch_id: str, issue_id: str, projection: LineageProjection
+) -> dict[str, Any]:
     issue = _issue_row(conn, watch_id, issue_id)
     member_ids = [
         str(member["source_thread_id"]) for member in _issue_members(conn, watch_id, issue_id)
@@ -395,8 +431,8 @@ def _issue_summary(conn: sqlite3.Connection, watch_id: str, issue_id: str) -> di
         "home_thread_id": issue.home_thread_id,
         "state": _issue_state(conn, watch_id, issue_id, issue.home_thread_id),
         "member_thread_ids": sorted(member_ids),
-        "counts": _issue_counts(conn, watch_id, member_ids),
-        "update_counts": _update_counts(conn, watch_id, member_ids),
+        "counts": _issue_counts(conn, watch_id, member_ids, projection),
+        "update_counts": _update_counts(conn, watch_id, member_ids, projection),
         "unconfirmed_suggestions": sum(
             1
             for suggestion in suggestions
@@ -410,14 +446,16 @@ def _list_issues(conn: sqlite3.Connection, watch_id: str) -> list[dict[str, Any]
         "SELECT issue_id FROM watch_issues WHERE watch_id = ? ORDER BY created_sequence ASC",
         (watch_id,),
     ).fetchall()
-    return [_issue_summary(conn, watch_id, str(row[0])) for row in rows]
+    projection = _load_lineage_projection(conn, watch_id)
+    return [_summarize_issue(conn, watch_id, str(row[0]), projection) for row in rows]
 
 
 def _inspect_issue(conn: sqlite3.Connection, watch_id: str, issue_id: str) -> dict[str, Any]:
     issue = _issue_row(conn, watch_id, issue_id)
     members = _issue_members(conn, watch_id, issue_id)
     member_ids = [str(member["source_thread_id"]) for member in members]
-    update_counts = _update_counts(conn, watch_id, member_ids)
+    projection = _load_lineage_projection(conn, watch_id)
+    update_counts = _update_counts(conn, watch_id, member_ids, projection)
     return {
         "issue_id": issue_id,
         "watch_id": watch_id,
@@ -430,10 +468,10 @@ def _inspect_issue(conn: sqlite3.Connection, watch_id: str, issue_id: str) -> di
             "basis": _RESOLUTION_BASIS,
         },
         "members": members,
-        "counts": _issue_counts(conn, watch_id, member_ids),
+        "counts": _issue_counts(conn, watch_id, member_ids, projection),
         "update_counts": update_counts,
-        "reports": _member_reports(conn, watch_id, member_ids),
-        "updates": _member_updates(conn, watch_id, member_ids),
+        "reports": _projected_member_reports(conn, watch_id, member_ids, projection),
+        "updates": _member_updates(conn, watch_id, member_ids, projection),
         "membership_history": _membership_history(conn, watch_id, issue_id),
         "suggestions": _member_suggestions(conn, watch_id, member_ids),
         "grouping_policy": _grouping_policy(conn, issue.policy_sha256),
@@ -443,6 +481,17 @@ def _inspect_issue(conn: sqlite3.Connection, watch_id: str, issue_id: str) -> di
 def _member_reports(
     conn: sqlite3.Connection, watch_id: str, member_thread_ids: Sequence[str]
 ) -> list[dict[str, Any]]:
+    projection = _load_lineage_projection(conn, watch_id)
+    return _projected_member_reports(conn, watch_id, member_thread_ids, projection)
+
+
+def _projected_member_reports(
+    conn: sqlite3.Connection,
+    watch_id: str,
+    member_thread_ids: Sequence[str],
+    projection: LineageProjection,
+) -> list[dict[str, Any]]:
+    """Member reports with effective lineage, the recorded lineage and its latest correction."""
     marks = _placeholders(len(member_thread_ids))
     evidence: dict[str, list[dict[str, Any]]] = {}
     for report_id, entry_id, text_sha256, revision_id, snapshot_sha256, links_json in conn.execute(
@@ -469,7 +518,17 @@ def _member_reports(
         (watch_id, *member_thread_ids),
     ).fetchall():
         report: dict[str, Any] = dict(zip(_REPORT_KEYS, row, strict=True))
-        report_evidence = evidence.get(str(report["report_id"]))
+        report_key = str(report["report_id"])
+        recorded_lineage = report["lineage"]
+        recorded_origin = report["copy_of_report_id"]
+        origin = projection.effective_origin(report_key, recorded_origin)
+        correction = projection.correction_for(report_key)
+        report["lineage"] = "firsthand" if origin is None else "exact_copy"
+        report["copy_of_report_id"] = origin
+        report["recorded_lineage"] = recorded_lineage
+        report["recorded_copy_of_report_id"] = recorded_origin
+        report["lineage_correction"] = None if correction is None else correction.to_dict()
+        report_evidence = evidence.get(report_key)
         if report_evidence is None:
             raise _issue_unreadable("issue report has no evidence", report_id=report["report_id"])
         report["evidence"] = report_evidence
@@ -478,8 +537,12 @@ def _member_reports(
 
 
 def _member_updates(
-    conn: sqlite3.Connection, watch_id: str, member_thread_ids: Sequence[str]
+    conn: sqlite3.Connection,
+    watch_id: str,
+    member_thread_ids: Sequence[str],
+    projection: LineageProjection,
 ) -> list[dict[str, Any]]:
+    """Every recorded update; a cue copied from an origin names that origin, never hidden."""
     rows = conn.execute(
         f"SELECT {_UPDATE_SELECT} FROM watch_issue_updates AS u "
         "JOIN watch_issue_reports AS r ON r.report_id = u.report_id "
@@ -487,7 +550,14 @@ def _member_updates(
         "ORDER BY u.recorded_at_utc ASC, u.update_id ASC",
         (watch_id, *member_thread_ids),
     ).fetchall()
-    return [dict(zip(_UPDATE_KEYS, row, strict=True)) for row in rows]
+    updates: list[dict[str, Any]] = []
+    for row in rows:
+        update: dict[str, Any] = dict(zip(_UPDATE_KEYS, row, strict=True))
+        update["copied_from_report_id"] = _copied_from(
+            projection, str(update["report_id"]), str(update["text_sha256"])
+        )
+        updates.append(update)
+    return updates
 
 
 def _membership_history(

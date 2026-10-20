@@ -407,6 +407,8 @@ class IssueIngestion:
     suggestions: int
     suggestions_truncated: int
     refusals: int
+    # Late-discovered exact-copy origins; each correction's proof is in the ingestion ledger.
+    lineage_corrections: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -423,6 +425,7 @@ class IssueIngestion:
             "suggestions": self.suggestions,
             "suggestions_truncated": self.suggestions_truncated,
             "refusals": self.refusals,
+            "lineage_corrections": self.lineage_corrections,
         }
 
 
