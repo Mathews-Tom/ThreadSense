@@ -528,6 +528,13 @@ class MonitoringStore:
             recovered_run_id=recovered_run_id,
         )
 
+    @contextmanager
+    def fenced_artifact_write(self, claim: RunClaim) -> Iterator[None]:
+        """Hold the live claim fence through one artifact publication."""
+        with self._connect_writable(create=False) as conn, _immediate(conn):
+            self._fence_claim(conn, claim)
+            yield
+
     def finalize_run(self, run_id: str, owner_token: str, outcome: RunOutcome) -> None:
         """Record a run outcome; only the current owner of a live lease may do so."""
         if outcome not in ("succeeded", "failed"):

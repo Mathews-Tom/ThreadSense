@@ -322,8 +322,12 @@ def _present(store: MonitoringStore, claim: RunClaim) -> DigestResult:
             materialized_entries=materialized,
             backlog=None,
         )
-    json_sha256 = _publish_bytes(digest.json_path, render_digest_json(watch_id, digest))
-    markdown_sha256 = _publish_bytes(digest.markdown_path, render_digest_markdown(watch_id, digest))
+    json_bytes = render_digest_json(watch_id, digest)
+    with store.fenced_artifact_write(claim):
+        json_sha256 = _publish_bytes(digest.json_path, json_bytes)
+    markdown_bytes = render_digest_markdown(watch_id, digest)
+    with store.fenced_artifact_write(claim):
+        markdown_sha256 = _publish_bytes(digest.markdown_path, markdown_bytes)
     store.complete_digest(claim, digest.digest_id, json_sha256, markdown_sha256)
     return DigestResult(
         run_id=claim.run_id,

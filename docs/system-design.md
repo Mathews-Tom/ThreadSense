@@ -226,7 +226,11 @@ The monitoring subsystem (`src/threadsense/monitoring/`) persists saved research
 - the first claim after expiry marks the old run `abandoned` and records `recovered_by_run_id` on it
 - finalizing requires the matching owner token and an unexpired lease; an abandoned run's old owner is refused as `stale_owner`, and an owner whose lease has expired is refused as `lease_expired`
 - every sweep write repeats the owner-token and lease check inside its own transaction, so a sweep whose claim was recovered by another run cannot record observations or an outcome
-- `watch run` and `watch digest` claim a run through these primitives, a sweep and a digest each holding their own claim; a second invocation while a claim is live is refused as `claim_held`; a run that outlasts its unrenewed lease can be recovered by the next invocation, after which the overtaken run is fenced out of every write
+- `watch run` and `watch digest` claim a run through these primitives, a sweep and
+  a digest each holding their own claim; a second invocation while a claim is
+  live is refused as `claim_held`; leases remain finite and unrenewed, so a run
+  that outlasts its lease can be recovered by the next invocation, after which
+  the overtaken run cannot record state or publish digest artifacts
 
 ### Sweeps
 
@@ -283,9 +287,9 @@ Entries are created from analyzed revisions and are deterministic and idempotent
 Presentation writes artifacts before the database marks anything presented:
 
 - a digest selects the oldest unpresented entries up to the profile `presented_findings` limit and is recorded as `pending` with its entry ids and a backlog snapshot; with nothing to present the run succeeds and no digest is created
-- the JSON and Markdown files are rendered only from the pending record, without reading the clock, and written with a temporary file, a file flush, an atomic rename and a directory flush; identical existing bytes are reused and different bytes are refused as `artifact_conflict`
+- the JSON and Markdown files are rendered separately, only from the pending record and without reading the clock, outside their respective publication fences; after each render, a writer transaction checks the live claim and holds its fence through that file's publication, so a takeover cannot race either write; publication uses a temporary file, a file flush, an atomic rename and a directory flush, reusing identical existing bytes and refusing different bytes as `artifact_conflict`
 - one fenced transaction then verifies both files and their SHA-256, marks the digest `written` and links its entries; only then are the entries presented
-- a crash between the file write and that transaction leaves a `pending` digest that the next run completes with the same id, sequence, entries and bytes, so an entry is presented at most once; this is recoverable resumption, not an exactly-once delivery guarantee, and nothing is sent to a remote destination
+- a crash or lease loss between publications or before completion leaves a `pending` digest; an already published JSON file remains recoverable, and the next run completes the digest with the same id, sequence, entries and bytes, so an entry is presented at most once; this is recoverable resumption, not an exactly-once delivery guarantee, and nothing is sent to a remote destination
 - the backlog reports the presentation limit, entries presented and still waiting, revisions pending analysis, tracked threads, threads pending refresh and the latest sweep outcome; `search_completeness` is always `unknown`
 
 ### Scheduling

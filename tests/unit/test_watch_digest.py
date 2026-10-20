@@ -578,6 +578,107 @@ def test_complete_digest_stale_claim_is_fenced_and_next_run_resumes(tmp_path: Pa
     assert harness.store.digest_status(WATCH_ID)["unpresented_entries"] == 0
 
 
+@pytest.mark.parametrize(
+    ("renderer_name", "replace_claim"),
+    [
+        pytest.param("render_digest_json", False, id="json-expiry"),
+        pytest.param("render_digest_json", True, id="json-replacement"),
+        pytest.param("render_digest_markdown", False, id="markdown-expiry"),
+        pytest.param("render_digest_markdown", True, id="markdown-replacement"),
+    ],
+)
+def test_present_watch_digest_lost_claim_during_render_prevents_publication_and_resumes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    renderer_name: str,
+    replace_claim: bool,
+) -> None:
+    harness = Harness(tmp_path)
+    revision_id = harness.sweep({"c1": "latency"}, findings=[("latency", ["c1"])])
+    assert revision_id is not None
+    expected_ids = sorted(
+        [expected_update_id(revision_id), expected_finding_id(revision_id, "latency")]
+    )
+    real_renderer = (
+        render_digest_json if renderer_name == "render_digest_json" else render_digest_markdown
+    )
+    rendered_digests: list[PendingDigest] = []
+    published_json: list[bytes] = []
+    replacement_claims: list[RunClaim] = []
+
+    def lose_claim_after_render(watch_id: str, digest: PendingDigest) -> bytes:
+        rendered = real_renderer(watch_id, digest)
+        rendered_digests.append(digest)
+        if renderer_name == "render_digest_markdown":
+            json_bytes = digest.json_path.read_bytes()
+            assert json_bytes == render_digest_json(watch_id, digest)
+            artifact = json.loads(json_bytes)
+            assert artifact["digest_id"] == digest.digest_id
+            assert sorted(entry["entry_id"] for entry in artifact["entries"]) == expected_ids
+            published_json.append(json_bytes)
+        harness.clock.now += 2.0
+        if replace_claim:
+            replacement_claims.append(harness.store.claim_run(WATCH_ID, lease_seconds=600))
+        return rendered
+
+    monkeypatch.setattr(f"threadsense.monitoring.digest.{renderer_name}", lose_claim_after_render)
+    with pytest.raises(RunClaimError) as raised:
+        present_watch_digest(
+            store=harness.store, watch_id=WATCH_ID, lease_seconds=1, logger=LOGGER, trace=TRACE
+        )
+
+    [digest] = rendered_digests
+    assert raised.value.details["reason"] == ("stale_owner" if replace_claim else "lease_expired")
+    if renderer_name == "render_digest_json":
+        assert not digest.json_path.exists()
+    else:
+        assert digest.json_path.read_bytes() == published_json[0]
+    assert not digest.markdown_path.exists()
+    pending = harness.store.digest_status(WATCH_ID)
+    assert pending["pending_digest_id"] == digest.digest_id
+    assert (pending["unpresented_entries"], pending["digest_count"]) == (2, 0)
+    assert harness.query("SELECT digest_id, status FROM watch_digests") == [
+        (digest.digest_id, "pending")
+    ]
+    assert harness.query(
+        "SELECT digest_id, presented_at_utc, COUNT(*) "
+        "FROM watch_digest_entries GROUP BY digest_id, presented_at_utc"
+    ) == [(None, None, 2)]
+    monkeypatch.setattr(f"threadsense.monitoring.digest.{renderer_name}", real_renderer)
+    for claim in replacement_claims:
+        harness.store.finalize_run(claim.run_id, claim.owner_token, "succeeded")
+
+    resumed = harness.present()
+    after = harness.present()
+
+    assert (resumed.status, resumed.digest_id, resumed.sequence, resumed.resumed) == (
+        "presented",
+        digest.digest_id,
+        digest.sequence,
+        True,
+    )
+    assert sorted(resumed.entry_ids) == expected_ids
+    assert resumed.materialized_entries == 0
+    json_bytes = digest.json_path.read_bytes()
+    artifact = json.loads(json_bytes)
+    assert artifact["digest_id"] == digest.digest_id
+    assert artifact["sequence"] == digest.sequence
+    assert sorted(entry["entry_id"] for entry in artifact["entries"]) == expected_ids
+    assert digest.markdown_path.read_bytes() == render_digest_markdown(WATCH_ID, digest)
+    if published_json:
+        assert json_bytes == published_json[0]
+    assert harness.query(
+        "SELECT digest_id, COUNT(*) FROM watch_digest_entries GROUP BY digest_id"
+    ) == [(digest.digest_id, 2)]
+    assert harness.query("SELECT digest_id, status FROM watch_digests") == [
+        (digest.digest_id, "written")
+    ]
+    status = harness.store.digest_status(WATCH_ID)
+    assert status["pending_digest_id"] is None
+    assert (status["unpresented_entries"], status["digest_count"]) == (0, 1)
+    assert (after.status, after.digest_id, after.materialized_entries) == ("no_entries", None, 0)
+
+
 def test_present_watch_digest_limit_presents_oldest_and_reports_backlog(tmp_path: Path) -> None:
     harness = Harness(tmp_path, presented_findings=2)
     harness.sweep(
