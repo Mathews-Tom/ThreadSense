@@ -38,7 +38,7 @@ Top-level commands:
 - `run`
 - `research`
 - `watch`
-- `decisions` (`annotate`, `evaluate`)
+- `decisions` (`annotate`, `evaluate`, `policy check`)
 
 ## Happy Paths
 
@@ -775,6 +775,80 @@ uv run threadsense decisions evaluate \
   --annotation <annotation-root>/<snapshot_sha256>/decisions/<decision_sha256>.json
 ```
 
+Operator smoke check for the evaluation and eligibility path against the real service:
+
+```bash
+uv run python scripts/smoke_monitoring.py --scenario evaluation \
+  --work-dir "$THREADSENSE_SMOKE_DIR" \
+  --endpoint "$THREADSENSE_DECISION_ENDPOINT"
+```
+
+A running local typed-decision service is required; the scenario never installs, downloads, starts or stops it. It stages the shipped evaluation fixtures into the work directory, annotates them with real `decisions annotate` calls, runs real `decisions evaluate` twice (replay reproduces the same evaluation bytes), exercises evaluation refusals, and runs `decisions policy check`. It finally verifies that staged inputs are unchanged, nothing was written outside the work directory and the source checkout is unchanged. Evidence is written to the work directory.
+
+The client character budget (2000 characters per comment) is necessary but not sufficient. The one comment over the budget must be refused with `comment_exceeds_client_char_budget`. The boundary comment, the staged comment whose body is exactly 2000 characters, may be refused by the pinned service with a non-empty set of server usage reasons (`server_dropped_state_tokens`, `server_reported_truncation`, `server_truncated_questions`, `server_reported_option_usage`); this was observed against the pinned checkpoint. Such a refusal is recorded in the evidence `boundary_comments` with its observed status and reasons, is never scored, and is audited as `rejected`; the evaluation's rejected audit must equal the refused comments and reasons exactly. No other within-budget refusal is accepted: every other comment under the budget must be `ok`, and the boundary comment may also be `ok`. This is not a quality claim.
+
+What the policy steps establish:
+
+- The real runtime result is `not_eligible`. The real evidence with no policy, and with a `runtime`-scope policy bound to the real identities, is `not_eligible` with `held_out_labels_not_independent` because the shipped labels are engineering-authored. Semantic decisions remain shadow-only.
+- A constructed `test_only` fixture is `eligible` with `activation_permitted: false` and `activation.performed: false`. Its label file is a copy of the shipped labels with the same values and only the origin changed to `constructed_test_fixture` with a disclosure; nothing is relabeled. A test-only result cannot be consumed as a runtime policy.
+- The test-only policy uses fixed, predeclared, engineering-only, test-only tolerances (`max_error_rate=1.0`, `min_decision_rate=0.0`, `min_labeled_decided=1`) declared before any model call. They exercise the checker mechanics only and are not quality thresholds.
+- Each one-field invalidation of that fixture yields exactly its single reason code. Tolerance invalidations also use fixed predeclared values (`max_error_rate=0.0`, `min_decision_rate=1.0`, `min_labeled_decided=1000000`); one that is vacuous for the observed metrics (for example `max_error_rate=0.0` when the observed error rate is 0) is recorded `not_applicable`, not passed.
+- The generative comparator availability is recorded as observed; an unavailable comparator is never zero accuracy. Wall time and server RSS are point observations, not peak memory and not quality.
+
+It proves that the commands, bindings, refusals and checker behave as documented against the real runtime. It is not quality evidence: the shipped labels are engineering-authored, not independent adjudication, and the test-only tolerances are not quality thresholds.
+
+### `decisions policy check`
+
+Offline eligibility check of one saved evaluation document against an optional operator-authored activation policy. It decides whether a typed decision shape would be eligible for semantic activation by a consumer (`semantic_reranking` or `semantic_grouping`), records the decision in a content-addressed policy check document, and does nothing else: it never activates a consumer, never installs or stores a policy, never contacts any service and never changes mode. Semantic decisions stay in shadow mode.
+
+```bash
+threadsense decisions policy check --evaluation PATH \
+  [--policy PATH] [--output-dir DIR] [--config PATH]
+```
+
+| Flag | Meaning |
+| --- | --- |
+| `--evaluation PATH` | Required. A saved evaluation document `<evaluation_sha256>.json` from `decisions evaluate`; the sha256 of its bytes must equal the file name stem |
+| `--policy PATH` | Optional. An activation policy JSON (`typed_decision_activation_policy`). Omitting it is reported as `policy_not_declared` |
+| `--output-dir DIR` | Artifact root; defaults to the annotation root, `<storage-root>/annotations` |
+| `--config PATH` | Configuration file, as for other commands |
+
+No policy is shipped with ThreadSense or installed by any command. A policy is an operator-authored input passed per invocation; nothing reads a policy implicitly. Every check runs against the current pinned runtime identity, and all reasons are accumulated rather than stopping at the first failure. A check whose inputs are absent is recorded `not_run`, never `passed`. See [artifacts.md](artifacts.md#activation-policy) for the policy format and [artifacts.md](artifacts.md#policy-check) for the checks, every reason code and the document.
+
+Outcomes:
+
+- `eligible`: zero reasons. Every binding matches the current runtime and the evidence, the held-out (`evaluation` partition) labels have the origin the scope accepts, evidence integrity passed, and the observed held-out metrics for the policy question satisfy the declared tolerances.
+- `not_eligible`: one or more reasons. This is a supported outcome, not a failure. Under the real runtime it is the expected result: no independently adjudicated held-out labels and no domain tolerances exist, so the shipped evidence yields `held_out_labels_not_independent` (and `policy_not_declared` when no policy is passed).
+- `scope`: the policy scope, `runtime` or `test_only`, or `null` when no valid policy was read. A `test_only` policy accepts only labels whose origin is a disclosed constructed test fixture, and its own `disclosure` must contain the whole word `constructed` and the whole word `test` or `tests` (case-insensitive; `contest` or `latest` do not count). All other checks apply unchanged. Test-only fixtures live only in tests and smoke work directories, are never installed, and never permit activation.
+- `activation_permitted`: `true` only when the result is `eligible` and the scope is `runtime`. Even then nothing is activated by this command; it reports permission only.
+
+Unavailable labels and unavailable comparators are never treated as zero error, and a non-finite tolerance or observed value is reported as `nonfinite_value`.
+
+Output locations follow the `decisions annotate` rules: the output root must not lie inside or contain baseline or monitoring storage, no output path may alias the evaluation or policy file, and a symlinked `policy-checks` directory is refused.
+
+Printed JSON payload (`artifact_type: decision_policy_check`, `mode: shadow`):
+
+| Field | Content |
+| --- | --- |
+| `status` | The eligibility: `eligible` or `not_eligible` |
+| `policy_check_path`, `policy_check_sha256` | The published policy check document and the sha256 of its bytes |
+| `eligibility` | `eligible` or `not_eligible` |
+| `scope` | `runtime`, `test_only` or `null` |
+| `activation_permitted` | Whether a runtime-scope policy is satisfied; never an activation |
+| `reasons` | The reason codes, in check order |
+
+Exit codes: `0` whenever the check completed and its document was published, for both `eligible` and `not_eligible`; `1` when the command fails (invalid configuration, refused output location, publication error). Errors print the error JSON with `details.reason`.
+
+Re-running with the same inputs under the same runtime identity reproduces the same document bytes, sha256 and path.
+
+Example:
+
+```bash
+uv run threadsense decisions policy check \
+  --evaluation <annotation-root>/evaluations/<manifest_sha256>/<evaluation_sha256>.json \
+  --policy <operator-policy-dir>/policy.json
+```
+
 ## `evaluate`
 
 Run golden-dataset evaluation.
@@ -827,6 +901,7 @@ Common paths:
 - `.threadsense/annotations/<snapshot_sha256>/{decisions,runs}/...`
 - `.threadsense/annotations/evaluations/<manifest_sha256>/<evaluation_sha256>.json`
 - `.threadsense/annotations/evaluations/<manifest_sha256>/runs/<run_id>.json`
+- `.threadsense/annotations/policy-checks/<policy_check_sha256>.json`
 
 ## Related Docs
 

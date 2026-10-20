@@ -310,6 +310,7 @@ The typed decision path (`src/threadsense/decisions/`) is separate from the gene
 - **Pinned identity.** A packaged manifest declares the code commit and the six checkpoint files. The client verifies the checkpoint files by SHA-256 on every invocation; the service does not expose its code identity.
 - **Artifact separation.** Decision documents and run records live under their own annotation root, which is refused when it lies inside baseline or monitoring storage or aliases the input. Existing baseline and monitoring artifacts and schemas are unchanged.
 - **Optional dependency.** The core install does not need torch or transformers; they exist only inside the separately provisioned service environment.
+- **Eligibility gate, not activation.** `threadsense decisions policy check` is the single checker that decides whether a typed decision shape is eligible for a semantic consumer, from a saved evaluation document and an optional operator-authored policy bound to the runtime, question set, settings, context policy, language, dataset and labels. It never activates a consumer, installs a policy or changes mode. Under the real runtime it reports `not_eligible`, because the held-out labels are not independently adjudicated and no domain tolerances exist; a `test_only` policy over a disclosed constructed fixture runs the same checks and never permits activation.
 
 Operator reference: [usage.md](usage.md#decisions-annotate). Artifact definitions: [artifacts.md](artifacts.md#typed-decision-annotations).
 

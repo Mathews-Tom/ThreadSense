@@ -4,6 +4,7 @@ Usage:
     uv run python scripts/smoke_monitoring.py --scenario profiles --work-dir DIR
     uv run python scripts/smoke_monitoring.py --scenario incremental --work-dir DIR
     uv run python scripts/smoke_monitoring.py --scenario annotations --work-dir DIR --endpoint URL
+    uv run python scripts/smoke_monitoring.py --scenario evaluation --work-dir DIR --endpoint URL
 
 DIR must not exist or be empty. Every CLI call runs in a new interpreter process
 against isolated storage under DIR; the profiles and incremental scenarios use no network
@@ -21,6 +22,12 @@ payloads are synthesized Reddit JSON, not live acquisition.
 The annotations scenario (scripts/smoke_annotations.py) drives `threadsense decisions
 annotate` against a locally running `laya.serve` given by --endpoint, which is required for
 this scenario and refused for the others. It uses a committed fixture, not a live source.
+
+The evaluation scenario (scripts/smoke_evaluation.py) annotates the committed engineering
+evaluation fixture against the same kind of --endpoint (also required), then runs `threadsense
+decisions evaluate` and `threadsense decisions policy check` offline. The real result is
+`not_eligible`; a disclosed constructed test-only fixture exercises the eligible path, which can
+never permit activation. It never starts, stops or configures a service.
 """
 
 from __future__ import annotations
@@ -1647,18 +1654,32 @@ def main() -> int:
         description="Run monitoring smoke scenarios through the threadsense CLI."
     )
     parser.add_argument(
-        "--scenario", choices=["profiles", "incremental", "annotations"], required=True
+        "--scenario",
+        choices=["profiles", "incremental", "annotations", "evaluation"],
+        required=True,
     )
     parser.add_argument("--work-dir", type=Path, required=True)
-    parser.add_argument("--endpoint", help="Local laya.serve URL; required for annotations only.")
+    parser.add_argument(
+        "--endpoint", help="Local laya.serve URL; required for annotations and evaluation only."
+    )
     args = parser.parse_args()
-    if args.scenario == "annotations" and args.endpoint is None:
-        parser.error("--scenario annotations requires --endpoint")
-    if args.scenario != "annotations" and args.endpoint is not None:
-        parser.error(f"--endpoint is only valid for --scenario annotations, not {args.scenario}")
+    endpoint_scenarios = ("annotations", "evaluation")
+    if args.scenario in endpoint_scenarios and args.endpoint is None:
+        parser.error(f"--scenario {args.scenario} requires --endpoint")
+    if args.scenario not in endpoint_scenarios and args.endpoint is not None:
+        parser.error(
+            "--endpoint is only valid for --scenario annotations or evaluation, "
+            f"not {args.scenario}"
+        )
     work_dir = prepare_work_dir(args.work_dir)
     scenario: ProfilesScenario | IncrementalScenario | AnnotationsScenario
-    if args.scenario == "annotations":
+    if args.scenario == "evaluation":
+        # Imported on selection: loaders of this file that register only smoke_annotations
+        # (tests/unit/test_smoke_annotations.py) must not need the evaluation module.
+        from smoke_evaluation import EvaluationScenario
+
+        scenario = EvaluationScenario(work_dir, args.endpoint)
+    elif args.scenario == "annotations":
         scenario = AnnotationsScenario(work_dir, args.endpoint)
     elif args.scenario == "incremental":
         scenario = IncrementalScenario(work_dir)

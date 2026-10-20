@@ -437,3 +437,134 @@ All refusals exit `1`. Every input, identity, binding, replay and integrity refu
 | `reconciliation_failed` | Internal count reconciliation failed |
 
 Output location and publication refusals use `decision_input_error` (`output_inside_protected_storage`, `output_contains_protected_storage`, `output_aliases_input`, `output_root_not_directory`) and `decision_artifact_error` (`artifact_name_invalid`, `artifact_directory_symlink`, `artifact_conflict`, `artifact_write_failed`).
+
+## Activation policy
+
+An activation policy is an operator-authored JSON input to `threadsense decisions policy check` (library entry point `threadsense.decisions.policy.check_activation_policy`). It declares which typed decision question a future consumer would use, the identities the held-out evidence must be bound to, and the tolerances that evidence must satisfy. No policy is shipped in the package or installed by any command, and nothing reads a policy implicitly: it is passed per invocation with `--policy`. A policy never activates anything; see [Policy check](#policy-check).
+
+```json
+{
+  "artifact_kind": "typed_decision_activation_policy",
+  "schema_version": 1,
+  "policy_id": "<operator-chosen id>",
+  "scope": "runtime",
+  "disclosure": "<who authored this policy and on what basis>",
+  "decision": {"question_id": "theme", "consumer": "semantic_reranking"},
+  "bindings": {
+    "runtime_manifest_sha256": "<sha256>",
+    "checkpoint_revision": "<revision>",
+    "question_set_sha256": "<sha256>",
+    "settings_sha256": "<sha256>",
+    "context_policy_sha256": "<sha256>",
+    "language": "en",
+    "dataset_manifest_sha256": "<sha256>",
+    "labels_sha256": "<sha256>"
+  },
+  "tolerances": {"max_error_rate": 0.1, "min_decision_rate": 0.8, "min_labeled_decided": 30}
+}
+```
+
+The top-level object and each nested object have exactly these keys.
+
+| Field | Content |
+| --- | --- |
+| `artifact_kind`, `schema_version` | `typed_decision_activation_policy`, `1` |
+| `policy_id` | Free text identifying the policy |
+| `scope` | `runtime` or `test_only` |
+| `disclosure` | Non-empty text. For `test_only` it must contain, case-insensitively and as whole words, both `constructed` and `test` or `tests` (for example "Constructed test fixture ..."); words such as `contest` or `latest` do not satisfy it, and a disclosure that fails the rule is `policy_invalid` with `field` `disclosure` |
+| `decision.question_id` | The typed question whose held-out metrics are checked |
+| `decision.consumer` | `semantic_reranking` or `semantic_grouping` |
+| `bindings` | `runtime_manifest_sha256`, `checkpoint_revision`, `question_set_sha256`, `settings_sha256`, `context_policy_sha256`, `language` (compared with the evidence identity and the current runtime), and `dataset_manifest_sha256`, `labels_sha256` (compared with the evidence dataset) |
+| `tolerances.max_error_rate` | Highest accepted held-out error rate, in `[0, 1]` |
+| `tolerances.min_decision_rate` | Lowest accepted held-out decision rate, in `[0, 1]` |
+| `tolerances.min_labeled_decided` | Lowest accepted number of labeled decided held-out items, a positive integer |
+
+Scopes:
+
+- `runtime`: the only scope that can permit activation. The held-out labels must have origin kind `independent_adjudication`.
+- `test_only`: for tests and smoke work directories only. The held-out labels must have origin kind `constructed_test_fixture`. Every other check applies unchanged; no check is bypassed. A `test_only` result never permits activation, so a test-only policy cannot be consumed as a runtime policy.
+
+Parsing and validation, each reported as a reason of the `policy` check rather than an exit:
+
+- The file is decoded with duplicate-key rejection; a repeated key at any level is `policy_invalid`.
+- The JSON tokens `NaN`, `Infinity` and `-Infinity`, and numbers that overflow to infinity, are accepted by the decoder so that the `finite_values` check can report them as `nonfinite_value` with the offending `field`.
+- An unknown, missing or wrongly typed key, or an unsupported `scope` or `consumer`, is `policy_invalid` with `field`.
+- A `schema_version` other than `1` is `policy_version_unsupported`.
+- A binding whose value is `null` or `""` is `unbound_binding` (reported by the `policy_bindings` check) with `field`.
+
+## Policy check
+
+`threadsense decisions policy check` reads one saved evaluation document (see [Typed decision evaluation](#typed-decision-evaluation)) and an optional activation policy, runs one fixed sequence of checks against the current pinned runtime identity, and publishes one deterministic, content-addressed policy check document. It never contacts any service, never activates a consumer, never installs or stores a policy and never changes mode: semantic decisions stay in shadow mode.
+
+Layout, under the policy check output root (by default the annotation root):
+
+```text
+<output-root>/policy-checks/<policy_check_sha256>.json
+```
+
+`policy_check_sha256` is the SHA-256 of the document bytes (`json.dumps(indent=2)` plus a trailing newline, the same serialization as decision documents). Publication follows the annotation rules: atomic and no-clobber, and an identical existing document is reused. The `policy-checks` directory must not be a symbolic link (`artifact_directory_symlink`). The output root is refused inside or around protected storage (`output_inside_protected_storage`, `output_contains_protected_storage`), and no output path may alias the evaluation document or the policy file (`output_aliases_input`). There is no run record.
+
+### Evidence
+
+The evidence is a saved evaluation document file named `<evaluation_sha256>.json`, as written by `decisions evaluate`. It is strictly decoded and the SHA-256 of its bytes must equal the file name stem. Only the `evaluation` partition is held-out evidence; `development` and `calibration` metrics are never used for eligibility.
+
+The current runtime identity is computed only when the evidence is loaded: the pinned runtime manifest SHA-256 and checkpoint revision, the question set rebuilt from the evidence dataset's `objective` and `domain`, and the pinned settings hash, context policy hash and settings language.
+
+### Checks
+
+Every check runs in the fixed order below and all reasons are accumulated; the run does not stop at the first failure. Each check is recorded as `passed`, `failed` or `not_run`. A check whose inputs are absent, or whose inputs failed an earlier check, is `not_run`, never `passed`, and emits no reason; the exact conditions are in the last column. `tolerances` is the one check that runs in part: its tolerance validity runs whenever a valid policy loaded, so `tolerance_invalid` is reported even when the comparisons cannot run.
+
+| Check | Compares | Reasons | `not_run` when |
+| --- | --- | --- | --- |
+| `policy` | The `--policy` file | `policy_not_declared` (no `--policy`), `policy_invalid`, `policy_version_unsupported` | Never |
+| `evidence` | The `--evaluation` file | `evidence_missing` (file absent), `evidence_invalid` (not strict JSON, not `typed_decision_evaluation` schema `1`, or missing or wrongly typed required keys, including `dataset.supported_languages` and the held-out `labels.correct`, `labels.incorrect` and `labels.incorrect_items`), `evidence_digest_mismatch` (bytes do not hash to the file name) | Never |
+| `runtime_identity` | Evidence `identity` against the current runtime, and the evidence language strata against the evidence `identity.language` | `stale_checkpoint_binding` (`runtime_manifest_sha256` or `checkpoint_revision`), `stale_question_binding`, `stale_settings_binding`, `stale_context_policy_binding`, `stale_language_binding` (`identity.language` differs from the runtime language, or, with `field` `dataset.supported_languages`, the dataset's supported languages are not exactly `[identity.language]`, so the held-out eligible population was scored with a language the pinned runtime does not bind) | Evidence not loaded |
+| `policy_bindings` | Policy `bindings` against the evidence | `unbound_binding`, the same `stale_*_binding` codes, `stale_dataset_binding` (`dataset_manifest_sha256` against the evidence dataset manifest hash, `labels_sha256` against the evidence label hash) | No valid policy or evidence not loaded |
+| `label_provenance` | Held-out label origin against the scope | `runtime` scope or no policy: `held_out_labels_not_independent` unless origin kind is `independent_adjudication`; `test_only` scope: `test_fixture_origin_mismatch` unless origin kind is `constructed_test_fixture` | Evidence not loaded, or a policy was declared but is invalid |
+| `evidence_integrity` | Recorded partition integrity and annotation replay | `partition_integrity_failed` (partition integrity status is not `passed`), `replay_not_reproduced` (an annotation replay status is not `reproduced`, or `matched_items` differs from `replayed_items`) | Evidence not loaded |
+| `held_out_coverage` | The policy question in the `evaluation` partition | `decision_question_unbound` (question absent), `coverage_unsupported` (`eligible` is `0` or `decision_rate` is `null`), `held_out_labels_missing` (`labels.status` is not `available`, `labeled_decided` is `0`, or `error_rate` is `null`) | No valid policy or evidence not loaded |
+| `finite_values` | The tolerances and the observed held-out `error_rate` and `decision_rate` | `nonfinite_value` with `field` naming the value | No valid policy, evidence not loaded, or the policy question absent from the held-out partition |
+| `tolerances` | The declared tolerances, then observed held-out metrics against them | `tolerance_invalid` (a finite rate outside `[0, 1]` or not a number, or a finite `min_labeled_decided` that is not a positive integer; validated whenever a valid policy loaded, independent of the evidence; a non-finite tolerance is reported only by `finite_values`), `error_above_tolerance` (`error_rate > max_error_rate`), `coverage_below_tolerance` (`decision_rate < min_decision_rate`), `insufficient_labeled_items` (`labeled_decided < min_labeled_decided`); the three comparisons run only when every tolerance is valid, the policy question is present, `held_out_coverage` and `finite_values` passed and both observed rates are non-null | No valid policy; or no finite tolerance is invalid but the comparisons cannot run |
+| `reconciliation` | Counts, rates and audit entries of the held-out partition, recomputed from the evidence itself | `evidence_counts_unreconciled` with `field` naming the value, when any identity in the list below fails | No valid policy, evidence not loaded, or the policy question absent from the held-out partition |
+
+The `reconciliation` check trusts no reported total or rate. Over the `evaluation` partition, with `Q` the policy question's metrics at `partitions.evaluation.questions.<question_id>`, each identity below must hold; the `field` of a failure is given in parentheses, with `Q.` standing for that prefix:
+
+- `comments = ok + refused + unavailable` (`population.comments`) and `eligible = ok - excluded_language` (`population.eligible`).
+- The number of `evaluation`-partition `audit.rejected` entries equals `refused + unavailable` (`audit.rejected`), the number of `audit.excluded` entries equals `excluded_language` (`audit.excluded`), and the number of `audit.abstained` entries for the policy question equals `Q.abstained` (`audit.abstained`).
+- `Q.population = comments`, `Q.eligible = eligible` and `Q.decided + Q.abstained = Q.eligible` (`Q.population`, `Q.eligible`, `Q.decided`).
+- `Q.decision_rate = round(Q.decided / Q.population, 6)`, `null` when `Q.population` is 0 (`Q.decision_rate`).
+- `Q.labels.labeled_decided = Q.labels.correct + Q.labels.incorrect` (`Q.labels.labeled_decided`).
+- `Q.labels.error_rate = round(Q.labels.incorrect / Q.labels.labeled_decided, 6)`, `null` when `labeled_decided` is 0 (`Q.labels.error_rate`).
+- `Q.labels.incorrect_items` lists exactly `Q.labels.incorrect` entries (`Q.labels.incorrect_items`).
+- Every `evaluation`-partition `rejected`, `excluded` and `abstained` audit entry has a non-empty string `thread_id` and `comment_id`; every `rejected` entry has a non-empty list of string `reasons`; no `(thread_id, comment_id)` repeats within `rejected` or within `excluded`, and no `(question_id, thread_id, comment_id)` repeats within `abstained` (`audit.rejected`, `audit.excluded`, `audit.abstained`).
+- No `(thread_id, comment_id)` is both rejected and excluded (`audit.excluded`).
+
+A non-finite observed rate is not compared here; it is reported once, by `finite_values`.
+
+An observed rate that is `null` because its denominator is 0 is unavailable, reported by `held_out_coverage`; it is never treated as zero error and never as a passed tolerance. Unavailable labels and unavailable comparators are never zero error.
+
+Outcome:
+
+- `eligible` if and only if there are zero reasons.
+- `not_eligible` otherwise. This is a supported outcome, not a failure; the command exits `0`. Under the real runtime it is the expected result: no independently adjudicated held-out labels and no domain tolerances exist, so the shipped engineering-authored evidence yields `held_out_labels_not_independent`, plus `policy_not_declared` when no policy is passed.
+- `activation.permitted` is `true` if and only if the result is `eligible` and the scope is `runtime`. `activation.performed` is always `false`.
+
+### Policy check document
+
+`artifact_kind: typed_decision_policy_check`, `schema_version: 1`, `mode: shadow`. It holds no timestamps, run ids, endpoints or local paths. A non-finite value is recorded as its string form (for example `"NaN"` or `"Infinity"`), never as a JSON `NaN` token. Re-running with the same evaluation document and policy under the same runtime identity reproduces the same bytes, SHA-256 and path.
+
+| Field | Content |
+| --- | --- |
+| `eligibility` | `eligible` or `not_eligible` |
+| `scope` | `runtime`, `test_only`, or `null` when no valid policy was read |
+| `activation` | `permitted` (as above), `performed: false` and a `note` stating that a policy check never activates a consumer or installs a policy and that semantic decisions stay in shadow mode |
+| `policy` | `null` when no valid policy was read; otherwise the policy file `sha256`, `policy_id`, `scope`, `disclosure`, `decision`, `bindings` and `tolerances` |
+| `evidence` | `null` when the evidence was not loaded; otherwise `evaluation_sha256`, `dataset_manifest_sha256`, `labels_sha256`, `label_origin`, `independent_adjudication`, `objective` and `domain` |
+| `current_identity` | `null` when the evidence was not loaded; otherwise the current runtime identity (`runtime_manifest_sha256`, `checkpoint_revision`, `question_set_sha256`, `settings_sha256`, `context_policy_sha256`, `language`) |
+| `checks` | One `{name, status}` entry per check, in the fixed order above; `status` is `passed`, `failed` or `not_run` |
+| `reasons` | Every reason in check order, each `{code, check, field, detail}`; `field` is `null` when the reason concerns no single field |
+| `held_out` | `null` unless a valid policy and loaded evidence name a question present in the held-out partition; otherwise `partition: evaluation`, `question_id`, `population`, `eligible`, `abstained`, `decided`, `decision_rate`, `labeled_decided`, `error_rate` and `audit` with the held-out `rejected` and `excluded` entries and the `abstained` entries for the policy question |
+
+The printed payload of the command (`artifact_type: decision_policy_check`) carries `policy_check_path`, `policy_check_sha256`, `eligibility`, `scope`, `activation_permitted` and the reason codes; see [usage.md](usage.md#decisions-policy-check).
+
+Output location and publication refusals exit `1` and use `decision_input_error` (`output_inside_protected_storage`, `output_contains_protected_storage`, `output_aliases_input`, `output_root_not_directory`) and `decision_artifact_error` (`artifact_name_invalid`, `artifact_directory_symlink`, `artifact_conflict`, `artifact_write_failed`). Policy and evidence problems are reasons in the document, not refusals.
