@@ -313,6 +313,14 @@ The typed decision path (`src/threadsense/decisions/`) is separate from the gene
 
 Operator reference: [usage.md](usage.md#decisions-annotate). Artifact definitions: [artifacts.md](artifacts.md#typed-decision-annotations).
 
+### Frozen assessment and generative comparison
+
+`decisions evaluate` validates the corpus, labels and saved annotation identities, then replays recorded typed responses without contacting Laya. Count reconciliation checks structural invariants; separate corpus/annotation alignment checks establish that those counts describe the bound inputs. Neither is a quality measurement. Engineering-authored labels describe constructed boundary cases, not independent adjudication or population accuracy.
+
+The existing generative reclassification task supports a separate paired `theme` cohort, not the other five typed dimensions. It includes thread-title context and uses the existing domain vocabulary. Only typed-eligible, supported-language comments of at most 300 characters enter this cohort, so their bodies are not truncated by the task. Typed, heuristic and generative comparisons use exactly the same thread/comment IDs and explicit denominators. Longer comments, unsupported dimensions and unavailable results remain visible rather than being scored as losses. Default or novel themes map to `other_or_uncertain` abstention.
+
+Fresh acquisition uses the configured enabled literal-loopback chat runtime, capturing exact exchanges and model identities in an immutable content-addressed artifact bound to the corpus, annotations, labels and question set. Supplying `--generative-capture PATH` validates and replays that artifact offline without listing models or running inference. Live acquisition is not deterministic replay. Configured-model absence is an observed unavailability; disabled or invalid-endpoint guards are `not_observed`. Neither comparator availability nor replay activates a policy or changes baseline analysis. Client wall time is not model-server memory, and a point-in-time RSS observation is not peak RSS.
+
 ## Artifact Boundaries
 
 ThreadSense relies on explicit persisted artifacts.

@@ -360,14 +360,22 @@ def load_evaluation_manifest(path: Path) -> EvaluationManifest:
     )
     top = _require_object(payload, "manifest", _MANIFEST_KEYS, _manifest_invalid)
     threads = _parse_threads(top["threads"])
+    bindings = _parse_bindings(top["bindings"])
+    supported_languages = _parse_supported_languages(top["supported_languages"])
+    if supported_languages != (bindings.language,):
+        raise _manifest_invalid(
+            "supported_languages",
+            "must contain only the bound inference language",
+            language=bindings.language,
+        )
     return EvaluationManifest(
         sha256=_sha256(raw),
         dataset_id=_require_text(top, "dataset_id", "", _manifest_invalid),
         description=_require_text(top, "description", "", _manifest_invalid),
         objective=_parse_objective(top["objective"]),
         domain=_parse_domain(top["domain"]),
-        bindings=_parse_bindings(top["bindings"]),
-        supported_languages=_parse_supported_languages(top["supported_languages"]),
+        bindings=bindings,
+        supported_languages=supported_languages,
         sampling=_parse_sampling(top["sampling"]),
         labels=_parse_file_binding(top["labels"], "labels"),
         threads=threads,

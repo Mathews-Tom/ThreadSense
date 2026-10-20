@@ -56,6 +56,7 @@ from threadsense.decisions.evaluation_contracts import (
     SavedDecision,
     SavedItem,
 )
+from threadsense.decisions.generative import GenerativeCaptureResult
 from threadsense.errors import DecisionEvaluationError
 
 RELEVANCE_QUESTION_ID = "objective_relevance"
@@ -86,7 +87,6 @@ _HEURISTIC_MAPPING = (
     "heuristic default theme -> other_or_uncertain; marker fallbacks keep their fallback theme; "
     "empty or noise-filtered comments make no decision"
 )
-_GENERATIVE_REASON = "no existing local-generative inference task produces any typed decision shape"
 _STABILITY_REASON = (
     "each question set has one fixed option layout and no permuted-layout probe was run; "
     "stability across option order is not measured"
@@ -644,13 +644,121 @@ def _heuristic_comparator(context: _Context) -> dict[str, Any]:
     }
 
 
-def _generative_comparator(question_set: QuestionSet) -> dict[str, Any]:
+def _generative_comparator(
+    context: _Context, result: GenerativeCaptureResult | None
+) -> dict[str, Any]:
+    rows = () if result is None else result.rows
+    by_key = {(row["thread_id"], row["comment_id"]): row for row in rows}
+    if len(by_key) != len(rows):
+        raise _misaligned("generative_rows")
+    expected_keys = {
+        (item.thread_id, item.comment_id)
+        for item in context.items
+        if item.eligible and item.comment.chars <= 300
+    }
+    performed = result is not None and result.capture is not None
+    if set(by_key) != (expected_keys if performed else set()):
+        raise _misaligned("generative_population")
+    for item in context.items:
+        row = by_key.get((item.thread_id, item.comment_id))
+        if row is not None and (
+            row["partition"] != item.partition.value
+            or row["status"] not in ("decided", "abstained")
+            or (row["status"] == "abstained") != (row["label"] == OTHER_OR_UNCERTAIN)
+        ):
+            raise _misaligned("generative_rows")
+    partitions: dict[str, Any] = {}
+    for partition in Partition:
+        population = context.partition_items(partition)
+        items = [item for item in population if (item.thread_id, item.comment_id) in by_key]
+        keys = {(item.thread_id, item.comment_id) for item in items}
+        typed = [
+            entry
+            for entry in context.scored(partition, HEURISTIC_QUESTION_ID)
+            if (entry.item.thread_id, entry.item.comment_id) in keys
+        ]
+        actuals: dict[str, list[Any]] = {
+            "typed": [_decision(_answer(item, HEURISTIC_QUESTION_ID)) for item in items],
+            "heuristic": [item.heuristic.label for item in items],
+            "generative": [by_key[(item.thread_id, item.comment_id)]["label"] for item in items],
+        }
+        metrics: dict[str, Any] = {}
+        for name, values in actuals.items():
+            values_by_key = dict(
+                zip([(item.thread_id, item.comment_id) for item in items], values, strict=True)
+            )
+            scored = [
+                _Scored(
+                    entry.item,
+                    entry.label,
+                    "abstained"
+                    if values_by_key[(entry.item.thread_id, entry.item.comment_id)] is None
+                    else _decided_outcome(
+                        entry.label.expected,
+                        values_by_key[(entry.item.thread_id, entry.item.comment_id)],
+                    ),
+                    values_by_key[(entry.item.thread_id, entry.item.comment_id)],
+                    None,
+                )
+                for entry in typed
+            ]
+            decided = sum(_heuristic_decided(value) for value in values)
+            metrics[name] = {
+                "decided": decided,
+                "abstained": len(items) - decided,
+                "abstentions": [
+                    item.ref()
+                    for item, value in zip(items, values, strict=True)
+                    if not _heuristic_decided(value)
+                ],
+                "labels": _comparator_labels(scored),
+            }
+        agreements: dict[str, Any] = {}
+        for first, second in combinations(actuals, 2):
+            pairs = [
+                (a, b)
+                for a, b in zip(actuals[first], actuals[second], strict=True)
+                if _heuristic_decided(a) and _heuristic_decided(b)
+            ]
+            agreed = sum(a == b for a, b in pairs)
+            agreements[f"{first}_{second}"] = {
+                "both_decided": len(pairs),
+                "agreed": agreed,
+                "rate": _rate(agreed, len(pairs)),
+            }
+        partitions[partition.value] = {
+            "items": len(items),
+            "ids": [item.ref() for item in items],
+            "excluded": len(population) - len(items),
+            "exclusions": [
+                {
+                    **item.ref(),
+                    "reason": "typed_ineligible_or_unsupported_language"
+                    if not item.eligible
+                    else "body_exceeds_300_characters"
+                    if item.comment.chars > 300
+                    else "comparison_not_available",
+                }
+                for item in population
+                if (item.thread_id, item.comment_id) not in keys
+            ],
+            **metrics,
+            "agreement": agreements,
+        }
     return {
         "name": GENERATIVE_COMPARATOR_NAME,
-        "comparison": "not_performed",
-        "reason": _GENERATIVE_REASON,
+        "comparison": "performed" if performed else "not_performed",
+        "reason": None if performed else "no_frozen_generative_capture",
         "availability": "observed per run; see the evaluation run record",
-        "shape_support": generative_shape_support(question_set),
+        "capture_sha256": result.capture["capture_sha256"]
+        if result is not None and result.capture is not None
+        else None,
+        "question_id": HEURISTIC_QUESTION_ID,
+        "population": (
+            "identical typed-eligible supported-language comments with bodies <=300 characters"
+        ),
+        "partitions": partitions,
+        "shape_support": generative_shape_support(context.question_set),
     }
 
 
@@ -772,6 +880,7 @@ def build_evaluation_document(
     integrity: PartitionIntegrity,
     decisions: Sequence[SavedDecision],
     replays: Sequence[ReplayReport],
+    generative: GenerativeCaptureResult | None = None,
     question_set: QuestionSet,
     heuristic: Mapping[str, Sequence[HeuristicDecision]],
 ) -> dict[str, Any]:
@@ -799,7 +908,7 @@ def build_evaluation_document(
         "engineering_cases": _engineering_cases(context),
         "comparators": {
             "heuristic": _heuristic_comparator(context),
-            "generative": _generative_comparator(question_set),
+            "generative": _generative_comparator(context, generative),
         },
         "option_stability": _option_stability(question_set),
     }

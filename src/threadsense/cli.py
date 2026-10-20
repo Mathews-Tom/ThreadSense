@@ -882,6 +882,11 @@ def _build_decisions_parser(
         type=Path,
         help="Artifact root. Defaults to <storage root>/<annotations dirname>.",
     )
+    evaluate_parser.add_argument(
+        "--generative-capture",
+        type=Path,
+        help="Replay a content-addressed generative capture offline without model requests.",
+    )
     _add_config_argument(evaluate_parser)
 
 
@@ -1800,6 +1805,7 @@ class DecisionsEvaluateOptions:
     manifest_path: Path
     annotation_paths: tuple[Path, ...]
     output_dir: Path | None
+    generative_capture_path: Path | None = None
 
 
 def run_decisions_evaluate(config_path: Path | None, options: DecisionsEvaluateOptions) -> int:
@@ -1810,6 +1816,7 @@ def run_decisions_evaluate(config_path: Path | None, options: DecisionsEvaluateO
         annotation_paths=options.annotation_paths,
         output_root=output_root,
         protected_roots=protected_roots,
+        generative_capture_path=options.generative_capture_path,
     )
     outcome = evaluate_frozen_assessment(
         job,
@@ -1849,6 +1856,7 @@ def _dispatch_decisions_command(args: argparse.Namespace) -> int:
                     manifest_path=args.manifest,
                     annotation_paths=tuple(args.annotations),
                     output_dir=args.output_dir,
+                    generative_capture_path=args.generative_capture,
                 ),
             )
         case _:

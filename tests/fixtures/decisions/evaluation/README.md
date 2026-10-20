@@ -23,9 +23,13 @@ The threads use the synthetic source name `fixture`, invented authors and `examp
 
 ## Expected boundary outcomes
 
-- `fixture:lc-3` is exactly 2000 characters and fits the client comment budget.
+- `fixture:lc-3` is exactly 2000 characters and fits the client comment budget. This does not promise service success: the pinned checkpoint may report context truncation, causing refusal and leaving its labels `not_covered`, not errors.
 - `fixture:lc-4` is exactly 2001 characters. The client must refuse it with `comment_exceeds_client_char_budget`, so its label stays uncovered and is never scored as an error.
 - `fixture:ul-1`, `fixture:ul-2` and `fixture:ul-3` are declared non-English. They must be excluded as unsupported language, not scored.
+
+The authored label rationales describe intended semantics, not a promise that the checkpoint will accept the input. `labels.status` records label presence; even when labels exist, the error rate remains `null` without labeled decisions. Count reconciliation checks structural invariants; corpus/annotation alignment is a separate check against the bound input corpus.
+
+Generative theme comparison uses only typed-eligible, supported-language comments of at most 300 characters, with the same IDs and denominators for all paired methods. Longer comments and the other five dimensions are unsupported, not comparison losses. A fresh local-model acquisition retains an immutable raw capture; `--generative-capture PATH` replays that capture offline without model requests. Neither path activates a policy or turns these authored cases into population quality evidence.
 
 ## Repeated-issue groups
 

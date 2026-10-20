@@ -1,10 +1,4 @@
-"""Offline assessment of frozen typed decision artifacts against a frozen dataset manifest.
-
-Evaluation reads authored inputs and saved decision documents only. It never contacts the
-typed-decision service and never re-annotates anything. The one network observation is a
-loopback model listing that records generative comparator availability in the run record,
-which is execution metadata outside the hashed evaluation document.
-"""
+"""Assess frozen typed decisions with optional captured local-generative theme comparison."""
 
 from __future__ import annotations
 
@@ -28,14 +22,12 @@ from threadsense.decisions.artifact import (
     require_run_id,
 )
 from threadsense.decisions.assessment import build_evaluation_document, evaluation_bytes
-from threadsense.decisions.comparators import (
-    heuristic_theme_decisions,
-    observe_generative_availability,
-)
+from threadsense.decisions.comparators import heuristic_theme_decisions
 from threadsense.decisions.contracts import (
     PINNED_CONTEXT_POLICY,
     PINNED_INFERENCE_SETTINGS,
     ChoiceQuestion,
+    ItemStatus,
     QuestionSet,
     RuntimeManifest,
 )
@@ -56,6 +48,13 @@ from threadsense.decisions.evaluation_manifest import (
     load_label_set,
     validate_labels_against_corpus,
 )
+from threadsense.decisions.generative import (
+    GenerativeCaptureResult,
+    GenerativeInput,
+    capture_generative_theme,
+    generative_capture_bytes,
+    replay_generative_theme,
+)
 from threadsense.decisions.questions import build_question_set
 from threadsense.decisions.saved import load_saved_decision, replay_saved_decision
 from threadsense.domains.loader import load_domain_vocabulary
@@ -73,6 +72,7 @@ class EvaluationJob:
     annotation_paths: tuple[Path, ...]
     output_root: Path
     protected_roots: tuple[Path, ...]
+    generative_capture_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -88,6 +88,8 @@ class EvaluationOutcome:
     partitions: dict[str, dict[str, Any]]
     generative_status: str
     generative_reason: str | None
+    generative_capture_path: Path | None = None
+    generative_capture_sha256: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -102,6 +104,10 @@ class EvaluationOutcome:
             "generative_comparator": {
                 "status": self.generative_status,
                 "reason": self.generative_reason,
+                "capture_path": str(self.generative_capture_path)
+                if self.generative_capture_path is not None
+                else None,
+                "capture_sha256": self.generative_capture_sha256,
             },
         }
 
@@ -305,6 +311,7 @@ def _input_paths(job: EvaluationJob, manifest: EvaluationManifest) -> tuple[Path
         base / manifest.labels.path,
         *(base / thread.file.path for thread in manifest.threads),
         *job.annotation_paths,
+        *((job.generative_capture_path,) if job.generative_capture_path is not None else ()),
     )
 
 
@@ -339,9 +346,12 @@ def _run_record(
 
 
 def _assess(
-    job: EvaluationJob, runtime_manifest: RuntimeManifest
-) -> tuple[EvaluationManifest, dict[str, Any], str, bool]:
-    """Load, verify and assess every input; return the manifest, document and label origin."""
+    job: EvaluationJob,
+    runtime_manifest: RuntimeManifest,
+    runtime_config: RuntimeConfig,
+    transport: httpx.BaseTransport | None,
+) -> tuple[EvaluationManifest, dict[str, Any], str, bool, GenerativeCaptureResult]:
+    """Prepare frozen inputs once, then acquire or replay the optional comparator."""
     manifest = load_evaluation_manifest(job.manifest_path)
     labels = load_label_set(manifest, job.manifest_path.parent)
     corpus = load_corpus(manifest, job.manifest_path.parent)
@@ -359,6 +369,57 @@ def _assess(
         thread.entry.thread_id: heuristic_theme_decisions(thread.thread, vocabulary, theme)
         for thread in corpus
     }
+    inputs = tuple(
+        GenerativeInput(
+            thread=thread.thread,
+            comment_ids=tuple(
+                comment.comment_id
+                for comment, saved in zip(thread.comments, decision.items, strict=True)
+                if saved.status is ItemStatus.OK
+                and comment.language in manifest.supported_languages
+            ),
+            partition=thread.entry.partition,
+        )
+        for thread, decision in zip(corpus, decisions, strict=True)
+    )
+    bindings = {
+        "dataset_manifest_sha256": manifest.sha256,
+        "labels_sha256": labels.sha256,
+        "question_set_sha256": question_set.sha256(),
+        "annotations": [
+            {"thread_id": thread.entry.thread_id, "decision_sha256": saved.decision_sha256}
+            for thread, saved in zip(corpus, decisions, strict=True)
+        ],
+    }
+    if job.generative_capture_path is None:
+        generative = capture_generative_theme(
+            inputs=inputs,
+            vocabulary=vocabulary,
+            bindings=bindings,
+            runtime_config=runtime_config,
+            transport=transport,
+        )
+    else:
+        path = job.generative_capture_path
+        try:
+            capture_content = path.read_bytes()
+        except OSError as exc:
+            raise DecisionEvaluationError(
+                "generative capture cannot be read",
+                details={"reason": "generative_capture_invalid", "path": str(path)},
+            ) from exc
+        if path.stem != hashlib.sha256(capture_content).hexdigest():
+            raise DecisionEvaluationError(
+                "generative capture filename differs from its content identity",
+                details={"reason": "generative_capture_invalid", "path": str(path)},
+            )
+        generative = replay_generative_theme(
+            inputs=inputs,
+            vocabulary=vocabulary,
+            bindings=bindings,
+            runtime_config=runtime_config,
+            content=capture_content,
+        )
     document = build_evaluation_document(
         manifest=manifest,
         labels=labels,
@@ -368,8 +429,9 @@ def _assess(
         replays=replays,
         question_set=question_set,
         heuristic=heuristic,
+        generative=generative,
     )
-    return manifest, document, labels.origin.kind.value, labels.origin.independent
+    return manifest, document, labels.origin.kind.value, labels.origin.independent, generative
 
 
 def evaluate_frozen_assessment(
@@ -385,16 +447,41 @@ def evaluate_frozen_assessment(
         require_run_id(run_id)
     output_root = check_output_location(job.output_root, job.manifest_path, job.protected_roots)
     started_at_utc = wall_clock()
-    manifest, document, label_origin, independent = _assess(job, runtime_manifest)
+    manifest, document, label_origin, independent, generative = _assess(
+        job, runtime_manifest, runtime_config, comparator_transport
+    )
     content = evaluation_bytes(document)
     evaluation_sha256 = hashlib.sha256(content).hexdigest()
     resolved_run_id = run_id if run_id is not None else _default_run_id(started_at_utc)
     paths = evaluation_paths(output_root, manifest.sha256, evaluation_sha256, resolved_run_id)
+    capture_path: Path | None = None
+    capture_sha256: str | None = None
+    capture_content: bytes | None = None
+    if generative.capture is not None:
+        capture_content = generative_capture_bytes(generative.capture)
+        capture_sha256 = hashlib.sha256(capture_content).hexdigest()
+        capture_root = paths.evaluation_path.parent / "generative-captures"
+        if capture_root.is_symlink():
+            raise DecisionArtifactError(
+                "generative capture directory must not be a symbolic link",
+                details={"reason": "artifact_directory_symlink", "path": str(capture_root)},
+            )
+        capture_path = capture_root / f"{capture_sha256}.json"
     for input_path in _input_paths(job, manifest):
         refuse_alias(paths.evaluation_path, input_path)
         refuse_alias(paths.run_path, input_path)
+        if capture_path is not None and input_path != job.generative_capture_path:
+            refuse_alias(capture_path, input_path)
+    if capture_path is not None and capture_content is not None:
+        publish_immutable(capture_path, capture_content, reuse_identical=True)
     publish_immutable(paths.evaluation_path, content, reuse_identical=True)
-    availability = observe_generative_availability(runtime_config, transport=comparator_transport)
+    availability = {
+        **generative.availability,
+        "capture_sha256": capture_sha256,
+        "capture_path": capture_path.relative_to(output_root).as_posix()
+        if capture_path is not None
+        else None,
+    }
     completed_at_utc = wall_clock()
     record = _run_record(
         run_id=resolved_run_id,
@@ -420,4 +507,6 @@ def evaluate_frozen_assessment(
         },
         generative_status=availability["status"],
         generative_reason=availability["reason"],
+        generative_capture_path=capture_path,
+        generative_capture_sha256=capture_sha256,
     )

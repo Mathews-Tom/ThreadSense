@@ -140,6 +140,22 @@ def test_load_evaluation_manifest_shipped_dataset_binds_threads_and_partitions()
     ]
 
 
+@pytest.mark.parametrize("supported_languages", [["en", "es"], ["es"]])
+def test_load_evaluation_manifest_languages_outside_binding_raises_manifest_invalid(
+    tmp_path: Path, supported_languages: list[str]
+) -> None:
+    manifest_path = _copy_dataset(tmp_path)
+    _edit_manifest(
+        manifest_path, lambda manifest: manifest.update(supported_languages=supported_languages)
+    )
+
+    details = _refusal(lambda: load_evaluation_manifest(manifest_path))
+
+    assert details["reason"] == "manifest_invalid"
+    assert details["field"] == "supported_languages"
+    assert details["language"] == "en"
+
+
 def test_load_corpus_shipped_dataset_records_languages_lengths_and_digests() -> None:
     manifest = load_evaluation_manifest(MANIFEST_PATH)
 

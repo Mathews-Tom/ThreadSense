@@ -358,7 +358,7 @@ class Scenario:
     replays: tuple[ReplayReport, ...]
     heuristic: dict[str, tuple[HeuristicDecision, ...]]
 
-    def document(self) -> dict[str, Any]:
+    def document(self, generative: Any = None) -> dict[str, Any]:
         return build_evaluation_document(
             manifest=self.manifest,
             labels=self.labels,
@@ -368,6 +368,7 @@ class Scenario:
             replays=self.replays,
             question_set=QUESTION_SET,
             heuristic=self.heuristic,
+            generative=generative,
         )
 
 
@@ -811,19 +812,6 @@ def test_build_evaluation_document_heuristic_comparator_counts_identical_items(
     ]
 
 
-def test_generative_shape_support_all_questions_unsupported_with_codes() -> None:
-    support = generative_shape_support(QUESTION_SET)
-
-    assert [(entry["question_id"], entry["supported"], entry["reason"]) for entry in support] == [
-        ("objective_relevance", False, "no_existing_task"),
-        ("evidence_type", False, "no_existing_task"),
-        ("request_intent", False, "no_existing_task"),
-        ("actionability", False, "no_existing_task"),
-        ("promotional_framing", False, "no_existing_task"),
-        ("theme", False, "open_vocabulary_truncated_input"),
-    ]
-
-
 def test_build_evaluation_document_static_blocks_record_generative_and_option_stability(
     document: dict[str, Any],
 ) -> None:
@@ -913,16 +901,8 @@ def test_observe_generative_availability_disabled_makes_no_request() -> None:
     observation = observe(handler, enabled=False)
 
     assert handler.requests == []
-    assert observation == {
-        "provider": "local_openai_compatible",
-        "enabled": False,
-        "base_url": LOOPBACK,
-        "model": CONFIGURED_MODEL,
-        "method": f"GET {LOOPBACK}/v1/models; no generation request",
-        "status": "unavailable",
-        "reason": "disabled_by_configuration",
-        "served_models": None,
-    }
+    assert observation["status"] == "not_observed"
+    assert observation["reason"] == "disabled_by_configuration"
 
 
 def test_observe_generative_availability_non_loopback_makes_no_request() -> None:
@@ -931,7 +911,7 @@ def test_observe_generative_availability_non_loopback_makes_no_request() -> None
     observation = observe(handler, base_url="http://localhost:11434")
 
     assert handler.requests == []
-    assert observation["status"] == "unavailable"
+    assert observation["status"] == "not_observed"
     assert observation["reason"] == "endpoint_not_literal_loopback"
 
 
@@ -941,7 +921,7 @@ def test_observe_generative_availability_portless_endpoint_is_endpoint_invalid()
     observation = observe(handler, base_url="http://127.0.0.1")
 
     assert handler.requests == []
-    assert observation["status"] == "unavailable"
+    assert observation["status"] == "not_observed"
     assert observation["reason"] == "endpoint_invalid"
 
 
@@ -1001,3 +981,51 @@ def test_observe_generative_availability_malformed_listing_is_listing_invalid(
     assert observation["status"] == "unavailable"
     assert observation["reason"] == "listing_invalid"
     assert observation["served_models"] is None
+
+
+def test_paired_generative_metrics_preserve_full_populations(scenario: Scenario) -> None:
+    from threadsense.decisions.generative import GenerativeCaptureResult
+
+    baseline = scenario.document()
+    rows: tuple[dict[str, Any], ...] = tuple(
+        {
+            "thread_id": thread.entry.thread_id,
+            "comment_id": comment.comment_id,
+            "partition": thread.entry.partition.value,
+            "status": "decided",
+            "label": next(label for label in THEME_QUESTION.labels if label != OTHER_OR_UNCERTAIN),
+            "raw_theme": next(
+                label for label in THEME_QUESTION.labels if label != OTHER_OR_UNCERTAIN
+            ),
+            "reason": None,
+        }
+        for thread, saved in zip(scenario.corpus, scenario.decisions, strict=True)
+        for comment, item in zip(thread.comments, saved.items, strict=True)
+        if item.status is ItemStatus.OK
+        and comment.language in scenario.manifest.supported_languages
+        and comment.chars <= 300
+    )
+    result = GenerativeCaptureResult(
+        {"status": "available", "reason": None},
+        {"capture_sha256": "a" * 64},
+        rows,
+        (),
+    )
+    document = scenario.document(result)
+    assert document["partitions"] == baseline["partitions"]
+    assert document["comparators"]["heuristic"] == baseline["comparators"]["heuristic"]
+    comparison = document["comparators"]["generative"]
+    assert comparison["comparison"] == "performed"
+    for partition in Partition:
+        block = comparison["partitions"][partition.value]
+        expected = [row for row in rows if row["partition"] == partition.value]
+        assert block["items"] == len(expected)
+        assert block["ids"] == [ref(row["thread_id"], row["comment_id"]) for row in expected]
+        assert block["generative"]["decided"] == len(expected)
+        for comparator in ("typed", "heuristic", "generative"):
+            metrics = block[comparator]
+            assert metrics["decided"] + metrics["abstained"] == len(expected)
+            labels = metrics["labels"]
+            assert labels["correct"] + labels["incorrect"] == labels["labeled_decided"]
+    with pytest.raises(DecisionEvaluationError, match="aligned"):
+        scenario.document(replace(result, rows=rows[:-1]))

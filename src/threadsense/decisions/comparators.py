@@ -1,9 +1,8 @@
 """Comparators placed beside typed decisions during an offline assessment.
 
-The keyword heuristic is the existing deterministic baseline, mapped onto the typed theme
-options without changing any of its rules. No existing local-generative task produces a
-typed decision shape, so the generative comparator is recorded as not performed; only its
-availability is observed, with a model listing and never a generation request.
+The keyword heuristic maps its existing rules onto typed theme options. The existing
+local-generative reclassification task supports the bounded theme cohort only; its
+acquisition and frozen offline replay live in generative.py.
 """
 
 from __future__ import annotations
@@ -47,11 +46,10 @@ HEURISTIC_BASES = (
 )
 GENERATIVE_COMPARATOR_NAME = "local_openai_compatible"
 
-_THEME_SHAPE_REASON = "open_vocabulary_truncated_input"
+_THEME_SHAPE_REASON = "supported_theme_intersection"
 _THEME_SHAPE_DETAIL = (
-    "catch_all_reclassification proposes free-form theme names from at most 300-character "
-    "excerpts, only for general_feedback comments, without thread context, an "
-    "other_or_uncertain option or a distribution"
+    "existing catch_all_reclassification with thread title and complete comment bodies "
+    "of at most 300 characters; default and new themes abstain"
 )
 _NO_TASK_REASON = "no_existing_task"
 _NO_TASK_DETAIL = "no existing local-generative inference task answers this question"
@@ -124,7 +122,7 @@ def generative_shape_support(question_set: QuestionSet) -> list[dict[str, Any]]:
         support.append(
             {
                 "question_id": question.question_id,
-                "supported": False,
+                "supported": is_theme,
                 "reason": _THEME_SHAPE_REASON if is_theme else _NO_TASK_REASON,
                 "detail": _THEME_SHAPE_DETAIL if is_theme else _NO_TASK_DETAIL,
             }
@@ -174,11 +172,21 @@ def observe_generative_availability(
         "served_models": None,
     }
     if not runtime.enabled:
-        return {**observation, "reason": "disabled_by_configuration"}
+        return {
+            **observation,
+            "status": "not_observed",
+            "method": None,
+            "reason": "disabled_by_configuration",
+        }
     try:
         validate_loopback_endpoint(runtime.base_url)
     except DecisionInputError as error:
-        return {**observation, "reason": error.details["reason"]}
+        return {
+            **observation,
+            "status": "not_observed",
+            "method": None,
+            "reason": error.details["reason"],
+        }
     try:
         response = _probe_listing(f"{base}/v1/models", transport, timeout_seconds)
     except httpx.HTTPError as error:

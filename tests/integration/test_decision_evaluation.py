@@ -11,12 +11,14 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 from recorded_laya import (
     HEALTH_PAYLOAD,
@@ -42,8 +44,10 @@ from threadsense.decisions.contracts import (
     RuntimeManifest,
     ScoreQuestion,
 )
+from threadsense.decisions.evaluate import evaluate_frozen_assessment
 from threadsense.decisions.questions import build_question_set
 from threadsense.decisions.runtime import parse_runtime_manifest
+from threadsense.decisions.saved import load_saved_decision
 from threadsense.domains.loader import load_domain_vocabulary
 from threadsense.models.canonical import canonical_thread_from_payload
 
@@ -309,6 +313,7 @@ class EvaluateHarness:
         *,
         manifest_path: Path | None = None,
         output_dir: Path | None = None,
+        generative_capture: Path | None = None,
     ) -> tuple[int, dict[str, Any]]:
         argv = [
             "decisions",
@@ -320,6 +325,8 @@ class EvaluateHarness:
             argv += ["--annotation", str(annotation)]
         if output_dir is not None:
             argv += ["--output-dir", str(output_dir)]
+        if generative_capture is not None:
+            argv += ["--generative-capture", str(generative_capture)]
         return self.run_cli(*argv)
 
 
@@ -533,7 +540,7 @@ def test_decisions_evaluate_declared_non_english_comments_are_excluded(
     ) == len(declared)
 
 
-def test_decisions_evaluate_runtime_disabled_records_generative_comparator_unavailable(
+def test_decisions_evaluate_runtime_disabled_records_generative_comparator_not_observed(
     harness: EvaluateHarness,
 ) -> None:
     # Arrange
@@ -545,8 +552,10 @@ def test_decisions_evaluate_runtime_disabled_records_generative_comparator_unava
     # Assert
     assert exit_code == 0, payload
     assert payload["generative_comparator"] == {
-        "status": "unavailable",
+        "status": "not_observed",
         "reason": "disabled_by_configuration",
+        "capture_path": None,
+        "capture_sha256": None,
     }
     record = read_json(Path(payload["run_path"]))
     assert record["artifact_kind"] == "typed_decision_evaluation_run"
@@ -557,7 +566,7 @@ def test_decisions_evaluate_runtime_disabled_records_generative_comparator_unava
         payload["evaluation_path"]
     ).resolve()
     assert record["generative_comparator"]["enabled"] is False
-    assert record["generative_comparator"]["status"] == "unavailable"
+    assert record["generative_comparator"]["status"] == "not_observed"
     assert record["generative_comparator"]["reason"] == "disabled_by_configuration"
     assert record["generative_comparator"]["served_models"] is None
     assert record["wall_seconds"] >= 0
@@ -752,6 +761,137 @@ def test_decisions_evaluate_output_inside_protected_storage_refuses(
     assert exit_code == 1
     assert_error(payload, "decision_input_error", "output_inside_protected_storage")
     assert not protected.exists()
+
+
+def test_public_evaluate_acquires_paired_theme_and_replays_offline(
+    harness: EvaluateHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    annotations = tuple(harness.annotate_all().values())
+    original_evaluate = evaluate_frozen_assessment
+    requests: list[httpx.Request] = []
+    model = "engineering-served-model"
+    monkeypatch.setenv("THREADSENSE_RUNTIME_ENABLED", "true")
+    monkeypatch.setenv("THREADSENSE_RUNTIME_MODEL", model)
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "GET":
+            return httpx.Response(200, json={"data": [{"id": model}]})
+        prompt = json.loads(request.content)["messages"][-1]["content"]
+        ids = re.findall(r"^\[id=([^\]]+)\]", prompt, re.MULTILINE)
+        assert ids
+        classifications = [
+            {"comment_id": cid, "theme": "general_feedback", "confidence": 0.8}
+            for cid in reversed(ids)
+        ]
+        return httpx.Response(
+            200,
+            json={
+                "id": "engineering-reply",
+                "object": "chat.completion",
+                "model": model,
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "role": "assistant",
+                            "content": json.dumps({"classifications": classifications}),
+                        },
+                    }
+                ],
+            },
+        )
+
+    def evaluate_with_transport(*args: Any, **kwargs: Any) -> Any:
+        return original_evaluate(*args, **kwargs, comparator_transport=httpx.MockTransport(respond))
+
+    monkeypatch.setattr(threadsense.cli, "evaluate_frozen_assessment", evaluate_with_transport)
+    code, acquired = harness.evaluate(annotations)
+    assert code == 0, acquired
+    assert acquired["generative_comparator"]["status"] == "available"
+    capture_path = Path(acquired["generative_comparator"]["capture_path"])
+    assert capture_path.stem == hashlib.sha256(capture_path.read_bytes()).hexdigest()
+    document = read_json(Path(acquired["evaluation_path"]))
+    comparison = document["comparators"]["generative"]
+    assert comparison["comparison"] == "performed"
+    comments = {(tid, cid): body for tid, cid, body in corpus_comments(harness)}
+    eligible = {
+        (decision.thread_id, item.comment_id)
+        for path in annotations
+        for decision in [load_saved_decision(path)]
+        for item in decision.items
+        if item.status.value == "ok"
+    }
+    excluded_language = {
+        (entry["thread_id"], entry["comment_id"]) for entry in document["audit"]["excluded"]
+    }
+    expected = {key for key in eligible - excluded_language if len(comments[key]) <= 300}
+    actual = {
+        (entry["thread_id"], entry["comment_id"])
+        for block in comparison["partitions"].values()
+        for entry in block["ids"]
+    }
+    assert actual == expected
+    assert actual
+    for block in comparison["partitions"].values():
+        for name in ("typed", "heuristic", "generative"):
+            assert block[name]["decided"] + block[name]["abstained"] == block["items"]
+        assert block["generative"]["decided"] == 0
+        assert block["generative"]["labels"]["error_rate"] is None
+    assert sum(request.method == "GET" for request in requests) == 1
+    frozen = Path(acquired["evaluation_path"]).read_bytes()
+
+    def forbidden(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("capture replay attempted network")
+
+    monkeypatch.setattr(httpx.Client, "send", forbidden)
+    code, replay = harness.evaluate(annotations, generative_capture=capture_path)
+    assert code == 0, replay
+    assert Path(replay["evaluation_path"]).read_bytes() == frozen
+    assert replay["evaluation_sha256"] == acquired["evaluation_sha256"]
+    tampered = harness.work_root / ("0" * 64 + ".json")
+    tampered.write_bytes(capture_path.read_bytes())
+    code, refused = harness.evaluate(annotations, generative_capture=tampered)
+    assert code == 1
+    assert_error(refused, "decision_evaluation_error", "generative_capture_invalid")
+
+
+def test_public_evaluate_failed_generation_preserves_typed_evidence(
+    harness: EvaluateHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    annotations = tuple(harness.annotate_all().values())
+    code, baseline = harness.evaluate(annotations)
+    assert code == 0, baseline
+    baseline_document = read_json(Path(baseline["evaluation_path"]))
+    original_evaluate = evaluate_frozen_assessment
+    monkeypatch.setenv("THREADSENSE_RUNTIME_ENABLED", "true")
+    monkeypatch.setenv("THREADSENSE_RUNTIME_MODEL", "engineering-served-model")
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json={"data": [{"id": "engineering-served-model"}]})
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"role": "assistant", "content": "{}"}}],
+            },
+        )
+
+    def evaluate_with_transport(*args: Any, **kwargs: Any) -> Any:
+        return original_evaluate(*args, **kwargs, comparator_transport=httpx.MockTransport(respond))
+
+    monkeypatch.setattr(threadsense.cli, "evaluate_frozen_assessment", evaluate_with_transport)
+    code, failed = harness.evaluate(annotations)
+    assert code == 0, failed
+    assert failed["generative_comparator"]["status"] == "unavailable"
+    assert failed["generative_comparator"]["reason"] == "inference_failed"
+    assert failed["generative_comparator"]["capture_path"] is None
+    assert failed["generative_comparator"]["capture_sha256"] is None
+    document = read_json(Path(failed["evaluation_path"]))
+    assert document == baseline_document
+    assert failed["evaluation_sha256"] == baseline["evaluation_sha256"]
 
 
 # --- 4. unavailable service -------------------------------------------------------------------
