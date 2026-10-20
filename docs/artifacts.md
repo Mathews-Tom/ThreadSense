@@ -201,3 +201,90 @@ See [usage.md](usage.md) for the profile format and command behavior.
 - terminal summary when available
 
 This payload is emitted directly to stdout according to the selected output mode.
+
+## Typed decision annotations
+
+`threadsense.decisions.annotate.annotate_canonical_thread` reads one canonical thread artifact and writes shadow-only typed semantic annotations for every comment, produced by a separate loopback-only Laya service. The annotations never alter baseline findings, discovery membership, evidence counts or ranking. Every document carries `mode: shadow`, `policy: none` and `calibration: uncalibrated`. The six dimensions overlap by design, and none of them is a source-truth or factual-accuracy score. This section documents the library-level artifacts; the operator CLI is documented separately.
+
+Layout, under a caller-chosen annotation root:
+
+```text
+<annotation-root>/<snapshot_sha256>/decisions/<decision_sha256>.json
+<annotation-root>/<snapshot_sha256>/runs/<run_id>.json
+```
+
+The decision document (`artifact_kind: typed_decision_annotations`, `schema_version: 1`) holds deterministic content only and is content-addressed: `decision_sha256` is the SHA-256 of its bytes, so annotating an unchanged snapshot with an identical outcome reproduces the same file, and an identical existing file is reused. The run record (`artifact_kind: typed_decision_annotation_run`, `schema_version: 1`) holds everything that varies between runs. Both files are published atomically with no clobber: content is written to a synced temporary file and hard-linked into place, and an existing file with different bytes is refused as `artifact_conflict` and never overwritten. A run record at an existing path is always a conflict. The annotation root is refused when it lies inside a protected baseline or monitoring storage root (`output_inside_protected_storage`), when it is not a directory, or when it or any output path aliases the input artifact (`output_aliases_input`). The snapshot hash and decision hash must be 64 lowercase hex characters, and a run id must match `[0-9A-Za-z][0-9A-Za-z._-]{0,79}`; the default run id is a UTC timestamp plus 12 random hex characters.
+
+### Decision document
+
+The input is read exactly once and every later step works from those bytes. It must be a strict JSON object: duplicate keys, `NaN` and `Infinity` are refused.
+
+| Field | Content |
+| --- | --- |
+| `artifact_kind`, `schema_version`, `mode`, `policy`, `calibration` | `typed_decision_annotations`, `1`, `shadow`, `none`, `uncalibrated` |
+| `requirement` | `required` or `optional` |
+| `input` | exact input byte hash (`sha256`) and `bytes`, canonical `artifact_kind`, `schema_version` and `normalization_version`, `thread_id`, `source` (`source_name`, `community`, `source_thread_id`, `thread_url`), `thread_text_sha256`, `comment_count` and `comments_present` |
+| `backend` | `manifest_sha256`, the path-free `manifest`, `code_identity_basis`, `checkpoint_identity_basis` and `checkpoint_verification` |
+| `route` | `model` (`english`), `language` (`value: en`, `basis: declared`) and `detection` (always `null`) |
+| `questions` | `sha256` and the full question set: schema id and version, objective, domain vocabulary identity, and six questions with their wire form |
+| `settings` | `sha256`, `model`, `lang`, `max_len`, `head_max_len` |
+| `context_policy` | `sha256` and the character windows described below |
+| `coverage` | aggregate `status`, `total`, `ok`, `refused`, `unavailable` |
+| `items` | one entry per comment in snapshot order |
+| `exchanges` | one entry per batch request, ordered by batch index |
+
+Backend identity is never taken from the service's health revision, which may be `null`. The code identity is declared by the manifest and attested by the reuse procedure (`declared_by_manifest_attested_by_reuse_procedure`). The checkpoint identity is verified by the client: it hashes the files the manifest lists inside the checkpoint directory the service reports and records the observed digests (`client_file_sha256`). `checkpoint_verification` is `null` when no result passed checkpoint verification, including when no result was received or all checkpoints were refused; when set, `repo` records the first verified directory.
+
+The six questions, in order: `objective_relevance` (score, three levels), `evidence_type` (choice), `request_intent` (choice), `actionability` (score, three levels), `promotional_framing` (noul) and `theme` (choice over the domain vocabulary themes plus `other_or_uncertain`; the vocabulary default theme is deliberately not an option). The question-set hash is order-sensitive: theme order, option order and question order all change it.
+
+Each item has `index`, `comment_id`, `parent_comment_id`, `comment_text_sha256`, `parent_text_sha256`, `parent_context` (`none`, `included` or `missing_from_snapshot`), `status`, `reasons`, `failure`, `batch_index`, `state_sha256`, `state_chars`, `context_windows`, `usage`, `routing` and `answers`. An item has answers exactly when its status is `ok`; every other status states at least one reason. Run-varying values (timings, run ids, endpoint) never appear in the decision document, and the `wall_seconds` and `endpoint` details are stripped from recorded errors.
+
+`exchanges` keeps the verbatim request body text, its SHA-256, the outcome (`response` or `error`), the status code and the verbatim response text with its SHA-256, or the error. These stay apart from the validated answers in `items`.
+
+### Statuses and reasons
+
+Item `status` is `ok`, `refused` or `unavailable`. The aggregate `coverage.status` is `complete` when every item is `ok`, `unavailable` when none is, and `partial` otherwise.
+
+Refused (`reasons` explain why no answer is used; a refused item that reached the service keeps its `usage` and `routing`, and its raw answers remain only in the exchange):
+
+- `comment_exceeds_client_char_budget`: the comment is longer than 2000 characters; nothing is sent
+- `state_exceeds_server_char_limit`: the serialized state is longer than 50,000 characters; nothing is sent
+- `server_dropped_state_tokens`: the service reported dropped state tokens
+- `server_reported_truncation`: the service reported `truncated`
+- `server_truncated_questions`: the service listed truncated questions
+- `server_reported_option_usage`: the service reported option usage
+
+Unavailable (`failure` carries the reason, message and details):
+
+- `runtime_health_unavailable`: the health check failed or did not match the manifest, so no batch is sent
+- `runtime_request_failed`: the batch request failed
+- `invalid_response`: the batch response is not a well-formed batch, or its result count differs from the request
+- `invalid_typed_answer`: a result failed validation
+- `checkpoint_identity_unverified`: the checkpoint files the service reported cannot be inspected or read, or do not match the manifest digests; filesystem access failures are typed identity failures and are cached for the run
+- `checkpoint_repo_changed`: the service answered from a different checkpoint directory than earlier in the same run
+
+A single comment whose state alone exceeds the 2 MiB request body is not an item status; it aborts the run with `state_exceeds_request_body_limit`.
+
+`requirement: required` runs whose coverage is not `complete` are unsatisfied, and callers exit nonzero. For `optional` runs `satisfied` is always `true`; unavailability and refusals stay visible in the document, with no answers on the affected items.
+
+### Answer semantics
+
+Each answer has `question_id`, `type`, one value field, `probabilities`, `confidence_quantities` and `calibration: uncalibrated`. Validation is internal consistency only: the server's values are never recomputed, coerced or dropped.
+
+- **choice**: `choice` is the server's choice and must be a most probable option. `probabilities` is the full distribution as an ordered list of `[label, probability]` pairs in the requested option order.
+- **score**: `score` is the expected ordinal level in `[0, k-1]` for `k` levels, not a probability. `probabilities` is the distribution over levels `"0"` to `"k-1"` in order.
+- **noul**: `noul` is `P(true)`, and `probabilities` is empty.
+- **Confidence quantities** are named and type-specific, never merged. `answer_confidence` is the reported probability of the selected option (max p) for choice and score, and `max(P(true), 1 - P(true))` for noul. For choice and score the separate `confidence` quantity is a normalized-entropy concentration of the distribution and is not on the `answer_confidence` scale; for noul `confidence` shares the `answer_confidence` definition. All of them are uncalibrated.
+- Raw `action` and `x_jev_confidence` fields are accepted only as optional evidence. They appear solely in the verbatim exchange and are unused.
+
+The service rounds every probability and confidence to four decimals, so checks allow rounding slack with `q = 5e-5` (plus `1e-9`): probability mass may differ from one by `k * q`, a score may differ from the expected level of its distribution by `(sum_i i + 1) * q` with `i` over `0..k-1`, and each confidence may differ from its target by `q`.
+
+### Context and request shape
+
+Attribution is comment-local: every instruction tells the service to judge only the `comment` field, with `thread_title`, `thread_body` and `parent_comment` as context written by others. Context fields are prefix windows `[0, included_chars)` of title, thread body and parent comment, limited to 300, 600 and 400 characters, and each item records `field`, `source_chars`, `included_chars` and `complete` for every window it used. The comment itself is never windowed or trimmed: above 2000 characters it is refused before sending.
+
+Requests are bounded by the pinned service limits, enforced by the client before sending: at most 64 states per request, 64 questions, 50,000 characters per state and a 2 MiB request body. Larger comment sets are split into several batches. Token settings are `max_len: 512` and `head_max_len: 256`, with `0 < head_max_len <= max_len <= 512`. The `sort_by_length`, `batch_size` and `min_confidence` controls are never sent, so only ordinary batching applies. Results are associated with comments strictly by index within the batch, never by content, and requests are not retried.
+
+### Run record
+
+The run record holds `run_id`, `decision_sha256`, the relative `decision_path`, `endpoint`, `started_at_utc` and `completed_at_utc` (Unix epoch seconds), the `health` observation (or the health error), `requests` (per call `batch_index`, `outcome`, `status_code` and client-observed `wall_seconds`, with `batch_index: null` for the health call), `total_http_wall_seconds`, `coverage`, `requirement` and `satisfied`. Its `observation_scope` states that only client-side HTTP wall time is recorded and that model-server memory is not observed by this client.

@@ -75,7 +75,12 @@ class Thread:
 
 
 def load_canonical_thread(path: Path) -> Thread:
-    payload = migrate_canonical_payload(read_json_file(path))
+    return canonical_thread_from_payload(read_json_file(path))
+
+
+def canonical_thread_from_payload(raw_payload: Mapping[str, Any]) -> Thread:
+    """Parse an already decoded canonical artifact, for callers that hash the bytes they read."""
+    payload = migrate_canonical_payload(raw_payload)
     thread_data = _schema.nested_object(payload, "thread")
     source_data = _schema.nested_object(thread_data, "source")
     author_data = _schema.nested_object(thread_data, "author")

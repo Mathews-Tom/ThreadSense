@@ -80,6 +80,33 @@ class RunClaimError(ThreadSenseError):
         super().__init__(message=message, code="run_claim_error", details=details or {})
 
 
+class DecisionInputError(ThreadSenseError):
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message=message, code="decision_input_error", details=details or {})
+
+
+class DecisionRuntimeUnavailableError(ThreadSenseError):
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(
+            message=message, code="decision_runtime_unavailable", details=details or {}
+        )
+
+
+class DecisionProtocolError(ThreadSenseError):
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message=message, code="decision_protocol_error", details=details or {})
+
+
+class DecisionIdentityError(ThreadSenseError):
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message=message, code="decision_identity_error", details=details or {})
+
+
+class DecisionArtifactError(ThreadSenseError):
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message=message, code="decision_artifact_error", details=details or {})
+
+
 class RedditInputError(ThreadSenseError):
     def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
         super().__init__(message=message, code="reddit_input_error", details=details or {})
