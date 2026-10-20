@@ -613,12 +613,19 @@ def feedback_history(
     """Preference and correction histories with their separate derived views."""
     if target_id is not None:
         resolve_target(conn, watch_id, default_target_kind(target_id), target_id)
-    preferences = _event_rows(conn, "preference", watch_id, target_id)
+    preferences = _event_rows(conn, "preference", watch_id, None)
+    effective = effective_preferences(preferences)
+    if target_id is not None:
+        preferences = [event for event in preferences if event["target_id"] == target_id]
+        scopes = {(event["scope_kind"], event["scope_key"]) for event in preferences}
+        effective = [
+            event for event in effective if (event["scope_kind"], event["scope_key"]) in scopes
+        ]
     corrections = _event_rows(conn, "correction", watch_id, target_id)
     return {
         "watch_id": watch_id,
         "preferences": preferences,
-        "effective_preferences": effective_preferences(preferences),
+        "effective_preferences": effective,
         "corrections": corrections,
         "correction_view": _correction_view(conn, watch_id, corrections),
     }

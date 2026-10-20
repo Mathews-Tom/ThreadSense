@@ -806,6 +806,8 @@ The target id prefix names the target; `--target-kind` defaults to the narrowest
 
 `--target-kind finding` widens a preference from one entry to the thread's finding stream for that theme and requires an entry of kind `finding`. Every target is resolved against the watch's own state before anything is written.
 
+Retry identity includes the resolved target kind as well as its id. Omitting `--target-kind` and explicitly supplying the default kind are equivalent retries. Recording the same `ent-` id once as `entry` and once as `finding` is different feedback and requires a different key.
+
 ### `feedback record`
 
 | Flag | Required | Meaning |
@@ -883,7 +885,7 @@ Read-only: `list` never writes state. Without `--target`, list all feedback for 
 }
 ```
 
-`effective_preferences` holds the latest preference per scope; earlier preferences in that scope stay in `preferences` and are listed in `superseded_feedback_ids`. `correction_view` groups corrections by target beside the unchanged original facts: for an entry its kind, thread, revision, theme, severity and payload SHA-256; for an observation its thread, revision sequence and content hashes; for an issue its home thread. `effect` is always `assertion_only`.
+`effective_preferences` holds the latest preference per scope; earlier preferences in that scope stay in `preferences` and are listed in `superseded_feedback_ids`. A target filter limits raw history to that target, but effective preferences still use the full watch history for its scopes, so a newer event against another revision can supersede the target's earlier preference. `correction_view` groups corrections by target beside the unchanged original facts: for an entry its kind, thread, revision, theme, severity and payload SHA-256; for an observation its thread, revision sequence and content hashes; for an issue its home thread. `effect` is always `assertion_only`.
 
 ## `decisions`
 

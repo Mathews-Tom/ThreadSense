@@ -314,6 +314,63 @@ def issues_view(watch_id: str) -> dict[str, Any]:
     return payload
 
 
+@pytest.mark.parametrize("target_kind", ["finding", "observation"])
+def test_target_history_uses_latest_preference_across_revisions(
+    watches: TwoWatches, monkeypatch: pytest.MonkeyPatch, target_kind: str
+) -> None:
+    old_target = watches.main.finding_b if target_kind == "finding" else watches.main.revision_b
+    old_event = record_new(Feedback(WATCH_ID, old_target, "old-revision", target_kind=target_kind))
+    watch_run(monkeypatch, WATCH_ID, "edit")
+    if target_kind == "finding":
+        [(theme_key,)] = query_rows(
+            watches.state_path,
+            "SELECT theme_key FROM watch_digest_entries WHERE entry_id = ? AND watch_id = ?",
+            (old_target, WATCH_ID),
+        )
+        candidates = [
+            str(entry_id)
+            for entry_id, theme in entries_of(watches.state_path, WATCH_ID, THREAD_B, "finding")
+            if theme == theme_key and entry_id != old_target
+        ]
+    else:
+        candidates = [
+            str(revision_id)
+            for (revision_id,) in query_rows(
+                watches.state_path,
+                "SELECT revision_id FROM watch_thread_revisions "
+                "WHERE watch_id = ? AND source_thread_id = ? AND revision_id != ?",
+                (WATCH_ID, THREAD_B, old_target),
+            )
+        ]
+    [new_target] = candidates
+    assert new_target != old_target
+    new_event = record_new(
+        Feedback(
+            WATCH_ID,
+            new_target,
+            "new-revision",
+            value="irrelevant",
+            target_kind=target_kind,
+        )
+    )
+    assert (old_event["scope_kind"], old_event["scope_key"]) == (
+        new_event["scope_kind"],
+        new_event["scope_key"],
+    )
+    assert new_event["feedback_id"] != old_event["feedback_id"]
+    assert new_event["sequence"] > old_event["sequence"]
+
+    history = list_feedback(WATCH_ID)
+    targeted = list_feedback(WATCH_ID, old_target)
+    assert targeted["preferences"] == [old_event]
+    assert targeted["effective_preferences"] == history["effective_preferences"]
+    [winner] = targeted["effective_preferences"]
+    assert winner["feedback_id"] == new_event["feedback_id"]
+    assert winner["target_id"] == new_target
+    assert winner["value"] == "irrelevant"
+    assert winner["superseded_feedback_ids"] == [old_event["feedback_id"]]
+
+
 # 1. Preferences and corrections are separate histories.
 
 
