@@ -1,0 +1,137 @@
+{
+  "artifact_kind": "typed_decision_evaluation_manifest",
+  "schema_version": 1,
+  "dataset_id": "threadsense-engineering-cases-v1",
+  "description": "Engineering boundary cases for offline assessment of typed decision artifacts: negation, quoted claims, mixed intent, option relabeling, repetition, long context and unsupported language, plus the canonical analysis fixture thread.",
+  "objective": "friction_analysis",
+  "domain": "developer_tools",
+  "bindings": {
+    "runtime_manifest_sha256": "a772fbf43bb9bb610f065c584b5f17f27e3de892cee289a7d7ed9a840e6f885c",
+    "checkpoint_revision": "7b928d828b7b0e022f929d9bd2e44165aa270148",
+    "question_set_sha256": "9f8d3d1eefd35de70dccec3d6b5c983c48a8a51a783af0149eb88b316eaceecc",
+    "settings_sha256": "d8d0af9b32f2734236690925f3fa139cd050fc0b450f6f6e1fe93c0a36ea75be",
+    "context_policy_sha256": "f06c4e021aba1e660349d35f438ac2add32dd30f33fff2406e24fcea294e5fa0",
+    "language": "en"
+  },
+  "supported_languages": [
+    "en"
+  ],
+  "sampling": {
+    "method": "authored_engineering_cases",
+    "selection": "every comment of every listed thread",
+    "max_threads": 12,
+    "max_comments_per_thread": 12
+  },
+  "labels": {
+    "path": "labels.json",
+    "sha256": "887e2fb0158ad92e6bb3b5823814fc4202364ca6082bd1af5edcf33fc2d259ca"
+  },
+  "threads": [
+    {
+      "thread_id": "fixture:eng-negation",
+      "path": "threads/negation.json",
+      "sha256": "df1908bb779611ca8ecc9333254c15becc917843f4f6404243355441858ed708",
+      "partition": "development",
+      "source_language": "en",
+      "comment_languages": {}
+    },
+    {
+      "thread_id": "fixture:eng-quoted-claims",
+      "path": "threads/quoted_claims.json",
+      "sha256": "de9fedea897cbe05020c565d7659a1e45ed23fcf8145944f176d4f43f8c4e7e9",
+      "partition": "development",
+      "source_language": "en",
+      "comment_languages": {}
+    },
+    {
+      "thread_id": "fixture:eng-mixed-intents",
+      "path": "threads/mixed_intents.json",
+      "sha256": "54f7df5a9e0e1c56eed12f60964827899fd4f7c9b337ff979f485cad47926a55",
+      "partition": "calibration",
+      "source_language": "en",
+      "comment_languages": {}
+    },
+    {
+      "thread_id": "fixture:eng-option-relabeling",
+      "path": "threads/option_relabeling.json",
+      "sha256": "9bbe80deec299aa0c3f5a55bf3c0eb9986c79126f3dc538ba7ce70c3b7337035",
+      "partition": "calibration",
+      "source_language": "en",
+      "comment_languages": {}
+    },
+    {
+      "thread_id": "fixture:eng-repetition",
+      "path": "threads/repetition.json",
+      "sha256": "32e1d6484b76ae3ee9a0224b7b277291847a91d482ac4c85d07bf851eb751708",
+      "partition": "evaluation",
+      "source_language": "en",
+      "comment_languages": {}
+    },
+    {
+      "thread_id": "fixture:eng-long-context",
+      "path": "threads/long_context.json",
+      "sha256": "acdd61b0a3914fc866ee99390ea37ac992e99136d0c39f11075b4771ef51fabb",
+      "partition": "evaluation",
+      "source_language": "en",
+      "comment_languages": {}
+    },
+    {
+      "thread_id": "fixture:eng-unsupported-language",
+      "path": "threads/unsupported_language.json",
+      "sha256": "efe79293cc34fd4654ae25c9a63a14345a324b36d0a8d88475ceea54707d3090",
+      "partition": "evaluation",
+      "source_language": "en",
+      "comment_languages": {
+        "fixture:ul-1": "es",
+        "fixture:ul-2": "de",
+        "fixture:ul-3": "ja"
+      }
+    },
+    {
+      "thread_id": "reddit:analysis123",
+      "path": "../../analysis/canonical_feedback_thread.json",
+      "sha256": "14c03e8f652d078cace5645732772a3fa35843ef21fe518cd9677f5b81d91268",
+      "partition": "evaluation",
+      "source_language": "en",
+      "comment_languages": {}
+    }
+  ],
+  "issue_groups": [
+    {
+      "group_id": "browser-comment-expansion-crash",
+      "members": [
+        {
+          "thread_id": "fixture:eng-repetition",
+          "comment_id": "fixture:rep-5"
+        },
+        {
+          "thread_id": "reddit:analysis123",
+          "comment_id": "reddit:c5"
+        }
+      ],
+      "note": "Two threads report the page crashing when comments are expanded in the browser, in different words."
+    },
+    {
+      "group_id": "extension-large-file-crash",
+      "members": [
+        {
+          "thread_id": "fixture:eng-repetition",
+          "comment_id": "fixture:rep-1"
+        },
+        {
+          "thread_id": "fixture:eng-repetition",
+          "comment_id": "fixture:rep-2"
+        },
+        {
+          "thread_id": "fixture:eng-repetition",
+          "comment_id": "fixture:rep-3"
+        },
+        {
+          "thread_id": "fixture:eng-repetition",
+          "comment_id": "fixture:rep-4"
+        }
+      ],
+      "note": "Exact, casing and whitespace copies of one large-file crash report inside one thread."
+    }
+  ]
+}

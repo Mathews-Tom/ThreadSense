@@ -1,0 +1,88 @@
+{
+  "artifact_kind": "canonical_thread",
+  "schema_version": 2,
+  "normalization_version": "canonical-thread-v2",
+  "thread": {
+    "thread_id": "fixture:eng-long-context",
+    "source": {
+      "source_name": "fixture",
+      "community": "engineering-cases",
+      "source_thread_id": "eng-long-context",
+      "thread_url": "https://example.invalid/threads/eng-long-context"
+    },
+    "title": "Incremental builds in the monorepo template have become slow enough that the team now schedules work around them, and we would like to understand whether the remote cache, the dependency graph walk or the file watcher is responsible before we file separate issues for each suspected cause and start comparing timings across machines and versions",
+    "body": "Context for anyone joining late: we run the template on a repository with roughly four hundred packages. Since the upgrade last month a no-op incremental build takes between forty and ninety seconds, where it used to take under five. We have tried clearing the local cache, disabling the file watcher, pinning the previous lockfile and running on a clean checkout. Only pinning the previous release of the build tool restores the old timings, which suggests a regression in the tool rather than in our configuration. The remote cache hit rate reported in the summary is still above ninety percent, so the time is being spent somewhere before tasks are scheduled. Please post timings with the version you are on, the number of packages and whether the remote cache is enabled, so that we can separate the cases before opening an upstream report.",
+    "permalink": "https://example.invalid/threads/eng-long-context",
+    "author": {
+      "username": "fixture-op",
+      "source_author_id": null
+    },
+    "comments": [
+      {
+        "thread_id": "fixture:eng-long-context",
+        "comment_id": "fixture:lc-1",
+        "parent_comment_id": null,
+        "author": {
+          "username": "zane",
+          "source_author_id": null
+        },
+        "body": "Here are our numbers. On 4.1 a no-op build of the whole workspace finishes in about four seconds on a laptop and six on the CI runners. On 4.2 the same command takes forty-five seconds locally and close to ninety on CI, and the profile shows nearly all of that time in the graph walk that runs before any task starts. Turning off the remote cache changes nothing, and neither does deleting the local cache directory. It would help a lot if the tool cached the resolved dependency graph between runs, or at least printed which phase is slow so we can report it properly.",
+        "score": 1,
+        "created_utc": 1760000001.0,
+        "depth": 0,
+        "permalink": "https://example.invalid/threads/eng-long-context/lc-1"
+      },
+      {
+        "thread_id": "fixture:eng-long-context",
+        "comment_id": "fixture:lc-2",
+        "parent_comment_id": "fixture:lc-1",
+        "author": {
+          "username": "abel",
+          "source_author_id": null
+        },
+        "body": "Same here, the graph walk is the slow part for us too.",
+        "score": 1,
+        "created_utc": 1760000002.0,
+        "depth": 1,
+        "permalink": "https://example.invalid/threads/eng-long-context/lc-2"
+      },
+      {
+        "thread_id": "fixture:eng-long-context",
+        "comment_id": "fixture:lc-3",
+        "parent_comment_id": null,
+        "author": {
+          "username": "bea",
+          "source_author_id": null
+        },
+        "body": "Detailed timing report for the slow incremental build on the monorepo template. Run one took forty-eight seconds after touching a single file in the utilities package. Run two took fifty-one seconds after touching the same file again without other changes. Run three took forty-nine seconds with the remote cache disabled for comparison. The profiler shows that the dependency graph walk dominates every run before any task starts. Downgrading to the previous release brings the same build back to roughly four seconds. Detailed timing report for the slow incremental build on the monorepo template. Run one took forty-eight seconds after touching a single file in the utilities package. Run two took fifty-one seconds after touching the same file again without other changes. Run three took forty-nine seconds with the remote cache disabled for comparison. The profiler shows that the dependency graph walk dominates every run before any task starts. Downgrading to the previous release brings the same build back to roughly four seconds. Detailed timing report for the slow incremental build on the monorepo template. Run one took forty-eight seconds after touching a single file in the utilities package. Run two took fifty-one seconds after touching the same file again without other changes. Run three took forty-nine seconds with the remote cache disabled for comparison. The profiler shows that the dependency graph walk dominates every run before any task starts. Downgrading to the previous release brings the same build back to roughly four seconds. Detailed timing report for the slow incremental build on the monorepo template. Run one took forty-eight seconds after touching a single file in the utilities package. Run two took fifty-one seconds after touching the same file again without other changes. Run three took forty-nine seconds with the remote cache disabled for comparison. The profiler shows that the dependency graph walk dominates compile seconds of waiting in every build.",
+        "score": 1,
+        "created_utc": 1760000003.0,
+        "depth": 0,
+        "permalink": "https://example.invalid/threads/eng-long-context/lc-3"
+      },
+      {
+        "thread_id": "fixture:eng-long-context",
+        "comment_id": "fixture:lc-4",
+        "parent_comment_id": null,
+        "author": {
+          "username": "cleo",
+          "source_author_id": null
+        },
+        "body": "Detailed timing report for the slow incremental build on the monorepo template. Run one took forty-eight seconds after touching a single file in the utilities package. Run two took fifty-one seconds after touching the same file again without other changes. Run three took forty-nine seconds with the remote cache disabled for comparison. The profiler shows that the dependency graph walk dominates every run before any task starts. Downgrading to the previous release brings the same build back to roughly four seconds. Detailed timing report for the slow incremental build on the monorepo template. Run one took forty-eight seconds after touching a single file in the utilities package. Run two took fifty-one seconds after touching the same file again without other changes. Run three took forty-nine seconds with the remote cache disabled for comparison. The profiler shows that the dependency graph walk dominates every run before any task starts. Downgrading to the previous release brings the same build back to roughly four seconds. Detailed timing report for the slow incremental build on the monorepo template. Run one took forty-eight seconds after touching a single file in the utilities package. Run two took fifty-one seconds after touching the same file again without other changes. Run three took forty-nine seconds with the remote cache disabled for comparison. The profiler shows that the dependency graph walk dominates every run before any task starts. Downgrading to the previous release brings the same build back to roughly four seconds. Detailed timing report for the slow incremental build on the monorepo template. Run one took forty-eight seconds after touching a single file in the utilities package. Run two took fifty-one seconds after touching the same file again without other changes. Run three took forty-nine seconds with the remote cache disabled for comparison. The profiler shows that the dependency graph walk unpredictable seconds of waiting, every single build.",
+        "score": 1,
+        "created_utc": 1760000004.0,
+        "depth": 0,
+        "permalink": "https://example.invalid/threads/eng-long-context/lc-4"
+      }
+    ],
+    "comment_count": 4,
+    "provenance": {
+      "raw_artifact_path": "engineering-authored/eng-long-context",
+      "raw_sha256": "engineering-authored-no-raw-artifact",
+      "retrieved_at_utc": 1760000000.0,
+      "normalized_at_utc": 1760000000.0,
+      "schema_version": 2,
+      "normalization_version": "canonical-thread-v2"
+    }
+  }
+}

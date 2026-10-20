@@ -1,0 +1,102 @@
+{
+  "artifact_kind": "canonical_thread",
+  "schema_version": 2,
+  "normalization_version": "canonical-thread-v2",
+  "thread": {
+    "thread_id": "fixture:eng-mixed-intents",
+    "source": {
+      "source_name": "fixture",
+      "community": "engineering-cases",
+      "source_thread_id": "eng-mixed-intents",
+      "thread_url": "https://example.invalid/threads/eng-mixed-intents"
+    },
+    "title": "Open feedback round for the desktop app",
+    "body": null,
+    "permalink": "https://example.invalid/threads/eng-mixed-intents",
+    "author": {
+      "username": "fixture-op",
+      "source_author_id": null
+    },
+    "comments": [
+      {
+        "thread_id": "fixture:eng-mixed-intents",
+        "comment_id": "fixture:mix-1",
+        "parent_comment_id": null,
+        "author": {
+          "username": "kai",
+          "source_author_id": null
+        },
+        "body": "Exports fail with a timeout on anything over 10 MB, please raise the limit or stream the file.",
+        "score": 1,
+        "created_utc": 1760000001.0,
+        "depth": 0,
+        "permalink": "https://example.invalid/threads/eng-mixed-intents/mix-1"
+      },
+      {
+        "thread_id": "fixture:eng-mixed-intents",
+        "comment_id": "fixture:mix-2",
+        "parent_comment_id": null,
+        "author": {
+          "username": "lena",
+          "source_author_id": null
+        },
+        "body": "Why does the installer need admin rights? It is really annoying on locked-down work laptops.",
+        "score": 1,
+        "created_utc": 1760000002.0,
+        "depth": 0,
+        "permalink": "https://example.invalid/threads/eng-mixed-intents/mix-2"
+      },
+      {
+        "thread_id": "fixture:eng-mixed-intents",
+        "comment_id": "fixture:mix-3",
+        "parent_comment_id": null,
+        "author": {
+          "username": "milo",
+          "source_author_id": null
+        },
+        "body": "Love the new release. Also, could you add keyboard shortcuts for the review panel?",
+        "score": 1,
+        "created_utc": 1760000003.0,
+        "depth": 0,
+        "permalink": "https://example.invalid/threads/eng-mixed-intents/mix-3"
+      },
+      {
+        "thread_id": "fixture:eng-mixed-intents",
+        "comment_id": "fixture:mix-4",
+        "parent_comment_id": null,
+        "author": {
+          "username": "nia",
+          "source_author_id": null
+        },
+        "body": "Check out my paid course on mastering this tool, link in my profile. Also the plugin API needs better docs.",
+        "score": 1,
+        "created_utc": 1760000004.0,
+        "depth": 0,
+        "permalink": "https://example.invalid/threads/eng-mixed-intents/mix-4"
+      },
+      {
+        "thread_id": "fixture:eng-mixed-intents",
+        "comment_id": "fixture:mix-5",
+        "parent_comment_id": null,
+        "author": {
+          "username": "otto",
+          "source_author_id": null
+        },
+        "body": "The settings page is confusing and I keep losing changes; an autosave would fix both problems.",
+        "score": 1,
+        "created_utc": 1760000005.0,
+        "depth": 0,
+        "permalink": "https://example.invalid/threads/eng-mixed-intents/mix-5"
+      }
+    ],
+    "comment_count": 5,
+    "provenance": {
+      "raw_artifact_path": "engineering-authored/eng-mixed-intents",
+      "raw_sha256": "engineering-authored-no-raw-artifact",
+      "retrieved_at_utc": 1760000000.0,
+      "normalized_at_utc": 1760000000.0,
+      "schema_version": 2,
+      "normalization_version": "canonical-thread-v2"
+    }
+  }
+}

@@ -25,6 +25,7 @@ from threadsense.contracts import (
 from threadsense.decisions.annotate import AnnotationJob, annotate_canonical_thread
 from threadsense.decisions.client import TypedDecisionClient
 from threadsense.decisions.contracts import Requirement
+from threadsense.decisions.evaluate import EvaluationJob, evaluate_frozen_assessment
 from threadsense.decisions.runtime import CheckpointVerifier, load_pinned_runtime_manifest
 from threadsense.errors import DecisionInputError, ThreadSenseError
 from threadsense.evaluation import load_golden_manifest
@@ -1048,6 +1049,36 @@ def _build_decisions_parser(
         help="Timeout for each HTTP call to the typed-decision service.",
     )
     _add_config_argument(annotate_parser)
+
+    evaluate_parser = decisions_subparsers.add_parser(
+        "evaluate",
+        help="Assess saved typed decisions; optionally compare with the configured local runtime.",
+    )
+    evaluate_parser.add_argument(
+        "--manifest",
+        required=True,
+        type=Path,
+        help="Frozen evaluation dataset manifest (typed_decision_evaluation_manifest JSON).",
+    )
+    evaluate_parser.add_argument(
+        "--annotation",
+        required=True,
+        action="append",
+        type=Path,
+        dest="annotations",
+        help="Saved decision document; repeat once per manifest thread.",
+    )
+    evaluate_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        help="Artifact root. Defaults to <storage root>/<annotations dirname>.",
+    )
+    evaluate_parser.add_argument(
+        "--generative-capture",
+        type=Path,
+        help="Replay a content-addressed generative capture offline without model requests.",
+    )
+    _add_config_argument(evaluate_parser)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2108,6 +2139,40 @@ def run_decisions_annotate(config_path: Path | None, options: DecisionsAnnotateO
     return 0 if outcome.satisfied else 1
 
 
+@dataclass(frozen=True)
+class DecisionsEvaluateOptions:
+    manifest_path: Path
+    annotation_paths: tuple[Path, ...]
+    output_dir: Path | None
+    generative_capture_path: Path | None = None
+
+
+def run_decisions_evaluate(config_path: Path | None, options: DecisionsEvaluateOptions) -> int:
+    _logger, config = load_cli_context(config_path)
+    output_root, protected_roots = _annotation_roots(config, options.output_dir)
+    job = EvaluationJob(
+        manifest_path=options.manifest_path,
+        annotation_paths=options.annotation_paths,
+        output_root=output_root,
+        protected_roots=protected_roots,
+        generative_capture_path=options.generative_capture_path,
+    )
+    outcome = evaluate_frozen_assessment(
+        job,
+        runtime_manifest=load_pinned_runtime_manifest(),
+        runtime_config=config.runtime,
+    )
+    emit_payload(
+        {
+            "artifact_type": "decision_evaluation",
+            "status": "ready",
+            "mode": "shadow",
+            **outcome.to_dict(),
+        }
+    )
+    return 0
+
+
 def _dispatch_decisions_command(args: argparse.Namespace) -> int:
     match args.decisions_command:
         case "annotate":
@@ -2121,6 +2186,16 @@ def _dispatch_decisions_command(args: argparse.Namespace) -> int:
                     objective=args.objective,
                     output_dir=args.output_dir,
                     timeout_seconds=args.timeout_seconds,
+                ),
+            )
+        case "evaluate":
+            return run_decisions_evaluate(
+                args.config,
+                DecisionsEvaluateOptions(
+                    manifest_path=args.manifest,
+                    annotation_paths=tuple(args.annotations),
+                    output_dir=args.output_dir,
+                    generative_capture_path=args.generative_capture,
                 ),
             )
         case _:

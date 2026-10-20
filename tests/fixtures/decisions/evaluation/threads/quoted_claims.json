@@ -1,0 +1,102 @@
+{
+  "artifact_kind": "canonical_thread",
+  "schema_version": 2,
+  "normalization_version": "canonical-thread-v2",
+  "thread": {
+    "thread_id": "fixture:eng-quoted-claims",
+    "source": {
+      "source_name": "fixture",
+      "community": "engineering-cases",
+      "source_thread_id": "eng-quoted-claims",
+      "thread_url": "https://example.invalid/threads/eng-quoted-claims"
+    },
+    "title": "Things people keep saying about the sync client",
+    "body": null,
+    "permalink": "https://example.invalid/threads/eng-quoted-claims",
+    "author": {
+      "username": "fixture-op",
+      "source_author_id": null
+    },
+    "comments": [
+      {
+        "thread_id": "fixture:eng-quoted-claims",
+        "comment_id": "fixture:qc-1",
+        "parent_comment_id": null,
+        "author": {
+          "username": "fern",
+          "source_author_id": null
+        },
+        "body": "Someone wrote 'the CLI crashes on every launch' but I have never seen it in two years of daily use.",
+        "score": 1,
+        "created_utc": 1760000001.0,
+        "depth": 0,
+        "permalink": "https://example.invalid/threads/eng-quoted-claims/qc-1"
+      },
+      {
+        "thread_id": "fixture:eng-quoted-claims",
+        "comment_id": "fixture:qc-2",
+        "parent_comment_id": null,
+        "author": {
+          "username": "gus",
+          "source_author_id": null
+        },
+        "body": "My teammate says the language server leaks memory after an hour of editing; I have not checked it myself.",
+        "score": 1,
+        "created_utc": 1760000002.0,
+        "depth": 0,
+        "permalink": "https://example.invalid/threads/eng-quoted-claims/qc-2"
+      },
+      {
+        "thread_id": "fixture:eng-quoted-claims",
+        "comment_id": "fixture:qc-3",
+        "parent_comment_id": null,
+        "author": {
+          "username": "hana",
+          "source_author_id": null
+        },
+        "body": "The changelog claims 'sync is twice as fast now', yet my sync still takes forty seconds on the same repository.",
+        "score": 1,
+        "created_utc": 1760000003.0,
+        "depth": 0,
+        "permalink": "https://example.invalid/threads/eng-quoted-claims/qc-3"
+      },
+      {
+        "thread_id": "fixture:eng-quoted-claims",
+        "comment_id": "fixture:qc-4",
+        "parent_comment_id": null,
+        "author": {
+          "username": "ivo",
+          "source_author_id": null
+        },
+        "body": "A forum post said 'just delete the cache folder' fixes the login loop. Is that actually safe?",
+        "score": 1,
+        "created_utc": 1760000004.0,
+        "depth": 0,
+        "permalink": "https://example.invalid/threads/eng-quoted-claims/qc-4"
+      },
+      {
+        "thread_id": "fixture:eng-quoted-claims",
+        "comment_id": "fixture:qc-5",
+        "parent_comment_id": null,
+        "author": {
+          "username": "jun",
+          "source_author_id": null
+        },
+        "body": "Quoting the README: 'no configuration required'. That has not been true since version 2; you need three environment variables now.",
+        "score": 1,
+        "created_utc": 1760000005.0,
+        "depth": 0,
+        "permalink": "https://example.invalid/threads/eng-quoted-claims/qc-5"
+      }
+    ],
+    "comment_count": 5,
+    "provenance": {
+      "raw_artifact_path": "engineering-authored/eng-quoted-claims",
+      "raw_sha256": "engineering-authored-no-raw-artifact",
+      "retrieved_at_utc": 1760000000.0,
+      "normalized_at_utc": 1760000000.0,
+      "schema_version": 2,
+      "normalization_version": "canonical-thread-v2"
+    }
+  }
+}

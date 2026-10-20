@@ -42,6 +42,10 @@ Top-level commands:
 - `decisions`
 - `feedback`
 
+### Decision subcommands
+
+- `decisions` (`annotate`, `evaluate`)
+
 ## Happy Paths
 
 ### Single-thread run
@@ -1098,7 +1102,7 @@ Read-only: `list` never writes state. Without `--target`, list all feedback for 
 
 ## `decisions`
 
-Shadow typed semantic annotations from a separate, operator-provisioned local Laya service. This path is independent of the generative runtime used by `infer`: it never runs analysis, never calls the generative runtime and does not depend on `THREADSENSE_RUNTIME_ENABLED`. Annotations are separate artifacts and never change baseline findings, reports or monitoring state.
+Shadow typed semantic annotation and frozen assessment. `decisions annotate` uses a separate, operator-provisioned local Laya service, independent of the generative runtime used by `infer` and `THREADSENSE_RUNTIME_ENABLED`. `decisions evaluate` replays saved typed artifacts and can compare themes using the configured local generative runtime or a frozen capture. Neither command changes baseline findings, reports or monitoring state, or installs or activates a policy.
 
 ### `decisions annotate`
 
@@ -1171,6 +1175,66 @@ uv run python scripts/smoke_monitoring.py --scenario annotations \
 
 `THREADSENSE_SMOKE_DIR` is an empty or absent working directory and `THREADSENSE_DECISION_ENDPOINT` is the loopback service URL.
 
+### `decisions evaluate`
+
+Assessment of saved decision documents against a frozen dataset manifest and its labels. It replays recorded typed exchanges offline, scores typed decisions per partition, compares themes with the existing keyword heuristic, and publishes a content-addressed evaluation plus a run record. An available local generative model can supply a separate paired theme comparison; a saved capture makes that comparison replayable offline.
+
+```bash
+threadsense decisions evaluate --manifest PATH \
+  --annotation PATH [--annotation PATH ...] \
+  [--generative-capture PATH] \
+  [--output-dir DIR] [--config PATH]
+```
+
+| Flag | Meaning |
+| --- | --- |
+| `--manifest PATH` | Required. A frozen dataset manifest (`typed_decision_evaluation_manifest`) that binds every thread file and the label file by sha256 |
+| `--annotation PATH` | Required, repeatable. A saved decision document from `decisions annotate`; supply exactly one per manifest thread |
+| `--generative-capture PATH` | Replay an immutable generative capture offline; no model listing or inference. Omit for fresh acquisition when the configured local runtime is available |
+| `--output-dir DIR` | Artifact root; defaults to the annotation root, `<storage-root>/annotations` |
+| `--config PATH` | Configuration file, as for other commands |
+
+What it does and does not do:
+
+- It never contacts the Laya service and never re-annotates. Saved decisions must have been produced under the exact identities the manifest binds (runtime manifest, checkpoint revision, question set, settings, context policy and language), and those bindings must still equal the current pinned identities.
+- Without `--generative-capture`, an enabled literal-loopback runtime is queried for its model listing and, when the configured model is served, for theme reclassification. Exact raw exchanges and identities are captured immutably. Disabled runtime and invalid-endpoint guards are `not_observed` (no request); configured-model absence or an observed request failure is explicitly unavailable. Optional generation failures, including invalid response numbers or decoding failures, record `inference_failed` without discarding valid typed/heuristic evidence or publishing a capture. No missing comparison is scored as a loss. The repository-default model, `gemma4:latest`, must actually be served; configuration alone is not availability.
+- With `--generative-capture PATH`, the evaluator validates the capture's file hash, envelope digest, frozen input bindings and request layout, then re-derives outcomes from retained responses without any model listing or inference. Invalid replay is refused rather than treated as an unavailable fresh comparison. The run record reports `available` / `replayed_frozen_capture`, with null `method` and `served_models`: no current runtime observation was made. Its nested `captured_availability` retains the original acquisition observation, not a claim that the model is currently served.
+- The paired theme cohort contains only typed-eligible, supported-language comments of at most 300 characters, without body truncation. Typed, heuristic and generative metrics use the same thread/comment IDs and denominators. Longer comments and the other five dimensions remain explicitly unsupported. A default or novel generative theme maps to `other_or_uncertain` abstention.
+- Results describe the listed inputs against their declared labels only. They are not population accuracy. The shipped labels (`tests/fixtures/decisions/evaluation/`) are engineering-authored boundary expectations; they are not independent adjudication and not ground truth.
+- `answer_confidence` is uncalibrated and is not a probability of correctness.
+- Unavailable labels and unavailable comparators are reported as unavailable with a reason, never as zero error.
+- Option stability is reported as vacuous: each question has one fixed option layout and no permuted-layout probe exists yet.
+- Count reconciliation establishes structural invariants; corpus/annotation alignment is checked separately against the bound inputs. `labels.status` describes label presence, not decision coverage: error rate remains `null` without labeled decisions.
+- The exactly-2000-character `fixture:lc-3` fits the typed client's budget, but the pinned checkpoint may report context truncation and be refused. Its labels then remain `not_covered`, not errors; authored rationales do not promise acceptance.
+
+Output locations follow the `decisions annotate` rules: the output root must not lie inside or contain baseline or monitoring storage, and no output path may alias the manifest, the label file, a thread file or an annotation. See [artifacts.md](artifacts.md#typed-decision-evaluation) for the input formats, the document, metric definitions and refusal reasons.
+
+Printed JSON payload (`artifact_type: decision_evaluation`, `status: ready`, `mode: shadow`):
+
+| Field | Content |
+| --- | --- |
+| `evaluation_path`, `evaluation_sha256` | The published evaluation document and the sha256 of its bytes |
+| `run_path`, `run_id` | The run record of this invocation |
+| `manifest_sha256` | The sha256 of the manifest bytes |
+| `label_origin`, `independent_adjudication` | The declared label origin and whether it is independent adjudication |
+| `partitions` | Per partition (`development`, `calibration`, `evaluation`): threads, comments, ok, refused, unavailable, excluded_language and eligible counts |
+| `generative_comparator` | This run's availability `status` and `reason`, plus `capture_path` and `capture_sha256` (complete-file SHA-256), or null capture fields when none was acquired |
+
+Exit codes: `0` when the evaluation and run record are published; `1` on any refusal (stale binding, missing, duplicate, unbound or mismatched annotation, replay mismatch, partition leak, invalid input, refused output location). Refusals print the error JSON with `details.reason`.
+
+Replaying the same frozen inputs and supplied generative capture reproduces the same evaluation bytes, SHA-256 and path and adds a new run record. Fresh acquisition without a capture may produce a different model response and is not advertised as deterministic replay. When no comparison is available, transient availability stays in the run record rather than changing the frozen typed/heuristic assessment.
+
+For offline generative replay, repeat the command with `--generative-capture <capture-path>` using the capture path reported by the fresh acquisition. Keep the original immutable capture bytes and content-addressed `<capture_file_sha256>.json` filename. Changing the corpus, annotations, labels or question identity is not replay of that comparison; the runtime configuration must also match the capture's bound request identity.
+
+Example:
+
+```bash
+uv run threadsense decisions evaluate \
+  --manifest <dataset-dir>/manifest.json \
+  --annotation <annotation-root>/<snapshot_sha256>/decisions/<decision_sha256>.json \
+  --annotation <annotation-root>/<snapshot_sha256>/decisions/<decision_sha256>.json
+```
+
 ## `evaluate`
 
 Run golden-dataset evaluation.
@@ -1220,7 +1284,10 @@ Common paths:
 - `.threadsense/corpora/<corpus-id>/...`
 - `.threadsense/monitoring/state.sqlite3`
 - `.threadsense/monitoring/watches/<watch_id>/digests/<sequence>-<digest_id>.{json,md}`
+- `.threadsense/annotations/evaluations/<manifest_sha256>/generative-captures/<capture_file_sha256>.json`
 - `.threadsense/annotations/<snapshot_sha256>/{decisions,runs}/...`
+- `.threadsense/annotations/evaluations/<manifest_sha256>/<evaluation_sha256>.json`
+- `.threadsense/annotations/evaluations/<manifest_sha256>/runs/<run_id>.json`
 
 ## Related Docs
 

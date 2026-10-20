@@ -107,6 +107,11 @@ class DecisionArtifactError(ThreadSenseError):
         super().__init__(message=message, code="decision_artifact_error", details=details or {})
 
 
+class DecisionEvaluationError(ThreadSenseError):
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message=message, code="decision_evaluation_error", details=details or {})
+
+
 class RedditInputError(ThreadSenseError):
     def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
         super().__init__(message=message, code="reddit_input_error", details=details or {})
