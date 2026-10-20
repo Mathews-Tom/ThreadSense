@@ -1662,6 +1662,37 @@ def test_checkpoint_verifier_missing_directory_raises_repo_missing(tmp_path: Pat
     assert caught.value.details["repo"] == missing
 
 
+@pytest.mark.parametrize("probe", ["is_dir", "is_file"])
+def test_checkpoint_verifier_filesystem_probe_failures_are_typed_and_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, probe: str
+) -> None:
+    repo = write_checkpoint(tmp_path)
+    target = repo if probe == "is_dir" else repo / "config.json"
+    original_probe: Callable[[Path], bool] = getattr(Path, probe)
+    attempts = 0
+
+    def deny_access(path: Path) -> bool:
+        nonlocal attempts
+        if path == target:
+            attempts += 1
+            raise PermissionError("checkpoint access denied")
+        return original_probe(path)
+
+    monkeypatch.setattr(Path, probe, deny_access)
+    verifier = CheckpointVerifier(build_manifest())
+    failures: list[DecisionIdentityError] = []
+    for _ in range(2):
+        with pytest.raises(DecisionIdentityError) as caught:
+            verifier.verify(str(repo))
+        failures.append(caught.value)
+
+    assert failures[0] is failures[1]
+    assert failures[0].details["reason"] == "checkpoint_file_unreadable"
+    assert failures[0].details["error_type"] == "PermissionError"
+    assert attempts == 1
+    assert verifier.files_hashed == 0
+
+
 def test_checkpoint_verifier_deleted_file_raises_file_missing(tmp_path: Path) -> None:
     repo = write_checkpoint(tmp_path)
     (repo / "tokenizer" / "tokenizer.json").unlink()

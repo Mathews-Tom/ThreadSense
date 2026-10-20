@@ -260,7 +260,7 @@ Unavailable (`failure` carries the reason, message and details):
 - `runtime_request_failed`: the batch request failed
 - `invalid_response`: the batch response is not a well-formed batch, or its result count differs from the request
 - `invalid_typed_answer`: a result failed validation
-- `checkpoint_identity_unverified`: the checkpoint files the service reported do not match the manifest digests
+- `checkpoint_identity_unverified`: the checkpoint files the service reported cannot be inspected or read, or do not match the manifest digests; filesystem access failures are typed identity failures and are cached for the run
 - `checkpoint_repo_changed`: the service answered from a different checkpoint directory than earlier in the same run
 
 A single comment whose state alone exceeds the 2 MiB request body is not an item status; it aborts the run with `state_exceeds_request_body_limit`.

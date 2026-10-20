@@ -209,6 +209,15 @@ class CheckpointVerifier:
                 self._cache[repo] = self._verify_uncached(repo)
             except DecisionIdentityError as error:
                 self._cache[repo] = error
+            except OSError as error:
+                self._cache[repo] = _verification_error(
+                    "checkpoint_file_unreadable",
+                    "checkpoint path could not be inspected",
+                    repo,
+                    None,
+                    error_type=type(error).__name__,
+                    error=str(error),
+                )
         cached = self._cache[repo]
         if isinstance(cached, DecisionIdentityError):
             raise cached
