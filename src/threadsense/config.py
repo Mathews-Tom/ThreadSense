@@ -148,6 +148,7 @@ class StorageConfig(BaseModel):
     corpus_dirname: str = "corpora"
     index_dirname: str = "index"
     monitoring_dirname: str = "monitoring"
+    annotations_dirname: str = "annotations"
     versioning_enabled: bool = False
 
 
@@ -270,6 +271,7 @@ _ENV_MAP: dict[str, tuple[str, ...]] = {
     "THREADSENSE_STORAGE_CORPUS_DIR": ("storage", "corpus_dirname"),
     "THREADSENSE_STORAGE_INDEX_DIR": ("storage", "index_dirname"),
     "THREADSENSE_STORAGE_MONITORING_DIR": ("storage", "monitoring_dirname"),
+    "THREADSENSE_STORAGE_ANNOTATIONS_DIR": ("storage", "annotations_dirname"),
     "THREADSENSE_STORAGE_VERSIONING_ENABLED": ("storage", "versioning_enabled"),
     "THREADSENSE_BATCH_MAX_WORKERS": ("batch", "max_workers"),
     "THREADSENSE_BATCH_MAX_JOBS": ("batch", "max_jobs"),

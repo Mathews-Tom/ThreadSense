@@ -38,6 +38,7 @@ Top-level commands:
 - `run`
 - `research`
 - `watch`
+- `decisions`
 
 ## Happy Paths
 
@@ -647,6 +648,81 @@ The `threadsense.monitoring` Python package provides the run-claim primitive tha
 - after the lease expires, the next claim marks the old run `abandoned` with `recovered_by_run_id` pointing at the new run
 - the previous owner can no longer finalize that run (reason `stale_owner`); an owner whose lease expired without a newer claim cannot finalize either (reason `lease_expired`)
 
+## `decisions`
+
+Shadow typed semantic annotations from a separate, operator-provisioned local Laya service. This path is independent of the generative runtime used by `infer`: it never runs analysis, never calls the generative runtime and does not depend on `THREADSENSE_RUNTIME_ENABLED`. Annotations are separate artifacts and never change baseline findings, reports or monitoring state.
+
+### `decisions annotate`
+
+```bash
+threadsense decisions annotate --input PATH --endpoint URL \
+  [--requirement optional|required] \
+  [--domain D] [--objective O] \
+  [--output-dir DIR] [--timeout-seconds F] [--config PATH]
+```
+
+| Flag | Meaning |
+| --- | --- |
+| `--input PATH` | Required. A canonical thread artifact: a normalized artifact or a monitoring revision snapshot |
+| `--endpoint URL` | Required. The service base URL. Literal loopback `http` only, for example `http://127.0.0.1:PORT`; `localhost` and non-loopback hosts are refused |
+| `--requirement` | `optional` (default) or `required` |
+| `--domain D` | Domain vocabulary for the theme question; defaults to the configured analysis domain |
+| `--objective O` | Analysis objective for the relevance question; defaults to the configured analysis objective |
+| `--output-dir DIR` | Annotation artifact root; defaults to `<storage-root>/annotations` |
+| `--timeout-seconds F` | Timeout for each HTTP call to the service; default `300` |
+| `--config PATH` | Configuration file, as for other commands |
+
+The default annotation directory name is `annotations` under the storage root; configure it with `annotations_dirname` in the `[storage]` table or the `THREADSENSE_STORAGE_ANNOTATIONS_DIR` environment variable.
+
+Requirement modes:
+
+- `optional` (default) is a shadow run. A refused comment, an unavailable service or an unhealthy runtime stays visible in the written artifact and in the printed coverage, and the command exits `0`.
+- `required` exits `1` on any refused or unavailable comment or on an unhealthy runtime. Artifacts are still written so the gap can be inspected.
+
+Output locations are refused when the output root lies inside the baseline or monitoring storage, or when it or any output path aliases the input artifact. See [artifacts.md](artifacts.md#typed-decision-annotations) for the layout and the full document, status and reason definitions.
+
+Printed JSON payload (`artifact_type: decision_annotations`, `mode: shadow`):
+
+| Field | Content |
+| --- | --- |
+| `status` | Aggregate coverage status: `complete`, `partial` or `unavailable` |
+| `coverage` | Counts of total, ok, refused and unavailable comments |
+| `requirement`, `satisfied` | The requested mode and whether it was met |
+| `decision_path`, `decision_sha256` | The content-addressed decision document and its hash |
+| `run_path`, `run_id` | The run record that holds run-varying values |
+| `snapshot_sha256` | Hash of the input snapshot |
+| `question_set_sha256`, `manifest_sha256` | Identity of the question set and of the pinned runtime manifest |
+
+Exit codes: `0` when the run is satisfied (always for `optional` once the artifacts are published), `1` when `required` coverage is not complete, the runtime is unhealthy, or the command fails.
+
+Examples:
+
+```bash
+# Annotate a normalized artifact in shadow mode
+uv run threadsense decisions annotate \
+  --input .threadsense/normalized/reddit/<thread-artifact>.json \
+  --endpoint http://127.0.0.1:<port>
+
+# Annotate a monitoring revision snapshot and require complete coverage
+uv run threadsense decisions annotate \
+  --input <revision-snapshot-path> \
+  --endpoint http://127.0.0.1:<port> \
+  --requirement required \
+  --output-dir <annotation-root>
+```
+
+The service is not installed, downloaded or started by ThreadSense. Prepare or reuse it with the procedure in [laya-runtime.md](laya-runtime.md). Checkpoint identity is verified on every invocation.
+
+Operator smoke check against the real service (fixtures are not a substitute, so a running service is required):
+
+```bash
+uv run python scripts/smoke_monitoring.py --scenario annotations \
+  --work-dir "$THREADSENSE_SMOKE_DIR" \
+  --endpoint "$THREADSENSE_DECISION_ENDPOINT"
+```
+
+`THREADSENSE_SMOKE_DIR` is an empty or absent working directory and `THREADSENSE_DECISION_ENDPOINT` is the loopback service URL.
+
 ## `evaluate`
 
 Run golden-dataset evaluation.
@@ -696,6 +772,7 @@ Common paths:
 - `.threadsense/corpora/<corpus-id>/...`
 - `.threadsense/monitoring/state.sqlite3`
 - `.threadsense/monitoring/watches/<watch_id>/digests/<sequence>-<digest_id>.{json,md}`
+- `.threadsense/annotations/<snapshot_sha256>/{decisions,runs}/...`
 
 ## Related Docs
 
@@ -706,4 +783,5 @@ Common paths:
 - [overview.md](overview.md)
 - [system-design.md](system-design.md)
 - [local-runtime-contract.md](local-runtime-contract.md)
+- [laya-runtime.md](laya-runtime.md)
 - [batch-api-runtime.md](batch-api-runtime.md)

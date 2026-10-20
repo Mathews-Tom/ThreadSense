@@ -1,0 +1,56 @@
+{
+  "manifest_version": 1,
+  "backend": "laya",
+  "code": {
+    "repository": "https://github.com/NandhaKishorM/laya",
+    "commit": "ffc142012af63d015fa19f05f29f9c5ff329a2cc",
+    "package": "laya",
+    "version": "0.4.12",
+    "license": "Apache-2.0",
+    "identity_basis": "declared_by_manifest_attested_by_reuse_procedure"
+  },
+  "checkpoint": {
+    "repository": "convaiinnovations/laya",
+    "revision": "7b928d828b7b0e022f929d9bd2e44165aa270148",
+    "license": "Apache-2.0",
+    "files": [
+      {
+        "path": "config.json",
+        "bytes": 160,
+        "sha256": "7add7c041b53f7091e65908553af79ab3f077946e5f2312d510ae13b17c7c134"
+      },
+      {
+        "path": "encoder/config.json",
+        "bytes": 2083,
+        "sha256": "bf3ab80598fdccf414855a2ce80f22859e4492d06ca8a62ddd1cfb63972f8979"
+      },
+      {
+        "path": "rl_agent_config.json",
+        "bytes": 745,
+        "sha256": "ae287b56bbcf5f8c4f4541ae9dfd00c914c4c48b940b8398c3058af37ba92bbd"
+      },
+      {
+        "path": "tokenizer/tokenizer.json",
+        "bytes": 3583228,
+        "sha256": "6c8aaa9a542084f2457eab775d4eeb51f92a70c0fd9de28d5edb0ddec3c08d30"
+      },
+      {
+        "path": "tokenizer/tokenizer_config.json",
+        "bytes": 308,
+        "sha256": "50044de60daaa73df97d262e15a40d4faf0160e7d742df64b377877a1320dd12"
+      },
+      {
+        "path": "model.safetensors",
+        "bytes": 842609210,
+        "sha256": "891102d372688fc2a094dac56a384bc537b87c63f21f9f3dac0be2b7cbc8d86c"
+      }
+    ],
+    "identity_basis": "client_file_sha256"
+  },
+  "wire": {
+    "health_path": "/health",
+    "batch_path": "/v1/systemone/batch",
+    "model": "english",
+    "language": "en"
+  }
+}
