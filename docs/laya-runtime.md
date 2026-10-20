@@ -35,7 +35,7 @@ How identity is established:
 - At most 12 GiB of additional disk, including the environment and the weights.
 - At least 20 GiB free before installing.
 - A private runtime root, `<runtime-root>`, holding an isolated Python 3.11 virtual environment, the source checkout, the checkpoint, a private Hugging Face cache and a private `TMPDIR`.
-- No global installs and no credentials. Strip Hugging Face tokens from the service environment.
+- No global installs and no credentials in the service environment. Inherit only `PATH`, `LANG` and `LC_ALL`, then add the explicit settings below; never forward agent or provider tokens.
 - Offline at serve time.
 
 ## Prepare
@@ -196,7 +196,7 @@ Use the following settings from the pinned source's `laya.serve` environment int
 | `HF_HOME` | a directory inside `<runtime-root>` |
 | `TMPDIR` | a directory inside `<runtime-root>` |
 
-Digest keys are paths **relative to the checkpoint directory**, not to the Laya source tree or the runtime root. `LAYA_EXTRA_MODELS` instead maps `english` to the absolute local checkpoint directory. No `LAYA_API_KEY` is needed on loopback. The following launch derives both JSON values from the packaged public manifest, verifies the local files again, strips inherited Laya settings and Hugging Face tokens, and executes the explicit private interpreter. It does not activate or depend on the core environment:
+Digest keys are paths **relative to the checkpoint directory**, not to the Laya source tree or the runtime root. `LAYA_EXTRA_MODELS` instead maps `english` to the absolute local checkpoint directory. No `LAYA_API_KEY` is needed on loopback. The following launch derives both JSON values from the packaged public manifest, verifies the local files again, constructs a small service environment from `PATH` and locale variables plus the explicit pinned settings, and executes the private interpreter. It does not activate or depend on the core environment:
 
 ```bash
 "$RUNTIME_ROOT/env/bin/python" - <<'PY'
@@ -219,9 +219,8 @@ for entry in manifest["checkpoint"]["files"]:
         raise SystemExit(f"checkpoint identity mismatch: {entry['path']}")
     digests[entry["path"]] = entry["sha256"]
 port = os.environ["LAYA_PORT"]
-environment = {key: value for key, value in os.environ.items()
-    if not key.startswith("LAYA_") and key not in {
-        "HF_TOKEN", "HF_HUB_TOKEN", "HUGGING_FACE_HUB_TOKEN", "PYTHONHOME"}}
+environment = {key: os.environ[key] for key in ("PATH", "LANG", "LC_ALL")
+    if key in os.environ}
 environment.update({
     "PYTHONPATH": str(root / "source"),
     "PYTHONDONTWRITEBYTECODE": "1",
