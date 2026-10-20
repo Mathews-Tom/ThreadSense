@@ -55,7 +55,9 @@ def _fail(reason: str, message: str, **details: Any) -> DecisionProtocolError:
 
 
 def _is_number(value: Any) -> bool:
-    return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
+    if isinstance(value, bool):
+        return False
+    return isinstance(value, int) or (isinstance(value, float) and math.isfinite(value))
 
 
 def _is_probability(value: Any) -> bool:

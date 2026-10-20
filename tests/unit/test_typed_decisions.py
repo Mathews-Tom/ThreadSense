@@ -1082,6 +1082,76 @@ def test_validate_result_choice_option_renamed_raises_option_order_mismatch(
     assert caught.value.details["reason"] == "choice_option_order_mismatch"
 
 
+@pytest.mark.parametrize(
+    "value", [10**400, -(10**400)], ids=["oversized_positive", "oversized_negative"]
+)
+@pytest.mark.parametrize(
+    ("question_id", "path", "reason"),
+    [
+        ("objective_relevance", ("score",), "score_out_of_range"),
+        ("objective_relevance", ("probabilities", "0"), "probability_invalid"),
+        ("evidence_type", ("probabilities", "question"), "probability_invalid"),
+        ("objective_relevance", ("confidence",), "probability_invalid"),
+        ("objective_relevance", ("answer_confidence",), "probability_invalid"),
+        ("evidence_type", ("confidence",), "probability_invalid"),
+        ("evidence_type", ("answer_confidence",), "probability_invalid"),
+        ("promotional_framing", ("noul",), "probability_invalid"),
+        ("promotional_framing", ("confidence",), "probability_invalid"),
+        ("promotional_framing", ("answer_confidence",), "probability_invalid"),
+    ],
+)
+def test_validate_result_oversized_wire_integer_raises_protocol_error(
+    value: int, question_id: str, path: tuple[str, ...], reason: str, question_set: QuestionSet
+) -> None:
+    result = _recorded_result(0)
+    _apply(result, ("answers", question_id, *path), value)
+    decoded = json.loads(json.dumps(result))
+
+    with pytest.raises(DecisionProtocolError) as caught:
+        _validate(decoded, question_set)
+
+    assert caught.value.details["reason"] == reason
+    assert caught.value.details["question_id"] == question_id
+    assert caught.value.details["observed"] == value
+    if reason == "probability_invalid":
+        assert caught.value.details["field"] == ".".join(path)
+
+
+@pytest.mark.parametrize("score", [0, 1, 2])
+@pytest.mark.parametrize("noul", [0, 1])
+def test_validate_result_integer_boundaries_and_expected_ordinal_are_accepted(
+    score: int, noul: int, question_set: QuestionSet
+) -> None:
+    result = _recorded_result(0)
+    relevance = result["answers"]["objective_relevance"]
+    relevance["probabilities"] = {key: int(key == str(score)) for key in relevance["legend"]}
+    relevance.update({"score": score, "confidence": 1, "answer_confidence": 1})
+    evidence = result["answers"]["evidence_type"]
+    evidence["probabilities"] = {
+        label: int(label == evidence["choice"]) for label in evidence["probabilities"]
+    }
+    evidence.update({"confidence": 0, "answer_confidence": 1})
+    result["answers"]["promotional_framing"].update(
+        {"noul": noul, "confidence": 1, "answer_confidence": 1}
+    )
+
+    validated = _validate(result, question_set)
+
+    assert validated.answers[0].score == score
+    assert dict(validated.answers[0].probabilities) == relevance["probabilities"]
+    assert dict(validated.answers[1].probabilities) == evidence["probabilities"]
+    assert validated.answers[4].noul == noul
+    for index in (0, 1, 4):
+        quantities = {
+            item.name: item.value for item in validated.answers[index].confidence_quantities
+        }
+        raw = result["answers"][validated.answers[index].question_id]
+        assert quantities == {
+            "confidence": raw["confidence"],
+            "answer_confidence": raw["answer_confidence"],
+        }
+
+
 @pytest.mark.parametrize("value", [1.2, -0.1, True, math.nan, math.inf, "0.5", None])
 def test_validate_result_choice_probability_outside_unit_interval_raises_probability_invalid(
     value: Any, question_set: QuestionSet
