@@ -10,6 +10,7 @@ import hashlib
 import os
 import re
 from collections.abc import Mapping
+from importlib import resources
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,7 @@ from threadsense.decisions.contracts import (
     CodeIdentity,
     RuntimeManifest,
     WireContract,
+    decode_strict_json_object,
 )
 from threadsense.errors import DecisionIdentityError
 
@@ -27,6 +29,7 @@ SUPPORTED_MANIFEST_VERSION = 1
 SUPPORTED_BACKEND = "laya"
 VERIFICATION_BASIS = "client_file_sha256"
 _HASH_CHUNK_BYTES = 1024 * 1024
+PINNED_MANIFEST_RESOURCE = "laya_runtime_manifest.json"
 _COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 
@@ -156,6 +159,13 @@ def parse_runtime_manifest(payload: Mapping[str, Any]) -> RuntimeManifest:
         checkpoint=_parse_checkpoint(top["checkpoint"]),
         wire=_parse_wire(top["wire"]),
     )
+
+
+def load_pinned_runtime_manifest() -> RuntimeManifest:
+    """Load the immutable runtime manifest shipped as package data; there is no override."""
+    raw = resources.files("threadsense.decisions").joinpath(PINNED_MANIFEST_RESOURCE).read_bytes()
+    payload = decode_strict_json_object(raw, DecisionIdentityError, "pinned runtime manifest")
+    return parse_runtime_manifest(payload)
 
 
 def _verification_error(

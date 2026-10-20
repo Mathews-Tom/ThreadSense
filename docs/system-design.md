@@ -301,6 +301,18 @@ Presentation writes artifacts before the database marks anything presented:
 - no scheduler installation or enablement, model calls, API endpoints, remote notifications, exactly-once delivery or deletion of watches or observations
 - existing JSON artifacts and their schemas are unchanged; sweep and digest artifacts live under the monitoring directory
 
+## Typed Decision Path
+
+The typed decision path (`src/threadsense/decisions/`) is separate from the generative inference layer. Inference routes task prompts to a local OpenAI-compatible chat endpoint. The typed path uses its own client, `TypedDecisionClient`, against a different service: a pinned, operator-provisioned Laya runtime that answers fixed typed questions per comment over a batch endpoint. The two runtimes have different contracts, endpoints and enablement: see [local-runtime-contract.md](local-runtime-contract.md) for the generative one and [laya-runtime.md](laya-runtime.md) for the typed one.
+
+- **Shadow only.** `threadsense decisions annotate` reads one canonical thread artifact and writes annotations. It never runs analysis or the generative runtime, and it does not depend on `THREADSENSE_RUNTIME_ENABLED`. Annotations are uncalibrated and never feed back into findings, ranking, discovery or reports.
+- **Loopback only.** The endpoint must be a literal loopback `http` URL. Discussion content is sent only to that service.
+- **Pinned identity.** A packaged manifest declares the code commit and the six checkpoint files. The client verifies the checkpoint files by SHA-256 on every invocation; the service does not expose its code identity.
+- **Artifact separation.** Decision documents and run records live under their own annotation root, which is refused when it lies inside baseline or monitoring storage or aliases the input. Existing baseline and monitoring artifacts and schemas are unchanged.
+- **Optional dependency.** The core install does not need torch or transformers; they exist only inside the separately provisioned service environment.
+
+Operator reference: [usage.md](usage.md#decisions-annotate). Artifact definitions: [artifacts.md](artifacts.md#typed-decision-annotations).
+
 ## Artifact Boundaries
 
 ThreadSense relies on explicit persisted artifacts.
@@ -391,5 +403,6 @@ Once normalized, downstream analysis and reporting do not branch on source shape
 - no corpus HTML report yet
 - research query grammar is intentionally constrained
 - sweeps and digests run only on demand or from a scheduler definition the operator installs manually; there is no daemon, remote notification or delivery tracking
+- typed decision annotations are shadow-only and uncalibrated, use an English checkpoint, and require an operator-provisioned local service
 
 These are product and workflow gaps, not evidence-layer gaps.

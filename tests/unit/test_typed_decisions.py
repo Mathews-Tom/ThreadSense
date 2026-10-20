@@ -2266,3 +2266,88 @@ def test_recorded_exchange_through_client_validation_and_verifier_end_to_end(
     assert exchange.request_body == request_text
     assert {item.routing.repo for item in validated} == {str(repo)}
     assert verification.files == manifest.checkpoint.files
+
+
+# --- Exact tolerance boundaries ------------------------------------------------------------
+
+_JUST = 1e-7
+
+
+def _non_choice_label(answer: dict[str, Any]) -> str:
+    probabilities: dict[str, float] = answer["probabilities"]
+    return min(probabilities, key=lambda label: probabilities[label])
+
+
+@pytest.mark.parametrize(("offset", "accepted"), [(-_JUST, True), (_JUST, False)])
+def test_validate_result_probability_mass_boundary_is_k_rounding_quanta(
+    offset: float, accepted: bool, question_set: QuestionSet
+) -> None:
+    result = _recorded_result(0)
+    answer = result["answers"]["theme"]
+    labels = len(answer["probabilities"])
+    target = 1 + labels * contracts.ROUNDING_QUANTUM + contracts.TOLERANCE_EPSILON + offset
+    label = _non_choice_label(answer)
+    answer["probabilities"][label] += target - sum(answer["probabilities"].values())
+
+    if accepted:
+        _validate(result, question_set)
+        return
+    with pytest.raises(DecisionProtocolError) as caught:
+        _validate(result, question_set)
+    assert caught.value.details["reason"] == "probability_mass_out_of_tolerance"
+
+
+@pytest.mark.parametrize(("offset", "accepted"), [(-_JUST, True), (_JUST, False)])
+def test_validate_result_score_boundary_is_level_sum_plus_one_quanta(
+    offset: float, accepted: bool, question_set: QuestionSet
+) -> None:
+    result = _recorded_result(0)
+    answer = result["answers"]["objective_relevance"]
+    probabilities = [answer["probabilities"][key] for key in ("0", "1", "2")]
+    expected = sum(index * value for index, value in enumerate(probabilities))
+    tolerance = (0 + 1 + 2 + 1) * contracts.ROUNDING_QUANTUM + contracts.TOLERANCE_EPSILON
+    answer["score"] = expected + tolerance + offset
+
+    if accepted:
+        validated = _validate(result, question_set)
+        assert validated.answers[0].score == answer["score"]
+        return
+    with pytest.raises(DecisionProtocolError) as caught:
+        _validate(result, question_set)
+    assert caught.value.details["reason"] == "score_inconsistent_with_distribution"
+
+
+@pytest.mark.parametrize(("offset", "accepted"), [(-_JUST, True), (_JUST, False)])
+def test_validate_result_noul_confidence_boundary_is_one_rounding_quantum(
+    offset: float, accepted: bool, question_set: QuestionSet
+) -> None:
+    result = _recorded_result(0)
+    answer = result["answers"]["promotional_framing"]
+    side = max(answer["noul"], 1 - answer["noul"])
+    answer["confidence"] = side + contracts.ROUNDING_QUANTUM + contracts.TOLERANCE_EPSILON + offset
+
+    if accepted:
+        _validate(result, question_set)
+        return
+    with pytest.raises(DecisionProtocolError) as caught:
+        _validate(result, question_set)
+    assert caught.value.details["reason"] == "noul_confidence_inconsistent"
+
+
+@pytest.mark.parametrize(("offset", "accepted"), [(-_JUST, True), (_JUST, False)])
+def test_validate_result_choice_answer_confidence_boundary_is_one_rounding_quantum(
+    offset: float, accepted: bool, question_set: QuestionSet
+) -> None:
+    result = _recorded_result(0)
+    answer = result["answers"]["evidence_type"]
+    selected = answer["probabilities"][answer["choice"]]
+    answer["answer_confidence"] = (
+        selected - contracts.ROUNDING_QUANTUM - contracts.TOLERANCE_EPSILON - offset
+    )
+
+    if accepted:
+        _validate(result, question_set)
+        return
+    with pytest.raises(DecisionProtocolError) as caught:
+        _validate(result, question_set)
+    assert caught.value.details["reason"] == "answer_confidence_inconsistent"

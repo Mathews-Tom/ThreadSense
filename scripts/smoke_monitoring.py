@@ -3,10 +3,13 @@
 Usage:
     uv run python scripts/smoke_monitoring.py --scenario profiles --work-dir DIR
     uv run python scripts/smoke_monitoring.py --scenario incremental --work-dir DIR
+    uv run python scripts/smoke_monitoring.py --scenario annotations --work-dir DIR --endpoint URL
 
 DIR must not exist or be empty. Every CLI call runs in a new interpreter process
-against isolated storage under DIR; no network or model access is used. The
-profiles scenario makes run claims through `threadsense.monitoring` in separate
+against isolated storage under DIR; the profiles and incremental scenarios use no network
+or model access.
+
+The profiles scenario makes run claims through `threadsense.monitoring` in separate
 competing processes and observes them through `threadsense watch inspect`.
 
 The incremental scenario drives `threadsense watch run|digest|inspect|schedule`
@@ -14,6 +17,10 @@ over the recorded phases in tests/fixtures/watch/incremental/. Each replaying
 child installs the in-process recorded Reddit transport from
 tests/integration/recorded_reddit.py before calling `threadsense.cli.main`; the
 payloads are synthesized Reddit JSON, not live acquisition.
+
+The annotations scenario (scripts/smoke_annotations.py) drives `threadsense decisions
+annotate` against a locally running `laya.serve` given by --endpoint, which is required for
+this scenario and refused for the others. It uses a committed fixture, not a live source.
 """
 
 from __future__ import annotations
@@ -21,7 +28,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import plistlib
 import re
 import shlex
@@ -35,7 +41,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import threadsense
+from smoke_annotations import (
+    AnnotationsScenario,
+    SmokeFailure,
+    check,
+    child_base_env,
+    decode_payload,
+    file_sha256,
+    redact_local_paths,
+)
+
 from threadsense.models.analysis import load_analysis_artifact_file
 from threadsense.monitoring import STATE_SCHEMA_VERSION
 
@@ -225,46 +240,8 @@ sys.exit(threadsense.cli.main(argv))
 """
 
 
-class SmokeFailure(Exception):
-    pass
-
-
-def check(condition: bool, message: str) -> None:
-    if not condition:
-        raise SmokeFailure(message)
-
-
-def file_sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
 def directory_digest(directory: Path) -> dict[str, str]:
     return {entry.name: file_sha256(entry) for entry in sorted(directory.iterdir())}
-
-
-def reject_constant(token: str) -> Any:
-    raise ValueError(f"non-standard JSON constant {token}")
-
-
-def child_base_env() -> dict[str, str]:
-    """Scrubbed child environment; children import the same sources as this script."""
-    source_root = str(Path(threadsense.__file__).resolve().parents[1])
-    env = {
-        key: value
-        for key, value in os.environ.items()
-        if not key.startswith("THREADSENSE_") and key != "PYTHONPATH"
-    }
-    env["PYTHONPATH"] = source_root
-    env["THREADSENSE_RUNTIME_ENABLED"] = "false"
-    return env
-
-
-def decode_payload(stdout: str, stderr: str, command: str) -> dict[str, Any]:
-    try:
-        payload: dict[str, Any] = json.loads(stdout, parse_constant=reject_constant)
-    except ValueError as error:
-        raise SmokeFailure(f"threadsense {command} printed no JSON: {stderr[-500:]}") from error
-    return payload
 
 
 class ProfilesScenario:
@@ -1647,11 +1624,13 @@ class IncrementalScenario:
 
 
 def evidence_document(
-    scenario: ProfilesScenario | IncrementalScenario, status: str
+    scenario: ProfilesScenario | IncrementalScenario | AnnotationsScenario, status: str
 ) -> dict[str, Any]:
     document: dict[str, Any] = {"status": status}
     if isinstance(scenario, IncrementalScenario):
         document["fixture_provenance"] = FIXTURE_PROVENANCE
+    if isinstance(scenario, AnnotationsScenario):
+        document["observations"] = scenario.observations
     document["steps"] = scenario.evidence
     return document
 
@@ -1667,22 +1646,33 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run monitoring smoke scenarios through the threadsense CLI."
     )
-    parser.add_argument("--scenario", choices=["profiles", "incremental"], required=True)
-    parser.add_argument("--work-dir", type=Path, required=True)
-    args = parser.parse_args()
-    work_dir = prepare_work_dir(args.work_dir)
-    scenario: ProfilesScenario | IncrementalScenario = (
-        IncrementalScenario(work_dir)
-        if args.scenario == "incremental"
-        else ProfilesScenario(work_dir)
+    parser.add_argument(
+        "--scenario", choices=["profiles", "incremental", "annotations"], required=True
     )
+    parser.add_argument("--work-dir", type=Path, required=True)
+    parser.add_argument("--endpoint", help="Local laya.serve URL; required for annotations only.")
+    args = parser.parse_args()
+    if args.scenario == "annotations" and args.endpoint is None:
+        parser.error("--scenario annotations requires --endpoint")
+    if args.scenario != "annotations" and args.endpoint is not None:
+        parser.error(f"--endpoint is only valid for --scenario annotations, not {args.scenario}")
+    work_dir = prepare_work_dir(args.work_dir)
+    scenario: ProfilesScenario | IncrementalScenario | AnnotationsScenario
+    if args.scenario == "annotations":
+        scenario = AnnotationsScenario(work_dir, args.endpoint)
+    elif args.scenario == "incremental":
+        scenario = IncrementalScenario(work_dir)
+    else:
+        scenario = ProfilesScenario(work_dir)
     evidence_path = work_dir / f"{args.scenario}-evidence.json"
     try:
         scenario.run()
     except SmokeFailure as failure:
-        failed = {**evidence_document(scenario, "failed"), "error": str(failure)}
+        # Failure text can quote CLI payloads; evidence never records local absolute paths.
+        reason = redact_local_paths(str(failure))
+        failed = {**evidence_document(scenario, "failed"), "error": reason}
         evidence_path.write_text(json.dumps(failed), encoding="utf-8")
-        print(f"scenario={args.scenario} status=failed reason={failure}")
+        print(f"scenario={args.scenario} status=failed reason={reason}")
         return 1
     evidence_path.write_text(
         json.dumps(evidence_document(scenario, "passed"), indent=2), encoding="utf-8"

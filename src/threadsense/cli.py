@@ -6,6 +6,7 @@ import logging
 import os
 import sys
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from threadsense.api_server import start_api_server
@@ -21,7 +22,11 @@ from threadsense.contracts import (
     ObjectiveType,
     contract_from_config,
 )
-from threadsense.errors import ThreadSenseError
+from threadsense.decisions.annotate import AnnotationJob, annotate_canonical_thread
+from threadsense.decisions.client import TypedDecisionClient
+from threadsense.decisions.contracts import Requirement
+from threadsense.decisions.runtime import CheckpointVerifier, load_pinned_runtime_manifest
+from threadsense.errors import DecisionInputError, ThreadSenseError
 from threadsense.evaluation import load_golden_manifest
 from threadsense.inference import InferenceTask
 from threadsense.inference.local_runtime import LocalRuntimeClient, RuntimeProbeResult
@@ -800,6 +805,60 @@ def _build_research_parser(
     _add_auto_domain_argument(reddit_parser)
 
 
+def _build_decisions_parser(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    decisions_parser = subparsers.add_parser(
+        "decisions",
+        help="Shadow typed semantic decisions from a separate local Laya service.",
+    )
+    decisions_subparsers = decisions_parser.add_subparsers(dest="decisions_command", required=True)
+
+    annotate_parser = decisions_subparsers.add_parser(
+        "annotate",
+        help="Annotate a canonical thread artifact with typed decisions from the Laya service.",
+    )
+    annotate_parser.add_argument(
+        "--input",
+        required=True,
+        type=Path,
+        help="Canonical thread artifact (normalized artifact or monitoring revision snapshot).",
+    )
+    annotate_parser.add_argument(
+        "--endpoint",
+        required=True,
+        help="Literal-loopback http URL of the owned typed-decision service.",
+    )
+    annotate_parser.add_argument(
+        "--requirement",
+        choices=[requirement.value for requirement in Requirement],
+        default=Requirement.OPTIONAL.value,
+        help="optional: shadow run; required: exit nonzero on any coverage gap.",
+    )
+    annotate_parser.add_argument(
+        "--domain",
+        choices=[domain.value for domain in DomainType if domain is not DomainType.CUSTOM],
+        help="Analysis domain vocabulary.",
+    )
+    annotate_parser.add_argument(
+        "--objective",
+        choices=[objective.value for objective in ObjectiveType],
+        help="Analysis objective.",
+    )
+    annotate_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        help="Annotation artifact root. Defaults to <storage root>/<annotations dirname>.",
+    )
+    annotate_parser.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=300.0,
+        help="Timeout for each HTTP call to the typed-decision service.",
+    )
+    _add_config_argument(annotate_parser)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="threadsense")
     parser.add_argument(
@@ -826,6 +885,7 @@ def build_parser() -> argparse.ArgumentParser:
     _build_run_parser(subparsers)
     _build_research_parser(subparsers)
     _build_watch_parser(subparsers)
+    _build_decisions_parser(subparsers)
     return parser
 
 
@@ -1626,6 +1686,108 @@ def run_watch_schedule(
     return 0
 
 
+@dataclass(frozen=True)
+class DecisionsAnnotateOptions:
+    input_path: Path
+    endpoint: str
+    requirement: Requirement
+    domain: str | None
+    objective: str | None
+    output_dir: Path | None
+    timeout_seconds: float
+
+
+def _annotation_roots(config: AppConfig, output_dir: Path | None) -> tuple[Path, tuple[Path, ...]]:
+    storage = config.storage
+    relative = Path(storage.annotations_dirname)
+    if (
+        relative.is_absolute()
+        or not relative.parts
+        or any(part in ("", ".", "..") for part in relative.parts)
+    ):
+        raise DecisionInputError(
+            "annotations directory must be a relative path inside the storage root",
+            details={
+                "reason": "annotations_dirname_invalid",
+                "annotations_dirname": storage.annotations_dirname,
+            },
+        )
+    root = storage.root_dir
+    protected_roots = tuple(
+        root / dirname
+        for dirname in (
+            storage.raw_dirname,
+            storage.normalized_dirname,
+            storage.analysis_dirname,
+            storage.report_dirname,
+            storage.batch_dirname,
+            storage.corpus_dirname,
+            storage.index_dirname,
+            storage.monitoring_dirname,
+        )
+    )
+    return (output_dir if output_dir is not None else root / relative), protected_roots
+
+
+def run_decisions_annotate(config_path: Path | None, options: DecisionsAnnotateOptions) -> int:
+    _logger, config = load_cli_context(config_path)
+    domain = options.domain if options.domain is not None else config.analysis.domain.value
+    if domain == DomainType.CUSTOM.value:
+        raise DecisionInputError(
+            "custom domain is not supported for decision annotations",
+            details={"reason": "domain_unsupported", "domain": domain},
+        )
+    output_root, protected_roots = _annotation_roots(config, options.output_dir)
+    manifest = load_pinned_runtime_manifest()
+    verifier = CheckpointVerifier(manifest)
+    job = AnnotationJob(
+        input_path=options.input_path,
+        output_root=output_root,
+        protected_roots=protected_roots,
+        requirement=options.requirement,
+        objective=(
+            ObjectiveType(options.objective)
+            if options.objective is not None
+            else config.analysis.objective
+        ),
+        domain=domain,
+    )
+    with TypedDecisionClient(
+        options.endpoint, wire=manifest.wire, timeout_seconds=options.timeout_seconds
+    ) as client:
+        outcome = annotate_canonical_thread(
+            job, client=client, manifest=manifest, verifier=verifier
+        )
+    emit_payload(
+        {
+            "artifact_type": "decision_annotations",
+            "status": outcome.coverage.status.value,
+            "mode": "shadow",
+            **outcome.to_dict(),
+        }
+    )
+    return 0 if outcome.satisfied else 1
+
+
+def _dispatch_decisions_command(args: argparse.Namespace) -> int:
+    match args.decisions_command:
+        case "annotate":
+            return run_decisions_annotate(
+                args.config,
+                DecisionsAnnotateOptions(
+                    input_path=args.input,
+                    endpoint=args.endpoint,
+                    requirement=Requirement(args.requirement),
+                    domain=args.domain,
+                    objective=args.objective,
+                    output_dir=args.output_dir,
+                    timeout_seconds=args.timeout_seconds,
+                ),
+            )
+        case _:
+            raise _CommandDispatchError(args.decisions_command)
+
+
 def _dispatch_watch_command(args: argparse.Namespace) -> int:
     match args.watch_command:
         case "create":
@@ -1672,6 +1834,8 @@ def _dispatch_command(args: argparse.Namespace) -> int:
     match command_key:
         case ("watch", _, _, _, _):
             return _dispatch_watch_command(args)
+        case ("decisions", _, _, _, _):
+            return _dispatch_decisions_command(args)
         case ("preflight", _, _, _, _):
             return run_preflight(args.config, args.skip_runtime)
         case ("fetch", "reddit", _, _, _):

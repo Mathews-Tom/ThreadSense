@@ -88,6 +88,18 @@ uv run threadsense watch schedule --id agent-memory --format launchd
 
 Field bounds and output shapes: [docs/usage.md](docs/usage.md).
 
+### Typed decision annotations (shadow)
+
+`decisions annotate` asks a separate, operator-provisioned local Laya service six fixed typed questions about every comment of a canonical thread artifact and writes the answers as shadow artifacts. They are uncalibrated and never change baseline findings, reports or monitoring. The service is pinned, loopback-only and never installed or started by ThreadSense; comment text goes only to that local endpoint.
+
+```bash
+uv run threadsense decisions annotate \
+  --input PATH \
+  --endpoint http://127.0.0.1:<port>
+```
+
+The default `optional` requirement keeps unavailability visible and exits `0`; `--requirement required` exits `1` on any refused or unavailable comment. Preparing or reusing the service: [docs/laya-runtime.md](docs/laya-runtime.md). Artifact definitions: [docs/artifacts.md](docs/artifacts.md#typed-decision-annotations). Flags and exit codes: [docs/usage.md](docs/usage.md#decisions-annotate).
+
 ### Domain-aware analysis
 
 The analysis layer uses a contract system with domain-specific vocabularies (developer tools, product feedback, hiring, research, financial markets, gaming). Each domain defines its own theme keywords, issue markers, and severity calibration — so analysis adapts to context rather than applying one-size-fits-all heuristics.
@@ -174,6 +186,7 @@ uv run threadsense research reddit \
 | `inspect`         | Examine persisted artifacts                         |
 | `batch run`       | Process multiple threads                            |
 | `watch`           | Save, sweep, digest and schedule research profiles  |
+| `decisions annotate` | Shadow typed annotations from a local Laya service |
 | `preflight`       | Validate local environment                          |
 | `serve`           | Local API server                                    |
 
@@ -191,7 +204,8 @@ Every pipeline run produces inspectable artifacts under `.threadsense/`:
 ├── reports/<source>/      # Rendered reports
 ├── corpora/<corpus-id>/   # Manifest, analysis, and report
 ├── batches/               # Batch run metadata
-└── monitoring/            # Watch profiles and state (state.sqlite3)
+├── monitoring/            # Watch profiles and state (state.sqlite3)
+└── annotations/           # Shadow typed decision annotations
 ```
 
 Details: [docs/artifacts.md](docs/artifacts.md)
@@ -213,6 +227,7 @@ Details: [docs/local-runtime-contract.md](docs/local-runtime-contract.md)
 | [overview.md](docs/overview.md)                             | Product and workflow overview       |
 | [system-design.md](docs/system-design.md)                   | Architecture and system boundaries  |
 | [local-runtime-contract.md](docs/local-runtime-contract.md) | Local inference contract            |
+| [laya-runtime.md](docs/laya-runtime.md)                     | Pinned local typed-decision service |
 | [pitch.md](docs/pitch.md)                                   | Product positioning                 |
 
 ## Validation
@@ -255,6 +270,7 @@ Replace `DIR` with a working directory for the scenario. The scenario prints `sc
 - GitHub Gist comments are flat (no threading); analysis uses temporal/semantic clustering
 - GitHub Gist connector does not retry on transient API errors (502/503)
 - Watches sweep and digest on demand through `watch run` and `watch digest`; nothing runs on a timer unless you install the rendered `watch schedule` output yourself, and digests are local files with no remote notification or delivery guarantee
+- Typed decision annotations are shadow-only and uncalibrated, use an English checkpoint and need a separately provisioned loopback Laya service; fixtures are not independent labels
 - The local API is a trusted local surface, not a hardened public service
 
 ## Direction
