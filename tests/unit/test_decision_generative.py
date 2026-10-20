@@ -128,8 +128,22 @@ def test_capture_association_full_body_and_offline_replay(
         pytest.fail("offline replay attempted HTTP")
 
     monkeypatch.setattr(httpx.Client, "send", forbidden)
-    replay = replay_generative_theme(**arguments, content=generative_capture_bytes(result.capture))
-    assert replay == result
+    content = generative_capture_bytes(result.capture)
+    replay = replay_generative_theme(**arguments, content=content)
+    assert replay.rows == result.rows
+    assert replay.unsupported == result.unsupported
+    assert replay.capture is not None
+    assert replay.capture == result.capture
+    assert generative_capture_bytes(replay.capture) == content
+    assert replay.availability["status"] == "available"
+    assert replay.availability["reason"] == "replayed_frozen_capture"
+    assert replay.availability["method"] is None
+    assert replay.availability["served_models"] is None
+    assert replay.availability["captured_availability"] == result.availability
+    assert result.availability["method"] is not None
+    assert result.capture["availability"] == result.availability
+    for field in ("provider", "enabled", "base_url", "model"):
+        assert replay.availability[field] == result.availability[field]
 
 
 @pytest.mark.parametrize(
@@ -140,6 +154,7 @@ def test_capture_association_full_body_and_offline_replay(
         [{"comment_id": "extra", "theme": "usability", "confidence": 1}],
         [{"comment_id": "a", "theme": "usability", "confidence": True}, answers()[0]],
         [{"comment_id": "a", "theme": "usability", "confidence": 1.1}, answers()[0]],
+        [{"comment_id": "a", "theme": "usability", "confidence": 10**400}, answers()[0]],
         [42, answers()[0]],
     ],
 )
@@ -148,6 +163,90 @@ def test_malformed_association_never_scores(arguments: dict[str, Any], rows: lis
     assert result.availability["status"] == "unavailable"
     assert result.availability["reason"] == "inference_failed"
     assert result.capture is None and result.rows == ()
+
+
+@pytest.mark.parametrize(
+    ("location", "malformed"),
+    [
+        (
+            "content",
+            json.dumps(
+                {
+                    "classifications": [
+                        {"comment_id": "a", "theme": "usability", "confidence": 10**400},
+                        answers()[0],
+                    ]
+                }
+            ),
+        ),
+        ("content", '{"classifications":[{"confidence":' + "9" * 5000 + "}]}"),
+        ("content", '{"classifications":' + "[" * 2000 + "0" + "]" * 2000 + "}"),
+        ("content", "{"),
+        ("response", '{"unexpected":' + "9" * 5000 + "}"),
+        ("response", '{"unexpected":' + "[" * 2000 + "0" + "]" * 2000 + "}"),
+        ("response", "{"),
+    ],
+    ids=[
+        "overflowing-confidence",
+        "model-integer-decoder-limit",
+        "deep-model-content",
+        "malformed-model-json",
+        "response-integer-decoder-limit",
+        "deep-response",
+        "malformed-response-json",
+    ],
+)
+def test_invalid_external_response_fails_acquisition_and_replay(
+    arguments: dict[str, Any], location: str, malformed: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    response_text = malformed
+    if location == "content":
+        body = completion([])
+        body["choices"][0]["message"]["content"] = malformed
+        response_text = json.dumps(body)
+    calls: list[str] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        calls.append(request.method)
+        if request.method == "GET":
+            return httpx.Response(200, json={"data": [{"id": "served"}]})
+        return httpx.Response(200, content=response_text.encode())
+
+    result = capture_generative_theme(**arguments, transport=httpx.MockTransport(handle))
+    assert calls == ["GET", "POST"]
+    assert result.availability["status"] == "unavailable"
+    assert result.availability["reason"] == "inference_failed"
+    assert result.capture is None and result.rows == ()
+    assert {row["comment_id"] for row in result.unsupported} == {"long", "excluded"}
+
+    valid = capture_generative_theme(**arguments, transport=transport(answers(), []))
+    assert valid.capture is not None
+    altered = json.loads(generative_capture_bytes(valid.capture))
+    altered["batches"][0]["exchanges"][0]["response_text"] = response_text
+    altered.pop("capture_sha256")
+    altered["capture_sha256"] = hashlib.sha256(decision_bytes(altered)).hexdigest()
+
+    def forbidden(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("invalid-response replay attempted HTTP")
+
+    monkeypatch.setattr(httpx.Client, "send", forbidden)
+    with pytest.raises(DecisionEvaluationError):
+        replay_generative_theme(**arguments, content=generative_capture_bytes(altered))
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        b'{"unexpected":' + b"9" * 5000 + b"}",
+        b'{"unexpected":' + b"[" * 2000 + b"0" + b"]" * 2000 + b"}",
+    ],
+    ids=["capture-integer-decoder-limit", "deep-capture"],
+)
+def test_invalid_capture_json_has_bounded_failure(
+    arguments: dict[str, Any], content: bytes
+) -> None:
+    with pytest.raises(DecisionEvaluationError):
+        replay_generative_theme(**arguments, content=content)
 
 
 def test_stale_and_tampered_capture_rejected(arguments: dict[str, Any]) -> None:
@@ -169,20 +268,73 @@ def test_stale_and_tampered_capture_rejected(arguments: dict[str, Any]) -> None:
 
 
 @pytest.mark.parametrize(
-    "runtime",
+    ("runtime", "reason"),
     [
-        RuntimeConfig(enabled=False),
-        RuntimeConfig(base_url="http://localhost:11434"),
-        RuntimeConfig(base_url="http://192.0.2.1:80"),
+        (RuntimeConfig(enabled=False), "disabled_by_configuration"),
+        (
+            RuntimeConfig(enabled=False, base_url="http://localhost:11434", chat_path="//bad?"),
+            "disabled_by_configuration",
+        ),
+        (RuntimeConfig(base_url="http://localhost:11434"), "endpoint_not_literal_loopback"),
+        (RuntimeConfig(base_url="http://192.0.2.1:80"), "endpoint_not_literal_loopback"),
+        (RuntimeConfig(base_url="http://127.0.0.1:bad"), "endpoint_invalid"),
     ],
 )
-def test_no_request_guards_are_not_observations(runtime: RuntimeConfig) -> None:
+def test_no_request_guards_are_not_observations(
+    arguments: dict[str, Any], runtime: RuntimeConfig, reason: str
+) -> None:
     def forbidden(request: httpx.Request) -> httpx.Response:
         pytest.fail("guard made a request")
 
-    observed = observe_generative_availability(runtime, transport=httpx.MockTransport(forbidden))
+    mock = httpx.MockTransport(forbidden)
+    observed = observe_generative_availability(runtime, transport=mock)
+    result = capture_generative_theme(**{**arguments, "runtime_config": runtime}, transport=mock)
+    assert result.capture is None and result.rows == ()
+    assert result.availability == observed
     assert observed["status"] == "not_observed"
+    assert observed["reason"] == reason
     assert observed["method"] is None
+    assert observed["served_models"] is None
+    assert observed["provider"] == "local_openai_compatible"
+    assert observed["enabled"] == runtime.enabled
+    assert observed["base_url"] == runtime.base_url
+    assert observed["model"] == runtime.model
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "reason"),
+    [
+        ("http://127.0.0.1:9999/v1/chat/completions", "endpoint_invalid"),
+        ("http://localhost:11434/v1/chat/completions", "endpoint_not_literal_loopback"),
+        ("http://192.0.2.1:80/v1/chat/completions", "endpoint_not_literal_loopback"),
+        ("http://[::1/v1/chat/completions", "endpoint_invalid"),
+        ("http://127.0.0.1:bad/v1/chat/completions", "endpoint_invalid"),
+        ("http://127.0.0.1:11434/v1/chat/completions?x=1", "endpoint_invalid"),
+        ("http://127.0.0.1:11434/v1/chat/completions?", "endpoint_invalid"),
+        ("http://127.0.0.1:11434/v1/chat/completions#part", "endpoint_invalid"),
+        ("http://127.0.0.1:11434/v1/chat/completions#", "endpoint_invalid"),
+        ("http://127.0.0.1:11434//remote/chat", "endpoint_invalid"),
+        ("http://127.0.0.1:11434/v1/chat/\ncompletions", "endpoint_invalid"),
+    ],
+)
+def test_invalid_chat_endpoint_precedes_listing(
+    arguments: dict[str, Any], monkeypatch: pytest.MonkeyPatch, endpoint: str, reason: str
+) -> None:
+    def forbidden(request: httpx.Request) -> httpx.Response:
+        pytest.fail("invalid chat endpoint made a listing or generation request")
+
+    monkeypatch.setattr(RuntimeConfig, "chat_endpoint", property(lambda self: endpoint))
+    result = capture_generative_theme(**arguments, transport=httpx.MockTransport(forbidden))
+    assert result.capture is None and result.rows == ()
+    assert result.availability["status"] == "not_observed"
+    assert result.availability["reason"] == reason
+    assert result.availability["method"] is None
+    assert result.availability["served_models"] is None
+    assert result.availability["provider"] == "local_openai_compatible"
+    runtime = arguments["runtime_config"]
+    assert result.availability["enabled"] == runtime.enabled
+    assert result.availability["base_url"] == runtime.base_url
+    assert result.availability["model"] == runtime.model
 
 
 def test_absent_served_model_and_redirect_are_unavailable(arguments: dict[str, Any]) -> None:

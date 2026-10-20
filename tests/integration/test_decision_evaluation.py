@@ -841,13 +841,31 @@ def test_public_evaluate_acquires_paired_theme_and_replays_offline(
         assert block["generative"]["labels"]["error_rate"] is None
     assert sum(request.method == "GET" for request in requests) == 1
     frozen = Path(acquired["evaluation_path"]).read_bytes()
+    acquired_availability = read_json(Path(acquired["run_path"]))["generative_comparator"]
+    request_count = len(requests)
+    network_attempts = 0
 
     def forbidden(*args: Any, **kwargs: Any) -> Any:
+        nonlocal network_attempts
+        network_attempts += 1
         pytest.fail("capture replay attempted network")
 
     monkeypatch.setattr(httpx.Client, "send", forbidden)
     code, replay = harness.evaluate(annotations, generative_capture=capture_path)
     assert code == 0, replay
+    assert network_attempts == 0
+    assert len(requests) == request_count
+    assert replay["generative_comparator"]["reason"] == "replayed_frozen_capture"
+    replay_availability = read_json(Path(replay["run_path"]))["generative_comparator"]
+    assert replay_availability["status"] == "available"
+    assert replay_availability["reason"] == "replayed_frozen_capture"
+    assert replay_availability["method"] is None
+    assert replay_availability["served_models"] is None
+    captured_availability = replay_availability["captured_availability"]
+    assert captured_availability["status"] == acquired_availability["status"]
+    assert captured_availability["reason"] == acquired_availability["reason"]
+    assert captured_availability["method"] == acquired_availability["method"]
+    assert captured_availability["served_models"] == [model]
     assert Path(replay["evaluation_path"]).read_bytes() == frozen
     assert replay["evaluation_sha256"] == acquired["evaluation_sha256"]
     tampered = harness.work_root / ("0" * 64 + ".json")
@@ -857,14 +875,16 @@ def test_public_evaluate_acquires_paired_theme_and_replays_offline(
     assert_error(refused, "decision_evaluation_error", "generative_capture_invalid")
 
 
+@pytest.mark.parametrize("confidence", [None, 10**400], ids=["invalid-task", "overflow-confidence"])
 def test_public_evaluate_failed_generation_preserves_typed_evidence(
     harness: EvaluateHarness,
     monkeypatch: pytest.MonkeyPatch,
+    confidence: int | None,
 ) -> None:
     annotations = tuple(harness.annotate_all().values())
     code, baseline = harness.evaluate(annotations)
     assert code == 0, baseline
-    baseline_document = read_json(Path(baseline["evaluation_path"]))
+    baseline_bytes = Path(baseline["evaluation_path"]).read_bytes()
     original_evaluate = evaluate_frozen_assessment
     monkeypatch.setenv("THREADSENSE_RUNTIME_ENABLED", "true")
     monkeypatch.setenv("THREADSENSE_RUNTIME_MODEL", "engineering-served-model")
@@ -872,10 +892,22 @@ def test_public_evaluate_failed_generation_preserves_typed_evidence(
     def respond(request: httpx.Request) -> httpx.Response:
         if request.method == "GET":
             return httpx.Response(200, json={"data": [{"id": "engineering-served-model"}]})
+        classifications = []
+        if confidence is not None:
+            prompt = json.loads(request.content)["messages"][-1]["content"]
+            ids = re.findall(r"^\[id=([^\]]+)\]", prompt, re.MULTILINE)
+            assert ids
+            classifications = [
+                {"comment_id": cid, "theme": "general_feedback", "confidence": confidence}
+                for cid in ids
+            ]
+        content = (
+            json.dumps({"classifications": classifications}) if confidence is not None else "{}"
+        )
         return httpx.Response(
             200,
             json={
-                "choices": [{"message": {"role": "assistant", "content": "{}"}}],
+                "choices": [{"message": {"role": "assistant", "content": content}}],
             },
         )
 
@@ -889,8 +921,7 @@ def test_public_evaluate_failed_generation_preserves_typed_evidence(
     assert failed["generative_comparator"]["reason"] == "inference_failed"
     assert failed["generative_comparator"]["capture_path"] is None
     assert failed["generative_comparator"]["capture_sha256"] is None
-    document = read_json(Path(failed["evaluation_path"]))
-    assert document == baseline_document
+    assert Path(failed["evaluation_path"]).read_bytes() == baseline_bytes
     assert failed["evaluation_sha256"] == baseline["evaluation_sha256"]
 
 

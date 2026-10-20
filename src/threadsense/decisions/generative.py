@@ -13,7 +13,10 @@ import httpx
 from threadsense.config import RuntimeConfig
 from threadsense.decisions.artifact import decision_bytes
 from threadsense.decisions.client import validate_loopback_endpoint
-from threadsense.decisions.comparators import observe_generative_availability
+from threadsense.decisions.comparators import (
+    _configured_generative_availability,
+    observe_generative_availability,
+)
 from threadsense.decisions.contracts import OTHER_OR_UNCERTAIN, decode_strict_json_object
 from threadsense.decisions.evaluation_contracts import Partition
 from threadsense.domains.vocabulary import DomainVocabulary
@@ -63,8 +66,8 @@ def _endpoint(runtime: RuntimeConfig) -> str:
     origin = f"{parts.scheme}://{parts.netloc}"
     if (
         validate_loopback_endpoint(origin) != base
-        or parts.query
-        or parts.fragment
+        or "?" in runtime.chat_endpoint
+        or "#" in runtime.chat_endpoint
         or any(c.isspace() for c in runtime.chat_endpoint)
         or not parts.path.startswith("/")
         or parts.path.startswith("//")
@@ -191,13 +194,20 @@ def capture_generative_theme(
     transport: httpx.BaseTransport | None = None,
 ) -> GenerativeCaptureResult:
     batches, unsupported = _plan(inputs, vocabulary, runtime_config)
+    availability = _configured_generative_availability(runtime_config)
+    if availability["status"] == "not_observed":
+        return GenerativeCaptureResult(availability, None, (), unsupported)
     try:
         endpoint = _endpoint(runtime_config)
     except (DecisionInputError, ValueError) as error:
         return GenerativeCaptureResult(
             {
+                **availability,
                 "status": "not_observed",
-                "reason": "endpoint_invalid",
+                "reason": error.details["reason"]
+                if isinstance(error, DecisionInputError)
+                else "endpoint_invalid",
+                "method": None,
                 "error_type": type(error).__name__,
             },
             None,
@@ -268,7 +278,9 @@ def capture_generative_theme(
         InferenceBoundaryError,
         NetworkBoundaryError,
         SchemaBoundaryError,
-        UnicodeError,
+        ValueError,
+        OverflowError,
+        RecursionError,
     ) as error:
         return GenerativeCaptureResult(
             {
@@ -302,7 +314,10 @@ def replay_generative_theme(
     runtime_config: RuntimeConfig,
     content: bytes,
 ) -> GenerativeCaptureResult:
-    capture = decode_strict_json_object(content, DecisionEvaluationError, "generative capture")
+    try:
+        capture = decode_strict_json_object(content, DecisionEvaluationError, "generative capture")
+    except (ValueError, OverflowError, RecursionError) as error:
+        raise _fail("capture_response_invalid") from error
     unsigned = {k: v for k, v in capture.items() if k != "capture_sha256"}
     if (
         capture.get("schema_version") != 1
@@ -384,7 +399,17 @@ def replay_generative_theme(
         InferenceBoundaryError,
         NetworkBoundaryError,
         SchemaBoundaryError,
-        UnicodeError,
+        ValueError,
+        OverflowError,
+        RecursionError,
     ) as error:
         raise _fail("capture_response_invalid") from error
-    return GenerativeCaptureResult(availability, capture, tuple(rows), unsupported)
+    replay_availability = {
+        **availability,
+        "status": "available",
+        "reason": "replayed_frozen_capture",
+        "method": None,
+        "served_models": None,
+        "captured_availability": availability,
+    }
+    return GenerativeCaptureResult(replay_availability, capture, tuple(rows), unsupported)

@@ -153,20 +153,14 @@ def _probe_listing(
         return client.get(url)
 
 
-def observe_generative_availability(
-    runtime: RuntimeConfig,
-    *,
-    transport: httpx.BaseTransport | None = None,
-    timeout_seconds: float = 5.0,
-) -> dict[str, Any]:
-    """Observe whether the configured local generative model is served; never generates."""
-    base = runtime.base_url.rstrip("/")
+def _configured_generative_availability(runtime: RuntimeConfig) -> dict[str, Any]:
+    """Build the configured record and apply no-HTTP configuration guards."""
     observation: dict[str, Any] = {
         "provider": GENERATIVE_COMPARATOR_NAME,
         "enabled": runtime.enabled,
         "base_url": runtime.base_url,
         "model": runtime.model,
-        "method": f"GET {base}/v1/models; no generation request",
+        "method": None,
         "status": "unavailable",
         "reason": None,
         "served_models": None,
@@ -187,6 +181,21 @@ def observe_generative_availability(
             "method": None,
             "reason": error.details["reason"],
         }
+    return observation
+
+
+def observe_generative_availability(
+    runtime: RuntimeConfig,
+    *,
+    transport: httpx.BaseTransport | None = None,
+    timeout_seconds: float = 5.0,
+) -> dict[str, Any]:
+    """Observe whether the configured local generative model is served; never generates."""
+    observation = _configured_generative_availability(runtime)
+    if observation["status"] == "not_observed":
+        return observation
+    base = runtime.base_url.rstrip("/")
+    observation = {**observation, "method": f"GET {base}/v1/models"}
     try:
         response = _probe_listing(f"{base}/v1/models", transport, timeout_seconds)
     except httpx.HTTPError as error:
@@ -203,7 +212,7 @@ def observe_generative_availability(
         }
     try:
         ids = _listing_ids(response.content)
-    except DecisionProtocolError:
+    except (DecisionProtocolError, ValueError, OverflowError, RecursionError):
         return {**observation, "reason": "listing_invalid"}
     if ids is None:
         return {**observation, "reason": "listing_invalid"}
