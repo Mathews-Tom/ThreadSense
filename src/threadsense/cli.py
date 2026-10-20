@@ -837,7 +837,7 @@ def _build_decisions_parser(
     )
     annotate_parser.add_argument(
         "--domain",
-        choices=[domain.value for domain in DomainType],
+        choices=[domain.value for domain in DomainType if domain is not DomainType.CUSTOM],
         help="Analysis domain vocabulary.",
     )
     annotate_parser.add_argument(
@@ -1731,6 +1731,12 @@ def _annotation_roots(config: AppConfig, output_dir: Path | None) -> tuple[Path,
 
 def run_decisions_annotate(config_path: Path | None, options: DecisionsAnnotateOptions) -> int:
     _logger, config = load_cli_context(config_path)
+    domain = options.domain if options.domain is not None else config.analysis.domain.value
+    if domain == DomainType.CUSTOM.value:
+        raise DecisionInputError(
+            "custom domain is not supported for decision annotations",
+            details={"reason": "domain_unsupported", "domain": domain},
+        )
     output_root, protected_roots = _annotation_roots(config, options.output_dir)
     manifest = load_pinned_runtime_manifest()
     verifier = CheckpointVerifier(manifest)
@@ -1744,7 +1750,7 @@ def run_decisions_annotate(config_path: Path | None, options: DecisionsAnnotateO
             if options.objective is not None
             else config.analysis.objective
         ),
-        domain=options.domain if options.domain is not None else config.analysis.domain.value,
+        domain=domain,
     )
     with TypedDecisionClient(
         options.endpoint, wire=manifest.wire, timeout_seconds=options.timeout_seconds

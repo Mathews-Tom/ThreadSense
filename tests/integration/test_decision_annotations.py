@@ -162,6 +162,7 @@ class AnnotateHarness:
         endpoint: str | None = None,
         output_dir: Path | None = None,
         input_path: Path | None = None,
+        domain: str | None = "developer_tools",
     ) -> tuple[int, dict[str, Any]]:
         argv = [
             "decisions",
@@ -172,11 +173,11 @@ class AnnotateHarness:
             endpoint if endpoint is not None else self.server.endpoint,
             "--requirement",
             requirement,
-            "--domain",
-            "developer_tools",
             "--objective",
             "friction_analysis",
         ]
+        if domain is not None:
+            argv += ["--domain", domain]
         if output_dir is not None:
             argv += ["--output-dir", str(output_dir)]
         return self.run_cli(*argv)
@@ -689,6 +690,49 @@ def test_annotate_verified_run_records_client_observed_checkpoint_digests(
 
 
 # --- 8. refusals before any request -----------------------------------------------------------
+
+
+def test_annotate_explicit_custom_domain_is_rejected_by_parser(
+    harness: AnnotateHarness,
+) -> None:
+    with pytest.raises(SystemExit) as raised:
+        harness.annotate(domain="custom")
+
+    assert raised.value.code == 2
+    assert harness.server.requests == []
+    assert not (harness.store_root / "annotations").exists()
+
+
+def test_annotate_configured_custom_domain_is_refused_before_any_request(
+    harness: AnnotateHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("THREADSENSE_ANALYSIS_DOMAIN", "custom")
+
+    exit_code, payload = harness.annotate(domain=None)
+
+    assert exit_code == 1
+    assert payload["status"] == "error"
+    assert payload["error"]["code"] == "decision_input_error"
+    assert payload["error"]["details"] == {
+        "reason": "domain_unsupported",
+        "domain": "custom",
+    }
+    assert harness.server.requests == []
+    assert not (harness.store_root / "annotations").exists()
+
+
+def test_annotate_supported_domain_overrides_custom_configuration(
+    harness: AnnotateHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("THREADSENSE_ANALYSIS_DOMAIN", "custom")
+
+    exit_code, payload = harness.annotate(domain="developer_tools")
+
+    assert exit_code == 0
+    assert payload["status"] == "complete"
+    assert payload["satisfied"] is True
+    assert batch_requests(harness.server)
+    assert (harness.store_root / "annotations").exists()
 
 
 def test_annotate_hostname_endpoint_is_refused_before_any_request(
