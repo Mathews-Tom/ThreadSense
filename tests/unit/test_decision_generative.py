@@ -315,6 +315,8 @@ def test_no_request_guards_are_not_observations(
         ("http://127.0.0.1:11434/v1/chat/completions#", "endpoint_invalid"),
         ("http://127.0.0.1:11434//remote/chat", "endpoint_invalid"),
         ("http://127.0.0.1:11434/v1/chat/\ncompletions", "endpoint_invalid"),
+        ("http://127.0.0.1:11434/v1/chat/\x01completions", "endpoint_invalid"),
+        ("http://127.0.0.1:11434/v1/chat/\x7fcompletions", "endpoint_invalid"),
     ],
 )
 def test_invalid_chat_endpoint_precedes_listing(

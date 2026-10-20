@@ -68,7 +68,7 @@ def _endpoint(runtime: RuntimeConfig) -> str:
         validate_loopback_endpoint(origin) != base
         or "?" in runtime.chat_endpoint
         or "#" in runtime.chat_endpoint
-        or any(c.isspace() for c in runtime.chat_endpoint)
+        or any(c.isspace() or (c.isascii() and not c.isprintable()) for c in runtime.chat_endpoint)
         or not parts.path.startswith("/")
         or parts.path.startswith("//")
     ):
