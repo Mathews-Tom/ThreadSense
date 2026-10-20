@@ -476,7 +476,7 @@ class EvaluationScenario(AnnotationsScenario):
             check=False,
             cwd=self.work_dir,
             env=env,
-            timeout=DEFAULT_TIMEOUT_SECONDS,
+            timeout=ANNOTATE_TIMEOUT_SECONDS,
         )
         return completed.returncode, decode_payload(
             completed.stdout, completed.stderr, " ".join(args)
