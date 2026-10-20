@@ -6,6 +6,13 @@ from threadsense.monitoring.digest_records import (
     MaterializationInput,
     PendingDigest,
 )
+from threadsense.monitoring.feedback_records import (
+    CORRECTION_VALUES,
+    PREFERENCE_VALUES,
+    TARGET_KINDS,
+    FeedbackRequest,
+    feedback_request,
+)
 from threadsense.monitoring.issue_records import (
     IssueEntryInput,
     IssueIngestion,
@@ -49,11 +56,15 @@ from threadsense.monitoring.sweep_records import (
 )
 
 __all__ = [
+    "CORRECTION_VALUES",
+    "PREFERENCE_VALUES",
     "STATE_SCHEMA_VERSION",
+    "TARGET_KINDS",
     "WATCH_PROFILE_VERSION",
     "CommentChange",
     "DigestEntryRecord",
     "DigestResult",
+    "FeedbackRequest",
     "IssueEntryInput",
     "IssueIngestion",
     "IssuePolicy",
@@ -75,6 +86,7 @@ __all__ = [
     "build_issue_entry_input",
     "build_schedule_spec",
     "cron_expression",
+    "feedback_request",
     "ingest_issue_evidence",
     "issue_policy",
     "load_watch_profile_file",

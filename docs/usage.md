@@ -40,6 +40,7 @@ Top-level commands:
 - `watch`
 - `issues`
 - `decisions`
+- `feedback`
 
 ## Happy Paths
 
@@ -780,6 +781,111 @@ Candidates must have first evidence within `candidate_window_days` of the new th
 ### Digest issue section
 
 A digest created by a state database at schema version `5` is a `schema_version: 2` JSON artifact with a top-level `issues` section, and its Markdown artifact gains an Issues section and per-entry issue lines. A digest still pending from an earlier schema version keeps `schema_version: 1` and no issue section. See [artifacts.md](artifacts.md) for the recorded shape.
+
+## `feedback`
+
+Record and read operator feedback about a watch's digest entries, thread revisions and issues. Feedback has two kinds kept in separate append-only tables. A preference is a subjective presentation signal; this release records preferences only, and no command reorders digests by them yet. A correction is an operator assertion recorded beside the unchanged original: it never edits evidence, findings, counts, issue membership or written digests and reports, and it is not a truth label or training data.
+
+```bash
+uv run threadsense feedback record --watch ID --target TARGET_ID --kind preference|correction --value VALUE --key KEY [--target-kind entry|finding|observation|issue] [--note TEXT] [--config PATH]
+uv run threadsense feedback list --watch ID [--target TARGET_ID] [--config PATH]
+```
+
+Output modes and the error payload are as for `watch`. A refusal is a `monitoring_state_error` (or `monitoring_input_error` for a malformed request) with the refusal `reason` in `details`, exit code `1`, and nothing is written.
+
+### Targets
+
+The target id prefix names the target; `--target-kind` defaults to the narrowest kind the id names.
+
+| Target kind | Id prefix | Target | A preference applies to |
+| --- | --- | --- | --- |
+| `entry` | `ent-` | one digest entry | that entry |
+| `finding` | `ent-` (a finding entry) | the thread's finding stream for the entry's theme | every revision of that thread's findings for the theme |
+| `observation` | `rev-` | one thread revision | the whole thread |
+| `issue` | `iss-` | one issue | that issue |
+
+`--target-kind finding` widens a preference from one entry to the thread's finding stream for that theme and requires an entry of kind `finding`. Every target is resolved against the watch's own state before anything is written.
+
+Retry identity includes the resolved target kind as well as its id. Omitting `--target-kind` and explicitly supplying the default kind are equivalent retries. Recording the same `ent-` id once as `entry` and once as `finding` is different feedback and requires a different key.
+
+### `feedback record`
+
+| Flag | Required | Meaning |
+| --- | --- | --- |
+| `--watch` | yes | Watch id |
+| `--target` | yes | Target id (`ent-`, `rev-` or `iss-`) |
+| `--target-kind` | no | `entry`, `finding`, `observation` or `issue`; defaults to the kind the id names |
+| `--kind` | yes | `preference` or `correction` |
+| `--value` | yes | Preference: `useful`, `irrelevant`, `already_known`, `wrong_audience`. Correction: `misclassified`, `unsupported`, `duplicate`, `missing_evidence` |
+| `--key` | yes | Watch-scoped idempotency key: 1-128 characters from letters, digits, `.`, `_`, `:` and `-`, starting with a letter or digit |
+| `--note` | no | Operator note, stored stripped, 1-500 characters without control characters |
+
+Examples:
+
+```bash
+uv run threadsense feedback record --watch agent-memory --target ent-... --target-kind finding --kind preference --value already_known --key triage-2026-10-20-1
+uv run threadsense feedback record --watch agent-memory --target iss-... --kind correction --value duplicate --key triage-2026-10-20-2 --note "Same report as the home thread"
+```
+
+Preferences and corrections share one idempotency namespace per watch. Repeating a key with identical kind, value, target and note returns the original event with `status: "unchanged"`; reusing a key for different feedback is refused. The feedback id is `fbk-` followed by the first 32 hex characters of the SHA-256 of the watch id and key.
+
+```json
+{
+  "artifact_type": "feedback_event",
+  "status": "recorded",
+  "state_path": "<resolved storage root>/monitoring/state.sqlite3",
+  "feedback": {
+    "kind": "preference", "watch_id": "agent-memory", "feedback_id": "fbk-...", "sequence": 1,
+    "value": "already_known", "target_kind": "finding", "target_id": "ent-...",
+    "source_thread_id": "...", "theme_key": "...", "scope_kind": "finding", "scope_key": "<thread id>/<theme key>",
+    "note": null, "recorded_at_utc": 0.0, "idempotency_key": "triage-2026-10-20-1", "content_sha256": "..."
+  }
+}
+```
+
+A correction event has the same shape without `scope_kind` and `scope_key`. `sequence` counts each kind separately per watch.
+
+Refusal reasons:
+
+- `invalid_feedback_request`: a malformed watch id, key, kind, target id, target kind or note (`details.field` names it)
+- `value_kind_mismatch`: the value does not belong to the kind (`details.allowed_values` lists those that do)
+- `target_kind_mismatch`: the target id does not name the target kind, or `finding` names an entry that is not a finding
+- `unknown_watch`: no such watch
+- `unknown_target`: no such target
+- `cross_watch_target`: the target belongs to a different watch
+- `idempotency_conflict`: the key already recorded different feedback for this watch (`details.feedback_id` names it)
+
+### `feedback list`
+
+Read-only: `list` never writes state. Without `--target`, list all feedback for the watch; with `--target`, only events recorded against that target id, which must exist in the watch. A state database older than schema version `6` lists empty histories.
+
+```json
+{
+  "artifact_type": "feedback_history",
+  "status": "ok",
+  "state_path": "<resolved storage root>/monitoring/state.sqlite3",
+  "watch_id": "agent-memory",
+  "preferences": [{"kind": "preference", "feedback_id": "fbk-...", "sequence": 1, "value": "already_known", "...": "..."}],
+  "effective_preferences": [
+    {
+      "scope_kind": "finding", "scope_key": "<thread id>/<theme key>", "value": "already_known",
+      "feedback_id": "fbk-...", "sequence": 1, "target_kind": "finding", "target_id": "ent-...",
+      "superseded_feedback_ids": []
+    }
+  ],
+  "corrections": [{"kind": "correction", "feedback_id": "fbk-...", "sequence": 1, "value": "duplicate", "...": "..."}],
+  "correction_view": [
+    {
+      "target_kind": "issue", "target_id": "iss-...",
+      "original": {"home_thread_id": "..."},
+      "effect": "assertion_only",
+      "assertions": [{"feedback_id": "fbk-...", "sequence": 1, "value": "duplicate", "note": "Same report as the home thread"}]
+    }
+  ]
+}
+```
+
+`effective_preferences` holds the latest preference per scope; earlier preferences in that scope stay in `preferences` and are listed in `superseded_feedback_ids`. A target filter limits raw history to that target, but effective preferences still use the full watch history for its scopes, so a newer event against another revision can supersede the target's earlier preference. `correction_view` groups corrections by target beside the unchanged original facts: for an entry its kind, thread, revision, theme, severity and payload SHA-256; for an observation its thread, revision sequence and content hashes; for an issue its home thread. `effect` is always `assertion_only`.
 
 ## `decisions`
 

@@ -32,8 +32,13 @@ from threadsense.inference import InferenceTask
 from threadsense.inference.local_runtime import LocalRuntimeClient, RuntimeProbeResult
 from threadsense.logging_config import configure_logging
 from threadsense.monitoring import (
+    CORRECTION_VALUES,
+    PREFERENCE_VALUES,
+    TARGET_KINDS,
+    FeedbackRequest,
     MonitoringStore,
     build_schedule_spec,
+    feedback_request,
     load_watch_profile_file,
     monitoring_state_path,
     present_watch_digest,
@@ -41,6 +46,7 @@ from threadsense.monitoring import (
     render_launchd,
     run_watch_sweep,
 )
+from threadsense.monitoring.feedback_records import FEEDBACK_KINDS
 from threadsense.monitoring.issues import issue_policy
 from threadsense.monitoring.schedule import (
     ScheduleFormat,
@@ -742,6 +748,87 @@ def _build_issues_parser(subparsers: argparse._SubParsersAction[argparse.Argumen
         _add_config_argument(membership_parser)
 
 
+def _build_feedback_parser(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    feedback_parser = subparsers.add_parser(
+        "feedback",
+        help=(
+            "Record and list operator feedback. Preferences change presentation only; "
+            "corrections are assertions that never rewrite evidence."
+        ),
+    )
+    feedback_subparsers = feedback_parser.add_subparsers(dest="feedback_command", required=True)
+
+    record_parser = feedback_subparsers.add_parser(
+        "record",
+        help="Append one preference or correction event for a target the watch owns.",
+    )
+    record_parser.add_argument("--watch", dest="watch_id", required=True, help="Watch id.")
+    record_parser.add_argument(
+        "--target",
+        dest="target_id",
+        required=True,
+        help="Target id: a digest entry (ent-), thread revision (rev-) or issue (iss-).",
+    )
+    record_parser.add_argument(
+        "--target-kind",
+        dest="target_kind",
+        choices=TARGET_KINDS,
+        default=None,
+        help=(
+            "Target kind; defaults to the narrowest kind the id names. 'finding' widens a "
+            "preference to the thread's finding stream for that theme."
+        ),
+    )
+    record_parser.add_argument(
+        "--kind",
+        choices=FEEDBACK_KINDS,
+        required=True,
+        help="Feedback kind.",
+    )
+    record_parser.add_argument(
+        "--value",
+        choices=(*PREFERENCE_VALUES, *CORRECTION_VALUES),
+        required=True,
+        help=(
+            f"Preference values: {', '.join(PREFERENCE_VALUES)}. "
+            f"Correction values: {', '.join(CORRECTION_VALUES)}."
+        ),
+    )
+    record_parser.add_argument(
+        "--key",
+        dest="idempotency_key",
+        required=True,
+        help=(
+            "Watch-scoped idempotency key. Repeating the same key with identical feedback "
+            "returns the original event; a different event under the same key is refused."
+        ),
+    )
+    record_parser.add_argument(
+        "--note",
+        default=None,
+        help="Optional operator note, at most 500 characters.",
+    )
+    _add_config_argument(record_parser)
+
+    list_parser = feedback_subparsers.add_parser(
+        "list",
+        help=(
+            "Show a watch's preference and correction histories with their derived views. "
+            "Read-only: list never writes state."
+        ),
+    )
+    list_parser.add_argument("--watch", dest="watch_id", required=True, help="Watch id.")
+    list_parser.add_argument(
+        "--target",
+        dest="target_id",
+        default=None,
+        help="Target id; omit to list all feedback for the watch.",
+    )
+    _add_config_argument(list_parser)
+
+
 def _add_watch_lease_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--lease-seconds",
@@ -937,6 +1024,7 @@ def build_parser() -> argparse.ArgumentParser:
     _build_research_parser(subparsers)
     _build_watch_parser(subparsers)
     _build_issues_parser(subparsers)
+    _build_feedback_parser(subparsers)
     _build_decisions_parser(subparsers)
     return parser
 
@@ -1699,6 +1787,33 @@ def run_issues_unlink(
     return 0
 
 
+def run_feedback_record(config_path: Path | None, request: FeedbackRequest) -> int:
+    store = load_monitoring_store(config_path)
+    result = store.record_feedback(request)
+    emit_payload(
+        {
+            "artifact_type": "feedback_event",
+            "status": result["status"],
+            "state_path": str(store.path),
+            "feedback": result["feedback"],
+        }
+    )
+    return 0
+
+
+def run_feedback_list(config_path: Path | None, watch_id: str, target_id: str | None) -> int:
+    store = load_monitoring_store(config_path)
+    emit_payload(
+        {
+            "artifact_type": "feedback_history",
+            "status": "ok",
+            "state_path": str(store.path),
+            **store.feedback_history(watch_id, target_id),
+        }
+    )
+    return 0
+
+
 def watch_trace(run_id: str) -> TraceContext:
     return TraceContext.create(run_id=run_id, source_name="watch")
 
@@ -1944,6 +2059,25 @@ def _dispatch_issues_command(args: argparse.Namespace) -> int:
             raise _CommandDispatchError(args.command)
 
 
+def _dispatch_feedback_command(args: argparse.Namespace) -> int:
+    match args.feedback_command:
+        case "record":
+            request = feedback_request(
+                args.watch_id,
+                idempotency_key=args.idempotency_key,
+                kind=args.kind,
+                value=args.value,
+                target_id=args.target_id,
+                target_kind=args.target_kind,
+                note=args.note,
+            )
+            return run_feedback_record(args.config, request)
+        case "list":
+            return run_feedback_list(args.config, args.watch_id, args.target_id)
+        case _:
+            raise _CommandDispatchError(args.feedback_command)
+
+
 def parse_run_target(target: list[str]) -> tuple[str | None, str]:
     if len(target) == 1:
         return None, target[0]
@@ -1972,6 +2106,8 @@ def _dispatch_command(args: argparse.Namespace) -> int:
             return _dispatch_watch_command(args)
         case ("issues", _, _, _, _):
             return _dispatch_issues_command(args)
+        case ("feedback", _, _, _, _):
+            return _dispatch_feedback_command(args)
         case ("decisions", _, _, _, _):
             return _dispatch_decisions_command(args)
         case ("preflight", _, _, _, _):

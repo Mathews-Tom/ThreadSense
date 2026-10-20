@@ -100,6 +100,18 @@ uv run threadsense issues unlink --watch agent-memory --issue ISSUE_ID --thread 
 
 Bounds, output shapes and refusal reasons: [docs/usage.md](docs/usage.md).
 
+### Operator feedback
+
+`feedback record` appends one operator event about a digest entry, a thread revision or an issue of a watch, and `feedback list` shows a watch's feedback history without writing state. Feedback comes in two separate kinds stored in separate append-only tables. A preference (`useful`, `irrelevant`, `already_known`, `wrong_audience`) is a subjective presentation signal, and the latest preference for a scope supersedes earlier ones without deleting them. A correction (`misclassified`, `unsupported`, `duplicate`, `missing_evidence`) is an auditable operator assertion recorded beside the unchanged original; it is not a truth label. Every event carries a watch-scoped idempotency key: repeating a key with identical feedback returns the original event, and reusing it for different feedback is refused. Targets are resolved before anything is written, so an unknown target or a target owned by another watch is refused. This release records preferences as presentation signals only: no command reorders digests by them yet. Corrections never change evidence, findings, counts, issue membership or written digests and reports.
+
+```bash
+uv run threadsense feedback record --watch agent-memory --target ENTRY_ID --kind preference --value useful --key KEY
+uv run threadsense feedback record --watch agent-memory --target ENTRY_ID --kind correction --value unsupported --key KEY --note TEXT
+uv run threadsense feedback list --watch agent-memory [--target TARGET_ID]
+```
+
+Target kinds, output shapes and refusal reasons: [docs/usage.md](docs/usage.md).
+
 ### Typed decision annotations (shadow)
 
 `decisions annotate` asks a separate, operator-provisioned local Laya service six fixed typed questions about every comment of a canonical thread artifact and writes the answers as shadow artifacts. They are uncalibrated and never change baseline findings, reports or monitoring. The service is pinned, loopback-only and never installed or started by ThreadSense; comment text goes only to that local endpoint.
@@ -199,6 +211,8 @@ uv run threadsense research reddit \
 | `batch run`       | Process multiple threads                            |
 | `watch`           | Save, sweep, digest and schedule research profiles  |
 | `issues`          | Inspect and link cross-thread issue history         |
+| `feedback record` | Record an operator preference or correction         |
+| `feedback list`   | List a watch's preferences and corrections          |
 | `decisions annotate` | Shadow typed annotations from a local Laya service |
 | `preflight`       | Validate local environment                          |
 | `serve`           | Local API server                                    |
