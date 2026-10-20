@@ -1036,7 +1036,7 @@ uv run threadsense feedback record --watch agent-memory --target ent-... --targe
 uv run threadsense feedback record --watch agent-memory --target iss-... --kind correction --value duplicate --key triage-2026-10-20-2 --note "Same report as the home thread"
 ```
 
-Preferences and corrections share one idempotency namespace per watch. Repeating a key with identical kind, value, target and note returns the original event with `status: "unchanged"`; reusing a key for different feedback is refused. The feedback id is `fbk-` followed by the first 32 hex characters of the SHA-256 of the watch id and key.
+Preferences and corrections share one idempotency namespace per watch. Repeating a key with identical kind, value, target, resolved target kind (`--target-kind`, or the default its id prefix names when omitted) and note returns the original event with `status: "unchanged"`; reusing a key for different feedback is refused. The feedback id is `fbk-` followed by the first 32 hex characters of the SHA-256 of the watch id and key.
 
 ```json
 {
