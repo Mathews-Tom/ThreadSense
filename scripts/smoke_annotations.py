@@ -77,6 +77,13 @@ class SmokeFailure(Exception):
     pass
 
 
+def run_process(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(argv, **kwargs)
+    except (subprocess.TimeoutExpired, OSError) as error:
+        raise SmokeFailure(f"process {argv[0]} failed: {error}") from error
+
+
 def check(condition: bool, message: str) -> None:
     if not condition:
         raise SmokeFailure(message)
@@ -178,7 +185,7 @@ class AnnotationsScenario:
 
     def cli(self, *args: str, timeout: int = DEFAULT_TIMEOUT_SECONDS) -> tuple[int, dict[str, Any]]:
         env = {**self.base_env, "THREADSENSE_STORAGE_ROOT": str(self.store_root)}
-        completed = subprocess.run(
+        completed = run_process(
             [sys.executable, "-m", "threadsense", "--output-format", "json", *args],
             capture_output=True,
             text=True,
@@ -223,7 +230,7 @@ class AnnotationsScenario:
         self.input_and_baseline_unchanged()
 
     def core_without_model(self) -> None:
-        completed = subprocess.run(
+        completed = run_process(
             [sys.executable, "-c", CORE_PROBE],
             capture_output=True,
             text=True,
@@ -446,7 +453,7 @@ class AnnotationsScenario:
 
     def server_memory_observation(self) -> None:
         port = endpoint_port(self.endpoint)
-        listing = subprocess.run(
+        listing = run_process(
             ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
             capture_output=True,
             text=True,
@@ -469,7 +476,7 @@ class AnnotationsScenario:
         )
 
     def ps_field(self, field: str, pid: str) -> str:
-        completed = subprocess.run(
+        completed = run_process(
             ["ps", "-o", field, "-p", pid],
             capture_output=True,
             text=True,
