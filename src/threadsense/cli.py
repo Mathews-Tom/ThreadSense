@@ -48,6 +48,7 @@ from threadsense.monitoring import (
     render_launchd,
     run_watch_sweep,
 )
+from threadsense.monitoring.alerts import present_watch_alerts
 from threadsense.monitoring.explain import explain_digest_entry
 from threadsense.monitoring.feedback_records import FEEDBACK_KINDS
 from threadsense.monitoring.issues import issue_policy
@@ -861,6 +862,14 @@ def _build_watch_execution_parsers(
     watch_digest_parser.add_argument("--id", dest="watch_id", required=True, help="Watch id.")
     _add_watch_lease_argument(watch_digest_parser)
     _add_config_argument(watch_digest_parser)
+
+    watch_alerts_parser = watch_subparsers.add_parser(
+        "alerts",
+        help="Compare durable watch evidence without fetching or analyzing source discussions.",
+    )
+    watch_alerts_parser.add_argument("--id", dest="watch_id", required=True, help="Watch id.")
+    _add_watch_lease_argument(watch_alerts_parser)
+    _add_config_argument(watch_alerts_parser)
 
     watch_schedule_parser = watch_subparsers.add_parser(
         "schedule",
@@ -1951,6 +1960,14 @@ def run_watch_run(config_path: Path | None, watch_id: str, lease_seconds: int) -
         logger=logger,
         trace=trace,
     )
+    alerts = present_watch_alerts(
+        config=config,
+        store=store,
+        watch_id=watch_id,
+        lease_seconds=lease_seconds,
+        logger=logger,
+        trace=trace,
+    )
     emit_payload(
         {
             "artifact_type": "watch_run",
@@ -1958,6 +1975,7 @@ def run_watch_run(config_path: Path | None, watch_id: str, lease_seconds: int) -
             "state_path": str(store.path),
             "sweep": sweep.to_dict(),
             "digest": digest.to_dict(),
+            "alerts": alerts,
         }
     )
     return 0 if sweep.outcome in ("changes", "no_changes") else 1
@@ -1980,7 +1998,31 @@ def run_watch_digest(config_path: Path | None, watch_id: str, lease_seconds: int
             "status": digest.status,
             "state_path": str(store.path),
             **digest.to_dict(),
+            "alerts": present_watch_alerts(
+                config=config,
+                store=store,
+                watch_id=watch_id,
+                lease_seconds=lease_seconds,
+                logger=logger,
+                trace=watch_trace("cli-watch-alerts"),
+            ),
         }
+    )
+    return 0
+
+
+def run_watch_alerts(config_path: Path | None, watch_id: str, lease_seconds: int) -> int:
+    logger, config = load_cli_context(config_path)
+    store = MonitoringStore(monitoring_state_path(config.storage))
+    emit_payload(
+        present_watch_alerts(
+            config=config,
+            store=store,
+            watch_id=watch_id,
+            lease_seconds=lease_seconds,
+            logger=logger,
+            trace=watch_trace("cli-watch-alerts"),
+        )
     )
     return 0
 
@@ -2294,6 +2336,8 @@ def _dispatch_watch_command(args: argparse.Namespace) -> int:
             return run_watch_run(args.config, args.watch_id, args.lease_seconds)
         case "digest":
             return run_watch_digest(args.config, args.watch_id, args.lease_seconds)
+        case "alerts":
+            return run_watch_alerts(args.config, args.watch_id, args.lease_seconds)
         case "schedule":
             return run_watch_schedule(
                 args.config, args.watch_id, args.schedule_format, args.workspace

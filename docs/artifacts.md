@@ -121,7 +121,7 @@ Saved watches live in a single SQLite database, separate from the JSON artifacts
 
 The directory name comes from `monitoring_dirname` under `[storage]` (environment override `THREADSENSE_STORAGE_MONITORING_DIR`, default `monitoring`). It must be a relative path that stays inside the storage root. The database is created by the first `watch create`; `watch list` and `watch inspect` open it read-only and never create it. A zero-byte or otherwise uninitialized file reads as an empty store.
 
-The database carries a ThreadSense application id and a schema version, currently `7`. A version `1` to `6` database is upgraded in place by the first command that writes to it: the upgrade only creates the missing tables and index, in one transaction, and keeps every existing profile, revision, run and sweep record. Read-only commands read an older database without modifying it; `watch inspect` reports an empty `digest` summary for a database older than version `3`, `issues inspect` reports no issues for a database older than version `4`, and `watch policy` reports the built-in default policy with no selections for a database older than version `7`. A database written by a newer schema version, a SQLite file that is not a ThreadSense monitoring database, and a file that is not SQLite are all refused with `monitoring_state_error` and left unmodified. There is no downgrade path. An existing completely empty SQLite file (no tables, no application id) is treated as uninitialized and receives the schema on the first write.
+The database carries a ThreadSense application id and a schema version, currently `8`. A version `1` to `7` database is upgraded in place by the first command that writes to it: the upgrade creates missing tables, indexes and history-protection triggers in one transaction and keeps existing profile, revision, run and sweep records. Read-only commands read an older database without modifying it; `watch inspect` reports an empty `digest` summary for a database older than version `3`, `issues inspect` reports no issues for a database older than version `4`, and `watch policy` reports the built-in default policy with no selections for a database older than version `7`. A database written by a newer schema version, a SQLite file that is not a ThreadSense monitoring database, and a file that is not SQLite are all refused with `monitoring_state_error` and left unmodified. There is no downgrade path. An existing completely empty SQLite file (no tables, no application id) is treated as uninitialized and receives the schema on the first write.
 
 If a crash left `state.sqlite3-journal` next to the database, any watch command, including `watch list` and `watch inspect`, lets SQLite roll back the interrupted transaction, but only after verifying that a private recovered copy is a supported ThreadSense state. Otherwise the database and journal are left untouched.
 
@@ -176,6 +176,14 @@ Ranking tables (schema version `7`), all append-only: triggers abort every `UPDA
 - `watch_ranking_selections`: one row per policy selection with its watch, per-watch `sequence`, `policy_id` and selection time; the latest selection is the watch's active policy, and a watch without rows uses the built-in default
 - `watch_digest_rankings`: one row per digest created at schema version `7` with the ranking basis recorded in the same transaction as the digest: `profile_revision`, `policy_id` and `preference_sequence`; a digest created before version `7` has no row and keeps its selection order
 
+Alert history tables (schema version `8`), append-only:
+
+- `watch_alert_cohorts`: the exact comparison basis for a watch's comparable collection cohort
+- `watch_alert_reports`: the frozen report payload, source sweep/window, baseline reference and artifact paths
+- `watch_alert_events`: stable cited event identities attached to their original report
+- `watch_alert_seen`: evidence identities already observed, including baseline evidence, so restarts and reappearances do not become new demand
+- `watch_alert_completions`: artifact hashes and the fenced run that completed publication
+
 Sweep files live under the monitoring directory and are never overwritten. Paths in the database are relative to the monitoring directory:
 
 ```text
@@ -228,9 +236,33 @@ Inspection payloads emitted by the CLI:
 
 `watch inspect` (`artifact_type: watch_inspection`): `status`, `state_path`, `watch_id`, `current_revision`, `created_at_utc`, `updated_at_utc`, `profile`, `revisions` (each with `revision`, `content_sha256`, `created_at_utc`), `active_run`, `run_count`, `recent_runs` (newest 20, each with `run_id`, `profile_revision`, `status`, `claimed_at_utc`, `lease_expires_at_utc`, `finished_at_utc`, `recovered_by_run_id`), and `digest` (`entry_count`, `unpresented_entries`, `pending_digest_id`, `digest_count`, `latest_digest` with `digest_id`, `sequence`, absolute `json_path` and `markdown_path`, `entry_count` and `written_at_utc`, or `null`), and `sweep` with `tracked_threads`, `refresh_due_never_refreshed`, `pending_analyses`, `revision_count`, `comment_count` and `latest_sweep` (`run_id`, `outcome`, `finished_at_utc`, `summary`, or `null`).
 
-`watch run` (`artifact_type: watch_run`): `status` (the sweep outcome), `state_path`, `sweep` and `digest`.
+`watch run` (`artifact_type: watch_run`): `status` (the sweep outcome), `state_path`, `sweep`, `digest` and `alerts`. The alert comparison runs after the digest against durable evidence from the latest sweep.
 
 `watch digest` (`artifact_type: watch_digest_result`): `status` (`presented` or `no_entries`), `state_path`, `run_id`, `watch_id`, `digest_id`, `sequence`, `resumed`, `json_path`, `markdown_path`, `entry_ids` (selection order), `materialized_entries`, `backlog`, `issues` (the issue ingestion counts of the run) and `ranking` (the digest's ranking `basis` fields plus `ranked_entry_ids` in ranked order, or `null` when no digest was presented or the digest is unranked).
+
+Both `watch run` and `watch digest` include an `alerts` object in addition to their existing fields. `watch alerts --id WATCH [--lease-seconds SECONDS] [--config PATH]` returns this object directly, without fetching or analyzing source discussions:
+
+- `artifact_type: watch_alert_result`, `watch_id`, `status` (`baseline`, `compared`, `no_changes` or `unavailable`)
+- `report_id`, `cohort_id`, `window_id`, `baseline_window_id`
+- `alert_ids` and `alerts`: the report's fixed cited events, not repeated delivery notifications
+- `new_alert_ids`: only events newly committed by this invocation; empty when reusing a report
+- `suppression_reasons`, `refusal_reasons`, `json_path`, `markdown_path`, `resumed`
+
+With no durable sweep the result is `unavailable`, has no report, and invents no evidence. With no new sweep, the same report ids and artifact bytes are reused, even if invocation configuration or ranking preferences changed afterwards.
+
+### Comparable Evidence Alerts
+
+Alert JSON (`artifact_type: watch_alert_report`) and Markdown are stored under the monitoring directory at `<watch_id>/alerts/<report_id>.json` and `<watch_id>/alerts/<report_id>.md`. They are separate from, and never rewrite, historical digest, issue or evidence artifacts.
+
+The report freezes its `basis`: full profile content, revision and hash; actual sweep `collection_basis` (source, source policy, Reddit limits/configuration and analysis settings); discovery sampling bounds; issue policy; ranking policy and recorded ranking/feedback basis. Invocation collection configuration is labeled separately and cannot retroactively describe an earlier sweep. A legacy sweep without recorded collection configuration has an explicitly unknown basis.
+
+The first window establishes a baseline, not increased demand. Changes to the comparable collection cohort establish a new baseline; old evidence cannot become new demand merely because queries, sampling limits or analysis configuration changed. `baseline` references the previous durable comparison evidence. `coverage` records search/comment completeness and sweep outcome; `bounded_denominators` describe only the observed sample, with no population denominator. Unknown, truncated or partial collection refuses rate/trend claims while allowing deterministic cited additions.
+
+Events distinguish `new_evidence`, `evidence_update`, `new_community`, `reproduction`, `contradiction`, `workaround` and `resolution_claim`. Every event cites source evidence with its comment/report/entry/revision identity, text hash, excerpt and permalink. Source creation time, first observation time and edit observation time are separate; unavailable source edit times remain null. A thread's creation time is not inferred from its earliest comment. Claims remain unverified (`claims_are_verified: false`); another observed community is not proof of independent people. Exact copies are not new independent evidence. Score-only changes, unchanged text, temporary disappearance and known-evidence reappearance do not generate new event ids; disappearance is not deletion or resolution.
+
+Publication uses the existing exclusive run claim and fencing. The frozen pending report survives interrupted file publication; a later invocation resumes its identities and bytes. Conflicting existing artifact bytes are refused rather than overwritten. Completion records hashes only after both files are published.
+
+The model-free root smoke is `uv run python scripts/smoke_monitoring.py --scenario alerts --work-dir DIR`, where DIR is empty or absent. It drives actual CLI subprocesses with the committed synthesized Reddit replay transport, checks durable baseline/citations, unchanged and score suppression, partial-coverage refusals, fresh-process reuse, cohort baselining and unchanged historical bytes. It does not access live Reddit or a model. This root scenario is standalone; there is no `all` scenario.
 
 `issues inspect` (`artifact_type: issue_list` or `issue_inspection`) and `issues link` or `issues unlink` (`artifact_type: issue_membership_change`) are specified in [usage.md](usage.md).
 

@@ -16,6 +16,14 @@ from typing import Any, Literal
 
 from threadsense.config import StorageConfig
 from threadsense.errors import MonitoringInputError, MonitoringStateError, RunClaimError
+from threadsense.monitoring.alert_records import (
+    ALERT_SCHEMA_STATEMENTS,
+    PendingAlertReport,
+    build_report,
+    canonical_json,
+    evidence_snapshot,
+    stored_report,
+)
 from threadsense.monitoring.digest_records import (
     _DIGEST_SCHEMA_VERSION,
     _UNMATERIALIZED_REVISIONS,
@@ -132,7 +140,7 @@ from threadsense.monitoring.sweep_records import (
     _validate_observed_at,
 )
 
-STATE_SCHEMA_VERSION = 7
+STATE_SCHEMA_VERSION = 8
 STATE_APPLICATION_ID = 0x54534D4E
 STATE_FILENAME = "state.sqlite3"
 BUSY_TIMEOUT_SECONDS = 5.0
@@ -329,6 +337,7 @@ _SCHEMA_STATEMENTS: dict[int, tuple[str, ...]] = {
     5: DIGEST_ISSUE_VIEW_STATEMENTS,
     6: FEEDBACK_SCHEMA_STATEMENTS,
     7: RANKING_SCHEMA_STATEMENTS,
+    8: ALERT_SCHEMA_STATEMENTS,
 }
 
 
@@ -1264,6 +1273,178 @@ class MonitoringStore:
                 )
             return _entry_presentation(
                 conn, version, watch_id, entry_id, self.monitoring_root().absolute()
+            )
+
+    def begin_alert_report(
+        self, claim: RunClaim, basis: Mapping[str, Any]
+    ) -> PendingAlertReport | None:
+        """Freeze one sweep comparison, or resume its immutable report under a live fence."""
+        root = self.monitoring_root()
+        with self._connect_writable(create=False) as conn, _immediate(conn):
+            now = self._fence_claim(conn, claim)
+            pending = conn.execute(
+                "SELECT r.report_id FROM watch_alert_reports r "
+                "LEFT JOIN watch_alert_completions c ON c.report_id=r.report_id "
+                "WHERE r.watch_id=? AND c.report_id IS NULL ORDER BY r.rowid LIMIT 1",
+                (claim.watch_id,),
+            ).fetchone()
+            if pending is not None:
+                return stored_report(conn, str(pending[0]))
+            sweep = conn.execute(
+                "SELECT run_id,outcome,summary_json,finished_at_utc FROM watch_sweeps "
+                "WHERE watch_id=? ORDER BY finished_at_utc DESC,rowid DESC LIMIT 1",
+                (claim.watch_id,),
+            ).fetchone()
+            if sweep is None:
+                return None
+            recorded = conn.execute(
+                "SELECT report_id FROM watch_alert_reports WHERE watch_id=? AND sweep_run_id=?",
+                (claim.watch_id, sweep[0]),
+            ).fetchone()
+            if recorded is not None:
+                return stored_report(conn, str(recorded[0]))
+            revision = conn.execute(
+                "SELECT p.revision,p.content_sha256,p.profile_json FROM watch_revisions p "
+                "JOIN watch_runs r ON r.watch_id=p.watch_id AND r.profile_revision=p.revision "
+                "WHERE r.run_id=?",
+                (sweep[0],),
+            ).fetchone()
+            profile = _load_stored_profile(
+                claim.watch_id, int(revision[0]), str(revision[1]), str(revision[2])
+            )
+            policy_id = _active_policy_id(conn, claim.watch_id)
+            policy = _stored_policy(conn, policy_id)
+            preference_sequence = _preference_sequence(conn, claim.watch_id)
+            recorded_basis = {
+                **basis,
+                "profile_revision": int(revision[0]),
+                "profile_content_sha256": revision[1],
+                "profile": profile.to_dict(),
+                "ranking_policy": {"policy_id": policy_id, "policy": policy.to_dict()},
+                "ranking_basis": {
+                    "profile_revision": int(revision[0]),
+                    "policy_id": policy_id,
+                    "preference_sequence": preference_sequence,
+                },
+                "feedback_basis": {
+                    "preference_sequence": preference_sequence,
+                    "preferences": list(
+                        _preferences_upto(conn, claim.watch_id, preference_sequence)
+                    ),
+                },
+                "recorded_issue_policies": [
+                    {"policy_sha256": row[0], "policy": json.loads(row[1])}
+                    for row in conn.execute(
+                        "SELECT DISTINCT p.policy_sha256,p.policy_json FROM watch_issue_policies p "
+                        "JOIN watch_issue_ingestions i ON i.policy_sha256=p.policy_sha256 "
+                        "WHERE i.watch_id=? ORDER BY p.policy_sha256",
+                        (claim.watch_id,),
+                    )
+                ],
+            }
+            evidence = evidence_snapshot(conn, claim.watch_id, float(sweep[3]), root)
+            verified: set[tuple[str, str]] = set()
+            for item in evidence:
+                for path_key, hash_key in (
+                    ("snapshot_path", "snapshot_sha256"),
+                    ("analysis_path", "analysis_sha256"),
+                ):
+                    artifact = (str(item[path_key]), str(item[hash_key]))
+                    if artifact not in verified:
+                        if self._verified_artifact(root / artifact[0], artifact[1]) != artifact[0]:
+                            raise MonitoringStateError(
+                                "alert citation path does not match its stored location",
+                                details={"reason": "artifact_outside_state", "path": artifact[0]},
+                            )
+                        verified.add(artifact)
+            payload, seen = build_report(
+                conn=conn,
+                watch_id=claim.watch_id,
+                sweep=tuple(sweep),
+                basis=recorded_basis,
+                evidence=evidence,
+                now=now,
+            )
+            report_id = str(payload["report_id"])
+            relative = f"{claim.watch_id}/alerts/{report_id}"
+            text = canonical_json(payload)
+            conn.execute(
+                "INSERT INTO watch_alert_reports VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    report_id,
+                    claim.watch_id,
+                    sweep[0],
+                    payload["cohort_id"],
+                    payload["window_id"],
+                    payload["baseline_window_id"],
+                    payload["status"],
+                    text,
+                    hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                    relative + ".json",
+                    relative + ".md",
+                    claim.run_id,
+                    now,
+                ),
+            )
+            for event in payload["alerts"]:
+                conn.execute(
+                    "INSERT INTO watch_alert_events VALUES (?,?,?,?)",
+                    (event["alert_id"], claim.watch_id, report_id, canonical_json(event)),
+                )
+            for key, source_report_id in seen:
+                conn.execute(
+                    "INSERT OR IGNORE INTO watch_alert_seen VALUES (?,?,?,?)",
+                    (claim.watch_id, key, source_report_id, payload["window_id"]),
+                )
+            return PendingAlertReport(payload, relative + ".json", relative + ".md", False, False)
+
+    def complete_alert_report(
+        self, claim: RunClaim, report_id: str, json_sha256: str, markdown_sha256: str
+    ) -> None:
+        """Append completion only after both deterministic artifacts verify inside the fence."""
+        from threadsense.monitoring.alerts import render_alert_json, render_alert_markdown
+
+        root = self.monitoring_root()
+        with self._connect_writable(create=False) as conn, _immediate(conn):
+            now = self._fence_claim(conn, claim)
+            report = stored_report(conn, report_id)
+            if report.payload["watch_id"] != claim.watch_id:
+                raise MonitoringStateError(
+                    "alert report belongs to another watch", details={"reason": "watch_mismatch"}
+                )
+            expected = (
+                hashlib.sha256(render_alert_json(report.payload)).hexdigest(),
+                hashlib.sha256(render_alert_markdown(report.payload)).hexdigest(),
+            )
+            if expected != (json_sha256, markdown_sha256):
+                raise MonitoringStateError(
+                    "alert artifacts do not render the frozen report",
+                    details={"reason": "artifact_hash_mismatch", "report_id": report_id},
+                )
+            for path, sha256 in (
+                (report.json_path, json_sha256),
+                (report.markdown_path, markdown_sha256),
+            ):
+                if self._verified_artifact(root / path, sha256) != path:
+                    raise MonitoringStateError(
+                        "alert artifact does not match its stored location",
+                        details={"reason": "artifact_outside_state", "path": path},
+                    )
+            if report.completed:
+                hashes = conn.execute(
+                    "SELECT json_sha256,markdown_sha256 FROM watch_alert_completions "
+                    "WHERE report_id=?",
+                    (report_id,),
+                ).fetchone()
+                if tuple(hashes) != (json_sha256, markdown_sha256):
+                    raise MonitoringStateError(
+                        "alert artifacts differ from recorded completion",
+                        details={"reason": "artifact_hash_mismatch", "report_id": report_id},
+                    )
+                return
+            conn.execute(
+                "INSERT INTO watch_alert_completions VALUES (?,?,?,?,?)",
+                (report_id, json_sha256, markdown_sha256, now, claim.run_id),
             )
 
     @staticmethod

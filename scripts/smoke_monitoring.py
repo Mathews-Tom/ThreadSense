@@ -5,12 +5,13 @@ Usage:
     uv run python scripts/smoke_monitoring.py --scenario incremental --work-dir DIR
     uv run python scripts/smoke_monitoring.py --scenario issues --work-dir DIR
     uv run python scripts/smoke_monitoring.py --scenario feedback --work-dir DIR
+    uv run python scripts/smoke_monitoring.py --scenario alerts --work-dir DIR
     uv run python scripts/smoke_monitoring.py --scenario annotations --work-dir DIR --endpoint URL
     uv run python scripts/smoke_monitoring.py --scenario evaluation --work-dir DIR --endpoint URL
 
 DIR must not exist or be empty. Every CLI call runs in a new interpreter process
-against isolated storage under DIR; the profiles, incremental, issues and feedback scenarios
-use no network or model access.
+against isolated storage under DIR; the profiles, incremental, issues, feedback and alerts
+scenarios use no network or model access.
 
 The profiles scenario makes run claims through `threadsense.monitoring` in separate
 competing processes and observes them through `threadsense watch inspect`.
@@ -1676,7 +1677,15 @@ def main() -> int:
     )
     parser.add_argument(
         "--scenario",
-        choices=["profiles", "incremental", "issues", "feedback", "annotations", "evaluation"],
+        choices=[
+            "profiles",
+            "incremental",
+            "issues",
+            "feedback",
+            "alerts",
+            "annotations",
+            "evaluation",
+        ],
         required=True,
     )
     parser.add_argument("--work-dir", type=Path, required=True)
@@ -1698,6 +1707,15 @@ def main() -> int:
         scenario = EvaluationScenario(work_dir, args.endpoint)
     elif args.scenario == "annotations":
         scenario = AnnotationsScenario(work_dir, args.endpoint)
+    elif args.scenario == "alerts":
+        # Keep optional siblings out of imports used by dynamic smoke loaders.
+        from smoke_alerts import run_alerts
+
+        class AlertsScenario(IncrementalScenario):
+            def run(self) -> None:
+                run_alerts(self)
+
+        scenario = AlertsScenario(work_dir)
     elif args.scenario == "incremental":
         scenario = IncrementalScenario(work_dir)
     elif args.scenario == "issues":
