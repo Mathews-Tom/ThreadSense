@@ -907,7 +907,15 @@ def test_public_evaluate_failed_generation_preserves_typed_evidence(
         return httpx.Response(
             200,
             json={
-                "choices": [{"message": {"role": "assistant", "content": content}}],
+                "id": "engineering-reply",
+                "object": "chat.completion",
+                "model": "engineering-served-model",
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": content},
+                    }
+                ],
             },
         )
 
