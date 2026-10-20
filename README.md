@@ -91,6 +91,14 @@ uv run threadsense watch schedule --id agent-memory --format launchd
 
 Field bounds and output shapes: [docs/usage.md](docs/usage.md).
 
+### Comparable evidence-change alerts
+
+`watch run` and `watch digest` also produce local, cited alert reports; `watch alerts` presents the latest durable sweep without fetching or analyzing sources. The first window establishes a baseline. Changes to the collection cohort (including profile/query, source, limits or sampling settings) establish another baseline, not increased demand. Reports retain their baseline/window/cohort identities, bounded observed denominators, coverage, suppression and refusal reasons. Unknown, partial or truncated coverage cannot support rate or trend claims.
+
+Alerts distinguish new evidence, edits, another observed community and lexical reproduction, contradiction, workaround or resolution claims. Claims are unverified; another account or community is not an independent person, and exact copies do not corroborate. Citations separate source creation from first observation and edit observation; an earliest-comment date is not thread creation. Unchanged text, score-only changes and disappearance/reappearance do not emit new evidence. Re-querying a report retains its `alert_ids`; only `new_alert_ids` describes events newly committed by that invocation, not remote delivery.
+
+Deterministic alerts work while semantic decisions remain shadow-only and `not_eligible`. There are no notifications, automatic scheduler jobs or semantic activation. See the [complete operator journey and recovery guide](docs/usage.md#continuous-operator-journey) and [exact alert artifacts](docs/artifacts.md#comparable-evidence-alerts).
+
 ### Cross-thread issue history
 
 Each watch thread with finding evidence gets a stable issue identified by its home thread. A thread joins another issue automatically only when every report first recorded for it is an exact copy of an earlier report in another thread, and an operator can link or unlink a thread explicitly. Every change is an appended event, so history is reversible and never rewritten. Counts report observed threads, accounts and communities and never verify independence; exact copies never count as corroboration. Each report keeps the lineage recorded at ingestion, and when a later ingestion discovers an earlier original of a report recorded as firsthand, an append-only correction event in the ingestion ledger (`lineage_corrections`, `lineage_events`) makes the report's effective lineage an exact copy. Firsthand and exact-copy counts follow effective lineage while observed counts stay unchanged; a correction never regroups threads, and suggestions stay unconfirmed until an operator links. Digests and issue views already recorded keep their original bytes; new digests capture effective lineage. Candidate issues are bounded, unconfirmed suggestions that never merge memberships or counts (semantic grouping is `not_eligible`), and update cues such as reproduction, contradiction, workaround and resolution claims are unverified lexical signals that never resolve an issue. `watch run` and `watch digest` record the evidence and add an `issues` section to digests.
@@ -339,6 +347,14 @@ uv run python scripts/smoke_monitoring.py --scenario evaluation --work-dir DIR -
 ```
 
 It runs real `decisions annotate`, `decisions evaluate` and `decisions policy check` calls over the shipped evaluation fixtures, confirms the real result is `not_eligible`, and exercises the checker with a disclosed constructed test-only fixture that never permits activation. It is not quality evidence. Details: [docs/usage.md](docs/usage.md#decisions-evaluate).
+
+For the complete single-watch acceptance journey with actual checkpoint inference, set a fresh isolated `THREADSENSE_SMOKE_DIR` and the operator-owned literal-loopback `THREADSENSE_DECISION_ENDPOINT`:
+
+```bash
+uv run python scripts/smoke_monitoring.py --scenario all --work-dir "${THREADSENSE_SMOKE_DIR:?}" --endpoint "${THREADSENSE_DECISION_ENDPOINT:?}"
+```
+
+This is one saved profile/watch/database across repeated recorded sweeps, real shadow annotations of its monitoring snapshots, policy `not_eligible`, cited issue history, separate ranking preferences and correction assertions, digest/alerts and restart/recovery. Source transport is recorded in-process, not live Reddit; the optional generative comparator is disabled, not scored as zero quality. Inspect `all-evidence.json`, command receipts and durable artifact hashes. Model-free CI and standalone scenarios do not substitute for this actual-model acceptance. See [the operator guide](docs/usage.md#continuous-operator-journey) for coverage/cohort refusals, pending-artifact recovery, claim fencing and supported modes.
 
 ## Current Limits
 

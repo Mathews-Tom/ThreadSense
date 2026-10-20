@@ -8,10 +8,13 @@ Usage:
     uv run python scripts/smoke_monitoring.py --scenario alerts --work-dir DIR
     uv run python scripts/smoke_monitoring.py --scenario annotations --work-dir DIR --endpoint URL
     uv run python scripts/smoke_monitoring.py --scenario evaluation --work-dir DIR --endpoint URL
+    uv run python scripts/smoke_monitoring.py --scenario all --work-dir DIR --endpoint URL
 
 DIR must not exist or be empty. Every CLI call runs in a new interpreter process
 against isolated storage under DIR; the profiles, incremental, issues, feedback and alerts
 scenarios use no network or model access.
+The all scenario uses one saved watch/database throughout and requires real typed
+annotations at the owned endpoint; generative comparison is explicitly disabled.
 
 The profiles scenario makes run claims through `threadsense.monitoring` in separate
 competing processes and observes them through `threadsense watch inspect`.
@@ -62,7 +65,7 @@ import time
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from smoke_annotations import (
     AnnotationsScenario,
@@ -79,6 +82,9 @@ from smoke_issues import IssuesScenario
 
 from threadsense.models.analysis import load_analysis_artifact_file
 from threadsense.monitoring import STATE_SCHEMA_VERSION
+
+if TYPE_CHECKING:
+    from smoke_journey import JourneyScenario
 
 WATCH_ID = "agent-tooling"
 
@@ -1654,12 +1660,13 @@ Scenario = (
 )
 
 
-def evidence_document(scenario: Scenario, status: str) -> dict[str, Any]:
+def evidence_document(scenario: Scenario | JourneyScenario, status: str) -> dict[str, Any]:
     document: dict[str, Any] = {"status": status}
     if isinstance(scenario, IncrementalScenario | IssuesScenario | FeedbackScenario):
         document["fixture_provenance"] = FIXTURE_PROVENANCE
-    if isinstance(scenario, AnnotationsScenario):
-        document["observations"] = scenario.observations
+    observations = getattr(scenario, "observations", None)
+    if observations is not None:
+        document["observations"] = observations
     document["steps"] = scenario.evidence
     return document
 
@@ -1685,25 +1692,30 @@ def main() -> int:
             "alerts",
             "annotations",
             "evaluation",
+            "all",
         ],
         required=True,
     )
     parser.add_argument("--work-dir", type=Path, required=True)
     parser.add_argument(
-        "--endpoint", help="Local laya.serve URL; required for annotations and evaluation only."
+        "--endpoint", help="Local laya.serve URL; required for annotations, evaluation and all."
     )
     args = parser.parse_args()
-    endpoint_scenarios = ("annotations", "evaluation")
+    endpoint_scenarios = ("annotations", "evaluation", "all")
     if args.scenario in endpoint_scenarios and args.endpoint is None:
         parser.error(f"--scenario {args.scenario} requires --endpoint")
     if args.scenario not in endpoint_scenarios and args.endpoint is not None:
         parser.error(
-            "--endpoint is only valid for --scenario annotations or evaluation, "
+            "--endpoint is only valid for --scenario annotations, evaluation or all, "
             f"not {args.scenario}"
         )
     work_dir = prepare_work_dir(args.work_dir)
-    scenario: Scenario
-    if args.scenario == "evaluation":
+    scenario: Scenario | JourneyScenario
+    if args.scenario == "all":
+        from smoke_journey import JourneyScenario
+
+        scenario = JourneyScenario(work_dir, args.endpoint)
+    elif args.scenario == "evaluation":
         scenario = EvaluationScenario(work_dir, args.endpoint)
     elif args.scenario == "annotations":
         scenario = AnnotationsScenario(work_dir, args.endpoint)
