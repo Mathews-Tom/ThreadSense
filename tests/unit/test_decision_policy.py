@@ -736,6 +736,55 @@ def test_check_activation_policy_inconsistent_evidence_reports_only_unreconciled
     assert statuses(result)["reconciliation"] == "failed"
 
 
+@pytest.mark.parametrize(
+    ("keys", "rate_field"),
+    [
+        pytest.param(
+            (*HELD_OUT_THEME, "decided"),
+            f"{THEME_FIELD}.decision_rate",
+            id="decided_overflows_recomputed_rate",
+        ),
+        pytest.param(
+            (*HELD_OUT_THEME, "labels", "incorrect"),
+            f"{THEME_FIELD}.labels.error_rate",
+            id="incorrect_overflows_recomputed_rate",
+        ),
+    ],
+)
+def test_check_activation_policy_overflowing_count_reports_unreconciled(
+    tmp_path: Path, keys: tuple[str | int, ...], rate_field: str
+) -> None:
+    # Arrange: the same checker first accepts this constructed fixture, then one count changes.
+    evidence = evidence_document()
+    policy = policy_document(evidence)
+    eligible = run_check(tmp_path / "baseline", evidence, policy)
+    assert eligible.eligibility is Eligibility.ELIGIBLE
+    assert eligible.reasons == ()
+    _assign(evidence, keys, 10**400)
+
+    # Act
+    result = run_check(tmp_path / "invalidated", evidence, policy)
+
+    # Assert: the count and rate failures remain machine-readable without activation.
+    assert result.eligibility is Eligibility.NOT_ELIGIBLE
+    assert codes(result)
+    assert set(codes(result)) == {"evidence_counts_unreconciled"}
+    assert rate_field in {reason.field for reason in result.reasons}
+    assert statuses(result)["reconciliation"] == "failed"
+    assert statuses(result)["finite_values"] == "passed"
+    assert statuses(result)["tolerances"] == "passed"
+    assert result.activation_permitted is False
+    assert result.document["activation"]["permitted"] is False
+    assert result.document["activation"]["performed"] is False
+    assert [check["name"] for check in result.document["checks"]] == list(CHECK_ORDER)
+    assert (
+        decode_strict_json_object(
+            policy_check_bytes(result.document), DecisionArtifactError, "policy check"
+        )
+        == result.document
+    )
+
+
 def test_check_activation_policy_duplicate_rejected_entry_reports_unreconciled(
     tmp_path: Path,
 ) -> None:

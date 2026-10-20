@@ -904,16 +904,23 @@ def _count_problems(
 
 
 def _rate_holds(observed: float | None, expected: float | None) -> bool:
-    """A non-finite observed rate is reported by the finite_values check, not here."""
-    return _is_nonfinite(observed) or observed == expected
+    """Non-finite observations belong to finite_values; overflowing expectations never hold."""
+    return not _is_nonfinite(expected) and (_is_nonfinite(observed) or observed == expected)
 
 
 def _rate_problems(metrics: _QuestionMetrics, question_id: str) -> list[_Problem]:
     """Recompute the rates and label counts the tolerances gate on, as PR-1 computes them."""
     question = f"partitions.{HELD_OUT_PARTITION.value}.questions.{question_id}"
     labels = f"{question}.labels"
-    decision_rate = _rate(metrics.decided, metrics.population)
-    error_rate = _rate(metrics.incorrect, metrics.labeled_decided)
+    # Overflow sentinels stay local to reconciliation, never in the published JSON numbers.
+    try:
+        decision_rate = _rate(metrics.decided, metrics.population)
+    except OverflowError:
+        decision_rate = math.inf
+    try:
+        error_rate = _rate(metrics.incorrect, metrics.labeled_decided)
+    except OverflowError:
+        error_rate = math.inf
     correct, incorrect = metrics.correct, metrics.incorrect
     identities = (
         (
