@@ -1,0 +1,102 @@
+{
+  "artifact_kind": "canonical_thread",
+  "schema_version": 2,
+  "normalization_version": "canonical-thread-v2",
+  "thread": {
+    "thread_id": "fixture:eng-negation",
+    "source": {
+      "source_name": "fixture",
+      "community": "engineering-cases",
+      "source_thread_id": "eng-negation",
+      "thread_url": "https://example.invalid/threads/eng-negation"
+    },
+    "title": "Feedback after upgrading the editor plugin to 3.2",
+    "body": null,
+    "permalink": "https://example.invalid/threads/eng-negation",
+    "author": {
+      "username": "fixture-op",
+      "source_author_id": null
+    },
+    "comments": [
+      {
+        "thread_id": "fixture:eng-negation",
+        "comment_id": "fixture:neg-1",
+        "parent_comment_id": null,
+        "author": {
+          "username": "anya",
+          "source_author_id": null
+        },
+        "body": "The docs are not confusing at all; the new quickstart got me running in five minutes.",
+        "score": 1,
+        "created_utc": 1760000001.0,
+        "depth": 0,
+        "permalink": "https://example.invalid/threads/eng-negation/neg-1"
+      },
+      {
+        "thread_id": "fixture:eng-negation",
+        "comment_id": "fixture:neg-2",
+        "parent_comment_id": null,
+        "author": {
+          "username": "bram",
+          "source_author_id": null
+        },
+        "body": "I don't want a plugin system or a new export format; the current feature set covers everything I do.",
+        "score": 1,
+        "created_utc": 1760000002.0,
+        "depth": 0,
+        "permalink": "https://example.invalid/threads/eng-negation/neg-2"
+      },
+      {
+        "thread_id": "fixture:eng-negation",
+        "comment_id": "fixture:neg-3",
+        "parent_comment_id": null,
+        "author": {
+          "username": "chen",
+          "source_author_id": null
+        },
+        "body": "Search does not return anything for exact function names, even when the function is defined in the open file.",
+        "score": 1,
+        "created_utc": 1760000003.0,
+        "depth": 0,
+        "permalink": "https://example.invalid/threads/eng-negation/neg-3"
+      },
+      {
+        "thread_id": "fixture:eng-negation",
+        "comment_id": "fixture:neg-4",
+        "parent_comment_id": null,
+        "author": {
+          "username": "dara",
+          "source_author_id": null
+        },
+        "body": "Not a single crash since the update, and startup is no longer slow.",
+        "score": 1,
+        "created_utc": 1760000004.0,
+        "depth": 0,
+        "permalink": "https://example.invalid/threads/eng-negation/neg-4"
+      },
+      {
+        "thread_id": "fixture:eng-negation",
+        "comment_id": "fixture:neg-5",
+        "parent_comment_id": null,
+        "author": {
+          "username": "emre",
+          "source_author_id": null
+        },
+        "body": "Nobody is asking for a rewrite; just add a --quiet flag so the CLI can run without the banner.",
+        "score": 1,
+        "created_utc": 1760000005.0,
+        "depth": 0,
+        "permalink": "https://example.invalid/threads/eng-negation/neg-5"
+      }
+    ],
+    "comment_count": 5,
+    "provenance": {
+      "raw_artifact_path": "engineering-authored/eng-negation",
+      "raw_sha256": "engineering-authored-no-raw-artifact",
+      "retrieved_at_utc": 1760000000.0,
+      "normalized_at_utc": 1760000000.0,
+      "schema_version": 2,
+      "normalization_version": "canonical-thread-v2"
+    }
+  }
+}

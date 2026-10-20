@@ -38,7 +38,7 @@ Top-level commands:
 - `run`
 - `research`
 - `watch`
-- `decisions`
+- `decisions` (`annotate`, `evaluate`)
 
 ## Happy Paths
 
@@ -723,6 +723,58 @@ uv run python scripts/smoke_monitoring.py --scenario annotations \
 
 `THREADSENSE_SMOKE_DIR` is an empty or absent working directory and `THREADSENSE_DECISION_ENDPOINT` is the loopback service URL.
 
+### `decisions evaluate`
+
+Offline assessment of saved decision documents against a frozen dataset manifest and its labels. It replays every saved item from the recorded exchange bodies, scores the typed decisions against the declared labels per partition, compares the `theme` question with the existing keyword heuristic, and publishes one content-addressed evaluation document plus a run record.
+
+```bash
+threadsense decisions evaluate --manifest PATH \
+  --annotation PATH [--annotation PATH ...] \
+  [--output-dir DIR] [--config PATH]
+```
+
+| Flag | Meaning |
+| --- | --- |
+| `--manifest PATH` | Required. A frozen dataset manifest (`typed_decision_evaluation_manifest`) that binds every thread file and the label file by sha256 |
+| `--annotation PATH` | Required, repeatable. A saved decision document from `decisions annotate`; supply exactly one per manifest thread |
+| `--output-dir DIR` | Artifact root; defaults to the annotation root, `<storage-root>/annotations` |
+| `--config PATH` | Configuration file, as for other commands |
+
+What it does and does not do:
+
+- It never contacts the Laya service and never re-annotates. Saved decisions must have been produced under the exact identities the manifest binds (runtime manifest, checkpoint revision, question set, settings, context policy and language), and those bindings must still equal the current pinned identities.
+- The only network access is the generative comparator availability observation: one `GET <base_url>/v1/models` to the configured generative runtime, made only when the runtime is enabled and its URL is literal loopback. No generation request is sent. The observation is recorded in the run record, not in the evaluation document.
+- Results describe the listed inputs against their declared labels only. They are not population accuracy. The shipped labels (`tests/fixtures/decisions/evaluation/`) are engineering-authored boundary expectations; they are not independent adjudication and not ground truth.
+- `answer_confidence` is uncalibrated and is not a probability of correctness.
+- Unavailable labels and unavailable comparators are reported as unavailable with a reason, never as zero error.
+- Option stability is reported as vacuous: each question has one fixed option layout and no permuted-layout probe exists yet.
+
+Output locations follow the `decisions annotate` rules: the output root must not lie inside or contain baseline or monitoring storage, and no output path may alias the manifest, the label file, a thread file or an annotation. See [artifacts.md](artifacts.md#typed-decision-evaluation) for the input formats, the document, metric definitions and refusal reasons.
+
+Printed JSON payload (`artifact_type: decision_evaluation`, `status: ready`, `mode: shadow`):
+
+| Field | Content |
+| --- | --- |
+| `evaluation_path`, `evaluation_sha256` | The published evaluation document and the sha256 of its bytes |
+| `run_path`, `run_id` | The run record of this invocation |
+| `manifest_sha256` | The sha256 of the manifest bytes |
+| `label_origin`, `independent_adjudication` | The declared label origin and whether it is independent adjudication |
+| `partitions` | Per partition (`development`, `calibration`, `evaluation`): threads, comments, ok, refused, unavailable, excluded_language and eligible counts |
+| `generative_comparator` | Availability `status` and `reason` observed for this run |
+
+Exit codes: `0` when the evaluation and run record are published; `1` on any refusal (stale binding, missing, duplicate, unbound or mismatched annotation, replay mismatch, partition leak, invalid input, refused output location). Refusals print the error JSON with `details.reason`.
+
+Re-running over the same inputs reproduces the same evaluation bytes, sha256 and path, and adds a new run record.
+
+Example:
+
+```bash
+uv run threadsense decisions evaluate \
+  --manifest <dataset-dir>/manifest.json \
+  --annotation <annotation-root>/<snapshot_sha256>/decisions/<decision_sha256>.json \
+  --annotation <annotation-root>/<snapshot_sha256>/decisions/<decision_sha256>.json
+```
+
 ## `evaluate`
 
 Run golden-dataset evaluation.
@@ -773,6 +825,8 @@ Common paths:
 - `.threadsense/monitoring/state.sqlite3`
 - `.threadsense/monitoring/watches/<watch_id>/digests/<sequence>-<digest_id>.{json,md}`
 - `.threadsense/annotations/<snapshot_sha256>/{decisions,runs}/...`
+- `.threadsense/annotations/evaluations/<manifest_sha256>/<evaluation_sha256>.json`
+- `.threadsense/annotations/evaluations/<manifest_sha256>/runs/<run_id>.json`
 
 ## Related Docs
 

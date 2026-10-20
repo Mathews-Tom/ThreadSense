@@ -288,3 +288,152 @@ Requests are bounded by the pinned service limits, enforced by the client before
 ### Run record
 
 The run record holds `run_id`, `decision_sha256`, the relative `decision_path`, `endpoint`, `started_at_utc` and `completed_at_utc` (Unix epoch seconds), the `health` observation (or the health error), `requests` (per call `batch_index`, `outcome`, `status_code` and client-observed `wall_seconds`, with `batch_index: null` for the health call), `total_http_wall_seconds`, `coverage`, `requirement` and `satisfied`. Its `observation_scope` states that only client-side HTTP wall time is recorded and that model-server memory is not observed by this client.
+
+### Typed decision evaluation
+
+`threadsense decisions evaluate` (library entry point `threadsense.decisions.evaluate.evaluate_frozen_assessment`) assesses saved decision documents offline against a frozen dataset manifest and its labels. It never contacts the Laya service, never re-annotates and never alters a saved decision. The evaluation document is deterministic and content-addressed; everything that varies between runs lives in a separate run record.
+
+Layout, under the evaluation output root (by default the annotation root):
+
+```text
+<output-root>/evaluations/<manifest_sha256>/<evaluation_sha256>.json
+<output-root>/evaluations/<manifest_sha256>/runs/<run_id>.json
+```
+
+`manifest_sha256` is the SHA-256 of the manifest bytes and `evaluation_sha256` the SHA-256 of the evaluation bytes (`json.dumps(indent=2)` plus a trailing newline). Publication follows the annotation rules: atomic and no-clobber, an identical existing evaluation is reused, and a run record at an existing path is a conflict (`artifact_conflict`). Both hashes must be 64 lowercase hex characters and the run id must match the annotation run-id pattern (`artifact_name_invalid`). The `evaluations`, `<manifest_sha256>` and `runs` directories must not be symbolic links (`artifact_directory_symlink`). The output root is refused inside or around protected storage (`output_inside_protected_storage`, `output_contains_protected_storage`), and no output path may alias the manifest, the label file, a thread file or an annotation (`output_aliases_input`).
+
+#### Dataset manifest
+
+An authored strict JSON object with exactly these keys; any unknown or missing key is `manifest_invalid` with the offending `field`.
+
+| Field | Content |
+| --- | --- |
+| `artifact_kind`, `schema_version` | `typed_decision_evaluation_manifest`, `1` (another version is `manifest_version_unsupported`) |
+| `dataset_id`, `description` | Free text identifying the dataset |
+| `objective`, `domain` | An analysis objective and a non-custom domain; together they rebuild the question set |
+| `bindings` | `runtime_manifest_sha256`, `checkpoint_revision`, `question_set_sha256`, `settings_sha256`, `context_policy_sha256`, `language` |
+| `supported_languages` | Non-empty list of language codes eligible for scoring |
+| `sampling` | `method`, `selection`, positive `max_threads` and `max_comments_per_thread`; a corpus beyond either limit is `sampling_limit_exceeded` |
+| `labels` | `path` and `sha256` of the label file |
+| `threads` | Per thread: `thread_id`, `path`, `sha256`, `partition` (`development`, `calibration` or `evaluation`), `source_language` and `comment_languages` (comment id to declared language) |
+| `issue_groups` | Authored repeated-issue groups: `group_id`, at least two `members` (`thread_id`, `comment_id`) and a `note`; a comment belongs to at most one group |
+
+Paths are relative POSIX paths resolved against the manifest's directory; `..` is allowed, absolute paths and empty or `.` parts are not. Every bound file is read once and its SHA-256 must match the manifest (`corpus_snapshot_mismatch`, `labels_digest_mismatch`). A thread file must be a canonical thread artifact whose thread id equals the manifest entry (`corpus_thread_mismatch`), and a comment id may appear only once per thread (`duplicate_comment_id`). Languages are declared, never detected: a comment's language is its `comment_languages` entry or else the thread's `source_language`.
+
+#### Labels
+
+| Field | Content |
+| --- | --- |
+| `artifact_kind`, `schema_version` | `typed_decision_evaluation_labels`, `1` |
+| `origin` | `kind` (`engineering_authored`, `model_generated`, `independent_adjudication` or `constructed_test_fixture`), `authored_by`, `method`, `disclosure` |
+| `labels` | Per label: `thread_id`, `comment_id`, `question_id`, `expected`, `case`, `rationale` |
+
+`expected` is an option label for a choice question, an integer level (not a boolean) for a score question and a boolean for the noul question. `case` is one of `baseline`, `negation`, `quoted_claim`, `mixed_intent`, `repetition`, `long_context_boundary`, `option_relabeling`, `unsupported_language`. A label must reference a corpus comment and a question id, and there is at most one label per comment and question; violations, and a label file with another `artifact_kind` or `schema_version`, are `labels_invalid`.
+
+Label provenance is carried into the document unchanged. Only `independent_adjudication` sets `independent_adjudication: true`. Engineering-authored labels, such as the shipped dataset under `tests/fixtures/decisions/evaluation/`, are expectations written for boundary cases: they are not independent adjudication, not representative of any population and not ground truth.
+
+#### Identity and annotation binding
+
+Before assessment the manifest `bindings` must equal the current pinned identities: the runtime manifest SHA-256, the checkpoint revision, the question set rebuilt from `objective` and `domain`, the pinned settings and context policy hashes, and the settings language. Any difference is `stale_binding` with `field`, `bound` and `current`.
+
+Each `--annotation` is strictly re-validated: its file name must be the SHA-256 of its bytes (`annotation_digest_mismatch`), its bytes must be the canonical serialization (`annotation_not_canonical`), and its shape, coverage and route must be consistent (`annotation_invalid`, `annotation_version_unsupported`, `annotation_coverage_mismatch`). Malformed exchange records, and `settings` or `context_policy` objects whose recomputed digest differs from their saved `sha256`, are `annotation_invalid`. Annotations are matched to manifest threads by snapshot SHA-256: an annotation for an unlisted snapshot is `annotation_unbound`, two for one snapshot are `annotation_duplicate`, and a manifest thread without one is `annotation_missing`. Each annotation's identities, objective and domain must equal the manifest (`annotation_identity_mismatch` with `field`); an annotation with at least one `ok` item whose `backend.checkpoint_verification` is absent or does not equal the pinned checkpoint files is `annotation_identity_mismatch` with `field: checkpoint_verification` (a run with no `ok` items, such as one whose health check failed, may carry a null verification), and its items' comment ids and comment text hashes must equal the corpus thread in order (`annotation_corpus_mismatch`).
+
+Every item that received a recorded `200` response is replayed offline: the recorded request and response digests are re-checked (`replay_exchange_digest_mismatch`), the recorded response is re-validated with the shipped validators, and the re-derived status, reasons, usage, routing and answers must equal the saved item (`replay_mismatch`; `replay_identity_mismatch` when the question set or settings differ, including a saved `questions` object that differs from the question set rebuilt from the manifest, with `field: questions`). Items never sent, or whose batch failed, are listed as not replayable with their saved reason.
+
+#### Partition integrity
+
+Checks run in order and every violation is collected; any violation refuses the run as `partition_leak` with `details.violations`.
+
+| Check | Rule |
+| --- | --- |
+| `thread_partition` | Each thread id appears in exactly one partition |
+| `thread_copies` | Threads sharing snapshot bytes or a non-empty title and body share a partition |
+| `comment_copies` | Comments with the same casefolded, whitespace-collapsed text in different threads share a partition; copies inside one thread are allowed |
+| `issue_groups` | All members of an authored repeated-issue group share a partition |
+
+The document records each passed check with `groups_checked` and a short `detail`.
+
+#### Evaluation document
+
+`artifact_kind: typed_decision_evaluation`, `schema_version: 1`, `mode: shadow`, `calibration: uncalibrated`, `policy: none`. It holds no timestamps, run ids, endpoints, wall times or local paths. Floats are rounded to 6 decimals; lists follow manifest thread order, then comment index, then question order.
+
+| Field | Content |
+| --- | --- |
+| `claims` | `result_scope: engineering_assessment`, `population_accuracy: not_claimed`, `label_origin`, `independent_adjudication`, `calibration_fitted: false` and a note |
+| `dataset` | Manifest hash and descriptive fields, label hash, origin, count and `by_case`, per-thread partition, hashes, comment count and declared languages, and issue groups with their partition |
+| `identity` | The bound identities plus `language_basis: declared` |
+| `decision_rules` | Score, noul, abstention and language-exclusion rules |
+| `partition_integrity` | The passed checks above |
+| `annotations` | Per thread: snapshot and decision hashes, requirement, saved coverage and the replay report |
+| `partitions` | `development`, `calibration` and `evaluation`, always all three |
+| `audit` | `rejected`, `excluded` and `abstained` item lists |
+| `engineering_cases` | Per labeled case: outcome counts and per-label items |
+| `comparators` | `heuristic` and `generative` |
+| `option_stability` | Always `vacuous`; see below |
+
+Decision rules: a choice answer's decision is its `choice`, and `other_or_uncertain` is an abstention, not a decision. A score answer's decision is the argmax level of its reported distribution with ties to the lowest level; the reported `score` is an expected ordinal level and is never used as the decision. A noul answer decides `true` when the reported P(true) is at least `0.5`. None of these values is a probability of correctness.
+
+Each partition has a `population` and per-question metrics. Population counts: `threads`, `comments`, `ok`, `refused`, `unavailable`, `excluded_language` and `eligible`, with `comments = ok + refused + unavailable` and `eligible = ok - excluded_language`. Excluded items are `ok` items whose declared language is not in `supported_languages`; they are never scored.
+
+Per question:
+
+| Field | Definition |
+| --- | --- |
+| `population`, `eligible` | Partition comments and eligible comments |
+| `abstained`, `decided` | Eligible answers that abstained or decided; `decision_rate = decided / population` |
+| `labels.labeled` | Labels on this question in the partition |
+| `labels.labeled_not_covered` | Labels on refused or unavailable items |
+| `labels.labeled_excluded` | Labels on language-excluded items |
+| `labels.labeled_abstained` | Labels on abstained items, including labels that are themselves `other_or_uncertain` |
+| `labels.labeled_decided`, `correct`, `incorrect` | Labels on decided items, split by whether the decision equals `expected` |
+| `labels.error_rate` | `incorrect / labeled_decided` |
+| `labels.incorrect_items` | `thread_id`, `comment_id`, `expected`, `actual` |
+| `confidence` | Mean `answer_confidence` over correct, incorrect and decided items; uncalibrated |
+| `score_diagnostics` | Score questions: mean absolute error of the expected ordinal level against the labeled level over labeled decided items |
+| `ranking` | Score questions: pairwise order agreement of expected levels over labeled decided pairs with different labeled levels (ties count 0.5) |
+| `relevant_evidence_misses` | `objective_relevance` only: labeled-relevant (level at least 1) comments predicted not relevant, not covered or excluded |
+
+A rate is `null` when its denominator is 0. When a partition has no labels for a question, `labels.status` is `unavailable` with reason `no_labels_for_question` and the error rate is `null`; `ranking` is `unavailable` with `no_comparable_labeled_pairs` when no pair qualifies. Unavailable is not zero error, and labels on items that were never covered are counted as not covered, never as errors.
+
+Audit lists: `rejected` holds every refused or unavailable item with its `status` and `reasons`; `excluded` every language-excluded item with its `language` and reason `language_unsupported`; `abstained` every eligible choice abstention per question. The evaluator asserts that these lists reconcile with the population and question counts and refuses the run as `reconciliation_failed` otherwise.
+
+`engineering_cases` has one entry per case category that has labels, with `labels`, outcome counts (`correct`, `incorrect`, `abstained`, `not_covered`, `excluded`) and the per-label items; `actual` is `null` unless the item decided or abstained.
+
+#### Comparators
+
+`heuristic` compares the `theme` question with the existing keyword heuristic, offline and deterministically, on identical items: the typed-eligible comments (ok and supported language). The heuristic's default theme maps to `other_or_uncertain`, marker fallbacks keep their fallback theme, and empty or noise-filtered comments make no decision; `other_or_uncertain` and no decision count as abstentions. Per partition it reports item count, decided, abstained and label metrics for both sides, and the agreement rate where both decided. `basis_counts` counts which heuristic rule produced each outcome. The other questions are listed as unsupported with `no_existing_heuristic_counterpart`.
+
+`generative` is `comparison: not_performed`: no existing local-generative inference task produces any typed decision shape. `shape_support` lists each question as unsupported, with `open_vocabulary_truncated_input` for `theme` (the existing reclassification task proposes free-form theme names from short excerpts, only for general feedback, without thread context, an `other_or_uncertain` option or a distribution) and `no_existing_task` for the rest. Generative availability is observed per run and recorded only in the run record.
+
+#### Option stability
+
+`option_stability.status` is `vacuous`: each question set has one fixed option layout and no permuted-layout probe was run, so stability across option order is not measured. `layouts` lists every choice question's ordered options and `probes` is empty.
+
+#### Evaluation run record
+
+`artifact_kind: typed_decision_evaluation_run`, `schema_version: 1`, `run_id`, `evaluation_sha256`, the relative `evaluation_path`, `manifest_sha256`, `started_at_utc` and `completed_at_utc` (Unix epoch seconds), `wall_seconds`, `generative_comparator` and `observation_scope` (evaluator wall time only; no model-server memory is observed).
+
+`generative_comparator` records `provider: local_openai_compatible`, `enabled`, `base_url`, `model`, `method` (`GET <base_url>/v1/models; no generation request`), `status` (`available` or `unavailable`), `reason` and `served_models` (sorted listed model ids when a listing was parsed, else `null`). Reasons: `disabled_by_configuration` (runtime disabled; no request), `endpoint_invalid` (malformed base URL, for example without a port; no request), `endpoint_not_literal_loopback` (a host that is not a literal loopback address, including `localhost`; no request), `runtime_unreachable` (with `error_type`), `listing_http_status` (with `status_code`), `listing_invalid` and `configured_model_not_served`. The request uses no proxy settings, no redirects and a 5-second timeout. An unavailable comparator is reported as unavailable, never as a zero result.
+
+#### Refusal reasons
+
+All refusals exit `1`. Every input, identity, binding, replay and integrity refusal happens before anything is published. Evaluation refusals use code `decision_evaluation_error`:
+
+| Reason | Cause |
+| --- | --- |
+| `input_unreadable`, `invalid_json` | An input file cannot be read or is not strict JSON |
+| `manifest_invalid`, `manifest_version_unsupported` | Manifest shape or version |
+| `sampling_limit_exceeded` | Corpus exceeds the manifest sampling limits |
+| `corpus_snapshot_mismatch`, `corpus_thread_mismatch` | Thread file bytes or thread id differ from the manifest |
+| `duplicate_comment_id` | A corpus thread repeats a comment id |
+| `labels_digest_mismatch`, `labels_invalid` | Label file bytes or content, including an unsupported label `schema_version` |
+| `stale_binding` | Manifest bindings differ from the current pinned identities |
+| `partition_leak` | A partition integrity check failed |
+| `annotation_unreadable`, `annotation_digest_mismatch`, `annotation_not_canonical`, `annotation_invalid`, `annotation_version_unsupported`, `annotation_coverage_mismatch` | A saved decision fails strict re-validation, including malformed exchange records and `settings` or `context_policy` digests that do not recompute |
+| `annotation_unbound`, `annotation_duplicate`, `annotation_missing` | Annotations do not map one-to-one onto manifest threads |
+| `annotation_identity_mismatch`, `annotation_corpus_mismatch` | An annotation was produced under other identities or for other comments, or has `ok` items without checkpoint verification matching the pinned files (`field: checkpoint_verification`) |
+| `replay_identity_mismatch`, `replay_exchange_digest_mismatch`, `replay_mismatch` | Offline replay does not reproduce the saved items; `replay_identity_mismatch` also covers a saved `questions` object that differs from the rebuilt question set |
+| `heuristic_question_unavailable`, `heuristic_theme_outside_options` | The question set has no theme choice question for the keyword heuristic, or the heuristic produced a theme outside its options |
+| `reconciliation_failed` | Internal count reconciliation failed |
+
+Output location and publication refusals use `decision_input_error` (`output_inside_protected_storage`, `output_contains_protected_storage`, `output_aliases_input`, `output_root_not_directory`) and `decision_artifact_error` (`artifact_name_invalid`, `artifact_directory_symlink`, `artifact_conflict`, `artifact_write_failed`).

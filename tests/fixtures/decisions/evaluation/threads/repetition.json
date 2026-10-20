@@ -1,0 +1,102 @@
+{
+  "artifact_kind": "canonical_thread",
+  "schema_version": 2,
+  "normalization_version": "canonical-thread-v2",
+  "thread": {
+    "thread_id": "fixture:eng-repetition",
+    "source": {
+      "source_name": "fixture",
+      "community": "engineering-cases",
+      "source_thread_id": "eng-repetition",
+      "thread_url": "https://example.invalid/threads/eng-repetition"
+    },
+    "title": "Extension stability megathread",
+    "body": null,
+    "permalink": "https://example.invalid/threads/eng-repetition",
+    "author": {
+      "username": "fixture-op",
+      "source_author_id": null
+    },
+    "comments": [
+      {
+        "thread_id": "fixture:eng-repetition",
+        "comment_id": "fixture:rep-1",
+        "parent_comment_id": null,
+        "author": {
+          "username": "uma",
+          "source_author_id": null
+        },
+        "body": "The extension crashes whenever I open a file larger than 5 MB.",
+        "score": 1,
+        "created_utc": 1760000001.0,
+        "depth": 0,
+        "permalink": "https://example.invalid/threads/eng-repetition/rep-1"
+      },
+      {
+        "thread_id": "fixture:eng-repetition",
+        "comment_id": "fixture:rep-2",
+        "parent_comment_id": null,
+        "author": {
+          "username": "vik",
+          "source_author_id": null
+        },
+        "body": "The extension crashes whenever I open a file larger than 5 MB.",
+        "score": 1,
+        "created_utc": 1760000002.0,
+        "depth": 0,
+        "permalink": "https://example.invalid/threads/eng-repetition/rep-2"
+      },
+      {
+        "thread_id": "fixture:eng-repetition",
+        "comment_id": "fixture:rep-3",
+        "parent_comment_id": null,
+        "author": {
+          "username": "wren",
+          "source_author_id": null
+        },
+        "body": "the extension crashes whenever I open a file larger than 5 MB.",
+        "score": 1,
+        "created_utc": 1760000003.0,
+        "depth": 0,
+        "permalink": "https://example.invalid/threads/eng-repetition/rep-3"
+      },
+      {
+        "thread_id": "fixture:eng-repetition",
+        "comment_id": "fixture:rep-4",
+        "parent_comment_id": null,
+        "author": {
+          "username": "xavi",
+          "source_author_id": null
+        },
+        "body": "The extension  crashes whenever I open\na file larger than 5 MB.  ",
+        "score": 1,
+        "created_utc": 1760000004.0,
+        "depth": 0,
+        "permalink": "https://example.invalid/threads/eng-repetition/rep-4"
+      },
+      {
+        "thread_id": "fixture:eng-repetition",
+        "comment_id": "fixture:rep-5",
+        "parent_comment_id": null,
+        "author": {
+          "username": "yara",
+          "source_author_id": null
+        },
+        "body": "Expanding a comment thread in the browser makes the whole page fall over and close.",
+        "score": 1,
+        "created_utc": 1760000005.0,
+        "depth": 0,
+        "permalink": "https://example.invalid/threads/eng-repetition/rep-5"
+      }
+    ],
+    "comment_count": 5,
+    "provenance": {
+      "raw_artifact_path": "engineering-authored/eng-repetition",
+      "raw_sha256": "engineering-authored-no-raw-artifact",
+      "retrieved_at_utc": 1760000000.0,
+      "normalized_at_utc": 1760000000.0,
+      "schema_version": 2,
+      "normalization_version": "canonical-thread-v2"
+    }
+  }
+}
