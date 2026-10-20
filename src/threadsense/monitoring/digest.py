@@ -20,13 +20,18 @@ from threadsense.monitoring.digest_records import (
     finding_entry_id,
     thread_update_entry_id,
 )
+from threadsense.monitoring.issue_records import IssuePolicy
+from threadsense.monitoring.issues import ingest_issue_evidence
 from threadsense.monitoring.state import MonitoringStore, RunClaim
 from threadsense.monitoring.sweep import _error_payload, _publish_bytes, _verify_stored_artifact
 from threadsense.observability import TraceContext, emit_log
 
 DigestStatus = Literal["presented", "no_entries"]
 DIGEST_ARTIFACT_TYPE = "watch_digest"
-DIGEST_ARTIFACT_SCHEMA_VERSION = 1
+# Digests recorded with issue references render schema 2; digests recorded before issue
+# views existed (state schema < 5) keep rendering schema 1 so a resume reproduces their bytes.
+DIGEST_ARTIFACT_SCHEMA_VERSION = 2
+DIGEST_ARTIFACT_PRE_ISSUE_SCHEMA_VERSION = 1
 EXCERPT_MAX_CHARS = 280
 _CHANGE_KINDS = ("initial_observation", "new_source_event", "newly_observed_historical", "edited")
 _MARKDOWN_SPECIAL = frozenset("\\`*_[]<>#|")
@@ -45,6 +50,7 @@ class DigestResult:
     entry_ids: tuple[str, ...]
     materialized_entries: int
     backlog: dict[str, Any] | None
+    issues: dict[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -59,6 +65,7 @@ class DigestResult:
             "entry_ids": list(self.entry_ids),
             "materialized_entries": self.materialized_entries,
             "backlog": self.backlog,
+            "issues": self.issues,
         }
 
 
@@ -164,9 +171,13 @@ def _finding_entry(
 
 def render_digest_json(watch_id: str, digest: PendingDigest) -> bytes:
     """Render the digest artifact from the recorded digest only; no clock is read."""
-    payload = {
+    issue_view = digest.issue_view
+    schema_version = DIGEST_ARTIFACT_SCHEMA_VERSION
+    if issue_view is None:
+        schema_version = DIGEST_ARTIFACT_PRE_ISSUE_SCHEMA_VERSION
+    payload: dict[str, Any] = {
         "artifact_type": DIGEST_ARTIFACT_TYPE,
-        "schema_version": DIGEST_ARTIFACT_SCHEMA_VERSION,
+        "schema_version": schema_version,
         "watch_id": watch_id,
         "digest_id": digest.digest_id,
         "sequence": digest.sequence,
@@ -174,6 +185,8 @@ def render_digest_json(watch_id: str, digest: PendingDigest) -> bytes:
         "entries": list(digest.entries),
         "backlog": digest.backlog,
     }
+    if issue_view is not None:
+        payload["issues"] = issue_view
     text = json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False, allow_nan=False)
     return (text + "\n").encode("utf-8")
 
@@ -199,12 +212,17 @@ def render_digest_markdown(watch_id: str, digest: PendingDigest) -> bytes:
         f"- Latest sweep outcome: {_or_unknown(backlog['latest_sweep_outcome'])}",
         f"- Search completeness: {_md(str(backlog['search_completeness']))}",
     ]
+    issue_view = digest.issue_view
+    refs: dict[str, dict[str, Any]] = {}
+    if issue_view is not None:
+        lines.extend(["", *_issues_lines(issue_view)])
+        refs = {str(ref["entry_id"]): ref for ref in issue_view["entry_refs"]}
     for index, entry in enumerate(digest.entries, start=1):
-        lines.extend(["", *_entry_lines(index, entry)])
+        lines.extend(["", *_entry_lines(index, entry, refs.get(str(entry["entry_id"])))])
     return ("\n".join(lines) + "\n").encode("utf-8")
 
 
-def _entry_lines(index: int, entry: dict[str, Any]) -> list[str]:
+def _entry_lines(index: int, entry: dict[str, Any], ref: dict[str, Any] | None) -> list[str]:
     if entry["kind"] == "finding":
         heading = (
             f"## {index}. Finding: {_md(str(entry['theme_label']))} ({_md(str(entry['severity']))})"
@@ -219,6 +237,7 @@ def _entry_lines(index: int, entry: dict[str, Any]) -> list[str]:
         f"- Entry: {_md(str(entry['entry_id']))}",
         f"- Thread: {_md(str(entry['thread_url']))} (r/{_md(str(entry['subreddit']))})",
         f"- Revision: {_md(str(entry['revision_id']))} (sequence {entry['revision_sequence']})",
+        *_entry_issue_lines(ref),
         f"- Thread text changed: {'yes' if entry['thread_text_changed'] else 'no'}",
     ]
     if entry["kind"] == "finding":
@@ -227,6 +246,86 @@ def _entry_lines(index: int, entry: dict[str, Any]) -> list[str]:
     for comment in comments:
         lines.extend(_comment_lines(comment))
     return lines
+
+
+def _issues_lines(issue_view: dict[str, Any]) -> list[str]:
+    grouping = _words(issue_view["semantic_grouping"])
+    lines = [
+        "## Issues",
+        "",
+        f"- Semantic grouping: {grouping}; suggestions are unconfirmed and never merge "
+        "memberships or counts.",
+    ]
+    for issue in issue_view["issues"]:
+        lines.extend(["", *_issue_lines(issue)])
+    return lines
+
+
+def _issue_lines(issue: dict[str, Any]) -> list[str]:
+    counts = issue["counts"]
+    updates = issue["update_counts"]
+    members = ", ".join(_md(str(thread_id)) for thread_id in issue["member_thread_ids"])
+    lines = [
+        f"### Issue {_md(str(issue['issue_id']))} ({_words(issue['state'])}, open)",
+        "",
+        f"- Member threads: {members}",
+        f"- Firsthand reports: {counts['firsthand_reports']}; "
+        f"exact copies: {counts['exact_copies']}",
+        f"- Observed threads: {counts['observed_threads']}; "
+        f"accounts: {counts['observed_accounts']}; "
+        f"communities: {counts['observed_communities']}; "
+        f"independence: {_words(counts['independence']['status'])}",
+        f"- Updates: reproduction {updates['reproduction']}, "
+        f"contradiction {updates['contradiction']}, workaround {updates['workaround']}, "
+        f"resolution claims {updates['resolution_claim']} (unverified; issue not resolved)",
+    ]
+    lines.extend(_suggestion_lines(issue["suggestions"]))
+    return lines
+
+
+def _suggestion_lines(suggestions: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = []
+    for suggestion in suggestions:
+        pair = (
+            f"{_md(str(suggestion['source_thread_id']))} and "
+            f"{_md(str(suggestion['candidate_thread_id']))}"
+        )
+        if suggestion["status"] == "refused":
+            lines.append(f"- Refused grouping: {pair} ({_words(suggestion['refusal_reason'])})")
+        elif not suggestion["currently_grouped"]:
+            signals = suggestion["signals"]
+            lines.append(
+                f"- Unconfirmed suggestion: {pair} (themes: {_md_list(signals['themes'])}; "
+                f"key phrases: {_md_list(signals['key_phrases'])})"
+            )
+    return lines
+
+
+def _entry_issue_lines(ref: dict[str, Any] | None) -> list[str]:
+    if ref is None:
+        return []
+    lines = [f"- Issue: {_md(str(ref['issue_id']))}"]
+    for update in ref["updates"]:
+        lines.append(
+            f"- Update: {_md(str(update['kind']))} in {_md(str(update['comment_id']))} "
+            f'(cue "{_md(str(update["cue"]))}", unverified)'
+        )
+    for report in ref["reports"]:
+        if report["lineage"] == "exact_copy":
+            lines.append(
+                f"- Exact copy: {_md(str(report['comment_id']))} "
+                f"copies {_md(str(report['copy_of_report_id']))}"
+            )
+    return lines
+
+
+def _words(value: object) -> str:
+    """Render a stored snake_case token as escaped words."""
+    return _md(str(value).replace("_", " "))
+
+
+def _md_list(values: list[Any]) -> str:
+    return ", ".join(_md(str(value)) for value in values) if values else "none"
 
 
 def _comment_lines(comment: dict[str, Any]) -> list[str]:
@@ -264,13 +363,14 @@ def present_watch_digest(
     store: MonitoringStore,
     watch_id: str,
     lease_seconds: int,
+    issue_policy: IssuePolicy,
     logger: logging.Logger,
     trace: TraceContext,
 ) -> DigestResult:
     """Materialize new entries and present the next digest under an exclusive run claim."""
     claim = store.claim_run(watch_id, lease_seconds=lease_seconds)
     try:
-        result = _present(store, claim)
+        result = _present(store, claim, issue_policy)
     except RunClaimError:
         raise
     except Exception as error:
@@ -300,13 +400,14 @@ def present_watch_digest(
     return result
 
 
-def _present(store: MonitoringStore, claim: RunClaim) -> DigestResult:
+def _present(store: MonitoringStore, claim: RunClaim, policy: IssuePolicy) -> DigestResult:
     watch_id = claim.watch_id
     profile = store.load_profile_revision(watch_id, claim.profile_revision)
     materialized = 0
     for item in store.unmaterialized_revisions(watch_id):
         entries = build_digest_entries(watch_id, item)
         materialized += store.materialize_digest_entries(claim, entries)
+    ingestion = ingest_issue_evidence(store, claim, policy)
     digest = store.begin_digest(claim, profile.limits.presented_findings)
     if digest is None:
         return DigestResult(
@@ -321,6 +422,7 @@ def _present(store: MonitoringStore, claim: RunClaim) -> DigestResult:
             entry_ids=(),
             materialized_entries=materialized,
             backlog=None,
+            issues=ingestion.to_dict(),
         )
     json_bytes = render_digest_json(watch_id, digest)
     with store.fenced_artifact_write(claim):
@@ -341,6 +443,7 @@ def _present(store: MonitoringStore, claim: RunClaim) -> DigestResult:
         entry_ids=tuple(str(entry["entry_id"]) for entry in digest.entries),
         materialized_entries=materialized,
         backlog=digest.backlog,
+        issues=ingestion.to_dict(),
     )
 
 

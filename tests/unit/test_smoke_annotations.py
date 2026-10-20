@@ -18,14 +18,15 @@ import pytest
 def smoke_modules(monkeypatch: pytest.MonkeyPatch) -> tuple[ModuleType, ModuleType]:
     scripts = Path(__file__).resolve().parents[2] / "scripts"
     modules = []
-    for name in ("smoke_annotations", "smoke_monitoring"):
+    # smoke_monitoring imports both sibling scenario modules.
+    for name in ("smoke_annotations", "smoke_issues", "smoke_monitoring"):
         spec = importlib.util.spec_from_file_location(name, scripts / f"{name}.py")
         assert spec is not None and spec.loader is not None
         module = importlib.util.module_from_spec(spec)
         monkeypatch.setitem(sys.modules, name, module)
         spec.loader.exec_module(module)
         modules.append(module)
-    return modules[0], modules[1]
+    return modules[0], modules[2]
 
 
 @pytest.mark.parametrize(

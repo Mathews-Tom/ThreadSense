@@ -29,10 +29,12 @@ from threadsense.monitoring.digest_records import (
     _digest_status,
     _entry_payloads,
     _folded_novelty,
+    _insert_digest_issue_view,
     _insert_entry,
     _next_sequence,
     _pending_digest_row,
     _require_analyzed_revision,
+    _stored_digest_issue_view,
     _unpresented_entry_ids,
     _validate_entry,
     digest_id_for,
@@ -45,6 +47,7 @@ from threadsense.monitoring.issue_lineage import (
 )
 from threadsense.monitoring.issue_records import (
     _ISSUE_SCHEMA_VERSION,
+    DIGEST_ISSUE_VIEW_STATEMENTS,
     ISSUE_SCHEMA_STATEMENTS,
     IssueEntryInput,
     IssueIngestion,
@@ -53,6 +56,7 @@ from threadsense.monitoring.issue_records import (
 )
 from threadsense.monitoring.issue_views import (
     _change_issue_membership,
+    _digest_issue_view,
     _inspect_issue,
     _issue_request,
     _list_issues,
@@ -101,7 +105,7 @@ from threadsense.monitoring.sweep_records import (
     _validate_observed_at,
 )
 
-STATE_SCHEMA_VERSION = 4
+STATE_SCHEMA_VERSION = 5
 STATE_APPLICATION_ID = 0x54534D4E
 STATE_FILENAME = "state.sqlite3"
 BUSY_TIMEOUT_SECONDS = 5.0
@@ -295,6 +299,7 @@ _SCHEMA_STATEMENTS: dict[int, tuple[str, ...]] = {
     2: _SCHEMA_V2,
     3: DIGEST_SCHEMA_STATEMENTS,
     4: ISSUE_SCHEMA_STATEMENTS,
+    5: DIGEST_ISSUE_VIEW_STATEMENTS,
 }
 
 
@@ -982,6 +987,7 @@ class MonitoringStore:
                     entries=_entry_payloads(conn, claim.watch_id, pending.entry_ids),
                     backlog=pending.backlog,
                     resumed=True,
+                    issue_view=_stored_digest_issue_view(conn, claim.watch_id, pending.digest_id),
                 )
             entry_ids = tuple(_unpresented_entry_ids(conn, claim.watch_id, limit))
             if not entry_ids:
@@ -1007,6 +1013,10 @@ class MonitoringStore:
                     now,
                 ),
             )
+            issue_view = _digest_issue_view(conn, claim.watch_id, entries)
+            _insert_digest_issue_view(
+                conn, claim.watch_id, digest_id, view=issue_view, created_at_utc=now
+            )
         return PendingDigest(
             digest_id=digest_id,
             sequence=sequence,
@@ -1016,6 +1026,7 @@ class MonitoringStore:
             entries=entries,
             backlog=backlog,
             resumed=False,
+            issue_view=issue_view,
         )
 
     def complete_digest(

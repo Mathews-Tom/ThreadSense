@@ -3,11 +3,12 @@
 Usage:
     uv run python scripts/smoke_monitoring.py --scenario profiles --work-dir DIR
     uv run python scripts/smoke_monitoring.py --scenario incremental --work-dir DIR
+    uv run python scripts/smoke_monitoring.py --scenario issues --work-dir DIR
     uv run python scripts/smoke_monitoring.py --scenario annotations --work-dir DIR --endpoint URL
 
 DIR must not exist or be empty. Every CLI call runs in a new interpreter process
-against isolated storage under DIR; the profiles and incremental scenarios use no network
-or model access.
+against isolated storage under DIR; the profiles, incremental and issues scenarios use no
+network or model access.
 
 The profiles scenario makes run claims through `threadsense.monitoring` in separate
 competing processes and observes them through `threadsense watch inspect`.
@@ -17,6 +18,10 @@ over the recorded phases in tests/fixtures/watch/incremental/. Each replaying
 child installs the in-process recorded Reddit transport from
 tests/integration/recorded_reddit.py before calling `threadsense.cli.main`; the
 payloads are synthesized Reddit JSON, not live acquisition.
+
+The issues scenario (scripts/smoke_issues.py) drives `threadsense watch run` and
+`threadsense issues inspect|link|unlink` over the recorded phases in
+tests/fixtures/watch/issues/, served in-process the same way from synthesized Reddit JSON.
 
 The annotations scenario (scripts/smoke_annotations.py) drives `threadsense decisions
 annotate` against a locally running `laya.serve` given by --endpoint, which is required for
@@ -50,6 +55,7 @@ from smoke_annotations import (
     file_sha256,
     redact_local_paths,
 )
+from smoke_issues import IssuesScenario
 
 from threadsense.models.analysis import load_analysis_artifact_file
 from threadsense.monitoring import STATE_SCHEMA_VERSION
@@ -1623,11 +1629,12 @@ class IncrementalScenario:
         return str(details["reason"])
 
 
-def evidence_document(
-    scenario: ProfilesScenario | IncrementalScenario | AnnotationsScenario, status: str
-) -> dict[str, Any]:
+Scenario = ProfilesScenario | IncrementalScenario | IssuesScenario | AnnotationsScenario
+
+
+def evidence_document(scenario: Scenario, status: str) -> dict[str, Any]:
     document: dict[str, Any] = {"status": status}
-    if isinstance(scenario, IncrementalScenario):
+    if isinstance(scenario, IncrementalScenario | IssuesScenario):
         document["fixture_provenance"] = FIXTURE_PROVENANCE
     if isinstance(scenario, AnnotationsScenario):
         document["observations"] = scenario.observations
@@ -1647,7 +1654,7 @@ def main() -> int:
         description="Run monitoring smoke scenarios through the threadsense CLI."
     )
     parser.add_argument(
-        "--scenario", choices=["profiles", "incremental", "annotations"], required=True
+        "--scenario", choices=["profiles", "incremental", "issues", "annotations"], required=True
     )
     parser.add_argument("--work-dir", type=Path, required=True)
     parser.add_argument("--endpoint", help="Local laya.serve URL; required for annotations only.")
@@ -1657,11 +1664,13 @@ def main() -> int:
     if args.scenario != "annotations" and args.endpoint is not None:
         parser.error(f"--endpoint is only valid for --scenario annotations, not {args.scenario}")
     work_dir = prepare_work_dir(args.work_dir)
-    scenario: ProfilesScenario | IncrementalScenario | AnnotationsScenario
+    scenario: Scenario
     if args.scenario == "annotations":
         scenario = AnnotationsScenario(work_dir, args.endpoint)
     elif args.scenario == "incremental":
         scenario = IncrementalScenario(work_dir)
+    elif args.scenario == "issues":
+        scenario = IssuesScenario(work_dir)
     else:
         scenario = ProfilesScenario(work_dir)
     evidence_path = work_dir / f"{args.scenario}-evidence.json"

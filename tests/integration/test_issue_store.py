@@ -44,6 +44,7 @@ from threadsense.monitoring import (
     present_watch_digest,
     run_watch_sweep,
 )
+from threadsense.monitoring.digest import build_digest_entries
 from threadsense.monitoring.issue_records import LINEAGE_MIN_CHARS, issue_id_for, report_id_for
 from threadsense.monitoring.state import (
     STATE_SCHEMA_VERSION,
@@ -103,8 +104,8 @@ def harness(tmp_path: Path) -> IssueHarness:
     return build_harness(tmp_path / "store")
 
 
-def run_phase(harness: IssueHarness, phase_name: str, *, watch_id: str = WATCH_ID) -> None:
-    """Replay one recorded sweep, then materialize its finding entries in a digest."""
+def sweep_phase(harness: IssueHarness, phase_name: str, *, watch_id: str) -> TraceContext:
+    """Replay one recorded sweep and return its trace."""
     transport = PhaseReplayTransport(harness.phases[phase_name])
     trace = TraceContext.create(run_id=f"issues-{watch_id}-{phase_name}", source_name="watch")
     sweep = run_watch_sweep(
@@ -117,13 +118,36 @@ def run_phase(harness: IssueHarness, phase_name: str, *, watch_id: str = WATCH_I
         trace=trace,
     )
     assert sweep.outcome == "changes"
-    present_watch_digest(
+    return trace
+
+
+def run_phase(
+    harness: IssueHarness, phase_name: str, policy: IssuePolicy, *, watch_id: str = WATCH_ID
+) -> IssueIngestion:
+    """Replay one recorded sweep, then present a digest that ingests evidence with `policy`."""
+    trace = sweep_phase(harness, phase_name, watch_id=watch_id)
+    digest = present_watch_digest(
         store=harness.store,
         watch_id=watch_id,
         lease_seconds=LEASE_SECONDS,
+        issue_policy=policy,
         logger=LOGGER,
         trace=trace,
     )
+    return IssueIngestion(**digest.issues)
+
+
+def materialize_phase(harness: IssueHarness, phase_name: str, *, watch_id: str = WATCH_ID) -> int:
+    """Replay one recorded sweep and materialize its digest entries without ingesting issues."""
+    sweep_phase(harness, phase_name, watch_id=watch_id)
+    store = harness.store
+    claim = store.claim_run(watch_id, lease_seconds=LEASE_SECONDS)
+    materialized = 0
+    for item in store.unmaterialized_revisions(watch_id):
+        entries = build_digest_entries(watch_id, item)
+        materialized += store.materialize_digest_entries(claim, entries)
+    store.finalize_run(claim.run_id, claim.owner_token, "succeeded")
+    return materialized
 
 
 def ingest(
@@ -140,12 +164,8 @@ def default_policy(harness: IssueHarness) -> IssuePolicy:
 
 
 def advance(harness: IssueHarness, *phase_names: str) -> list[IssueIngestion]:
-    """Run each phase and ingest its evidence with the configured policy."""
-    results: list[IssueIngestion] = []
-    for phase_name in phase_names:
-        run_phase(harness, phase_name)
-        results.append(ingest(harness, default_policy(harness)))
-    return results
+    """Run each phase; its digest ingests the evidence with the configured policy."""
+    return [run_phase(harness, phase_name, default_policy(harness)) for phase_name in phase_names]
 
 
 def query_rows(state_path: Path, sql: str, params: tuple[Any, ...]) -> list[tuple[Any, ...]]:
@@ -223,9 +243,7 @@ def test_ingest_issue_evidence_initial_phase_creates_separate_issues_with_signal
     harness: IssueHarness,
 ) -> None:
     assert default_policy(harness) == IssuePolicy(30, 25, 3)
-    run_phase(harness, "initial")
-
-    result = ingest(harness, default_policy(harness))
+    result = run_phase(harness, "initial", default_policy(harness))
 
     store = harness.store
     assert result.threads_created == 5
@@ -255,9 +273,7 @@ def test_ingest_issue_evidence_initial_phase_creates_separate_issues_with_signal
 def test_record_issue_evidence_wide_window_compares_out_of_window_thread(
     harness: IssueHarness,
 ) -> None:
-    run_phase(harness, "initial")
-
-    result = ingest(harness, IssuePolicy(365, 25, 3))
+    result = run_phase(harness, "initial", IssuePolicy(365, 25, 3))
 
     # Every thread is compared with every earlier thread: 0 + 1 + 2 + 3 + 4.
     assert result.comparisons == 10
@@ -279,11 +295,8 @@ def test_record_issue_evidence_comparison_bound_limits_comparisons_and_suggestio
 ) -> None:
     unbounded = build_harness(tmp_path / "default")
     bounded = build_harness(tmp_path / "bounded")
-    run_phase(unbounded, "initial")
-    run_phase(bounded, "initial")
-
-    default_result = ingest(unbounded, default_policy(unbounded))
-    bounded_result = ingest(bounded, IssuePolicy(30, 1, 1))
+    default_result = run_phase(unbounded, "initial", default_policy(unbounded))
+    bounded_result = run_phase(bounded, "initial", IssuePolicy(30, 1, 1))
 
     # A, B, D and E share the 30-day window; F is outside it for every thread.
     assert default_result.comparisons == 6
@@ -343,8 +356,8 @@ def test_record_issue_evidence_repost_assigns_exact_copy_to_origin_issue(
 def test_record_issue_evidence_original_and_repost_in_one_batch_records_origin_first(
     harness: IssueHarness,
 ) -> None:
-    run_phase(harness, "initial")
-    run_phase(harness, "repost")
+    materialize_phase(harness, "initial")
+    materialize_phase(harness, "repost")
 
     result = ingest(harness, default_policy(harness))
 
@@ -389,7 +402,7 @@ def test_record_issue_evidence_partial_copy_seeds_own_issue_with_copy_signal(
 ) -> None:
     advance(harness, "initial")
     counts_a = harness.store.inspect_issue(WATCH_ID, ISSUE_A)["counts"]
-    run_phase(harness, "repost")
+    materialize_phase(harness, "repost")
     inputs = repost_inputs_with_extra_report(
         harness,
         lambda copy: replace(
@@ -426,7 +439,7 @@ def test_record_issue_evidence_short_matching_text_stays_firsthand(
         "SELECT first_text_sha256 FROM watch_issue_reports WHERE report_id = ?",
         (report_id_for(WATCH_ID, THREAD_A, "reddit:ia1"),),
     )
-    run_phase(harness, "repost")
+    materialize_phase(harness, "repost")
     inputs = repost_inputs_with_extra_report(
         harness,
         lambda copy: replace(
@@ -455,9 +468,7 @@ def test_record_issue_evidence_short_matching_text_stays_firsthand(
 def test_record_issue_evidence_suggestion_cap_records_truncated_count(
     harness: IssueHarness,
 ) -> None:
-    run_phase(harness, "initial")
-
-    result = ingest(harness, IssuePolicy(365, 25, 1))
+    result = run_phase(harness, "initial", IssuePolicy(365, 25, 1))
 
     assert result.suggestions_truncated >= 1
     for thread in INITIAL_THREADS:
@@ -656,8 +667,7 @@ def test_link_issue_thread_other_watch_issue_refused_as_unknown(
         encoding="utf-8",
     )
     harness.store.save_profile(load_watch_profile_file(other_profile))
-    run_phase(harness, "initial", watch_id=OTHER_WATCH_ID)
-    ingest(harness, default_policy(harness), watch_id=OTHER_WATCH_ID)
+    run_phase(harness, "initial", default_policy(harness), watch_id=OTHER_WATCH_ID)
     other_issue = issue_id_for(OTHER_WATCH_ID, THREAD_A)
     assert harness.store.inspect_issue(OTHER_WATCH_ID, other_issue)["home_thread_id"] == THREAD_A
 
@@ -730,7 +740,7 @@ def test_ingest_issue_evidence_repeat_and_stale_claim_record_nothing(
     )
     assert count_rows(store.path, "watch_issue_ingestions") == ingestions
 
-    run_phase(harness, "repost")
+    materialize_phase(harness, "repost")
     pending = len(store.pending_issue_entries(WATCH_ID))
     assert pending >= 1
     reports = count_rows(store.path, "watch_issue_reports")
@@ -749,9 +759,9 @@ def test_ingest_issue_evidence_repeat_and_stale_claim_record_nothing(
 def test_monitoring_store_pre_issue_schema_upgrades_and_ingests_prior_entries(
     harness: IssueHarness,
 ) -> None:
-    run_phase(harness, "initial")
+    run_phase(harness, "initial", default_policy(harness))
     store = harness.store
-    kept_tables = ("watch_thread_revisions", "watch_digest_entries")
+    kept_tables = ("watch_thread_revisions", "watch_digest_entries", "watch_digests")
     kept_before = {
         table: sorted(query_rows(store.path, f"SELECT * FROM {table}", ()), key=repr)
         for table in kept_tables
@@ -765,6 +775,8 @@ def test_monitoring_store_pre_issue_schema_upgrades_and_ingests_prior_entries(
         assert ("table", "watch_issues") in objects
         for kind, name in objects:
             conn.execute(f'DROP {kind.upper()} "{name}"')
+        assert conn.execute("SELECT COUNT(*) FROM watch_digest_issue_views").fetchone() == (1,)
+        conn.execute("DROP TABLE watch_digest_issue_views")
         conn.execute(f"PRAGMA user_version = {PRE_ISSUE_SCHEMA_VERSION}")
         conn.commit()
     pre_issue_bytes = store.path.read_bytes()
@@ -775,6 +787,13 @@ def test_monitoring_store_pre_issue_schema_upgrades_and_ingests_prior_entries(
     claim = store.claim_run(WATCH_ID, lease_seconds=LEASE_SECONDS)
 
     assert query_rows(store.path, "PRAGMA user_version", ()) == [(STATE_SCHEMA_VERSION,)]
+    assert STATE_SCHEMA_VERSION == 5
+    assert count_rows(store.path, "watch_digest_issue_views") == 0
+    assert query_rows(
+        store.path,
+        "SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ? ORDER BY name",
+        ("watch_digest_issue_views",),
+    ) == [("watch_digest_issue_views_no_delete",), ("watch_digest_issue_views_no_update",)]
     assert {
         table: sorted(query_rows(store.path, f"SELECT * FROM {table}", ()), key=repr)
         for table in kept_tables

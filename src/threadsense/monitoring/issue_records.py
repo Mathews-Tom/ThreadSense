@@ -39,6 +39,7 @@ MembershipBasis = Literal["thread_seed", "exact_content_lineage", "operator"]
 SuggestionStatus = Literal["unconfirmed", "refused"]
 
 _ISSUE_SCHEMA_VERSION = 4
+_DIGEST_ISSUE_VIEW_SCHEMA_VERSION = 5
 ISSUE_POLICY_NAME = "threadsense-issue-grouping"
 ISSUE_POLICY_VERSION = 1
 UPDATE_KINDS: tuple[UpdateKind, ...] = (
@@ -263,6 +264,27 @@ ISSUE_SCHEMA_STATEMENTS: tuple[str, ...] = (
             """,
         )
     ),
+)
+
+
+# Issue references recorded with each new digest, so a resumed digest renders the same bytes.
+DIGEST_ISSUE_VIEW_STATEMENTS: tuple[str, ...] = (
+    """
+    CREATE TABLE watch_digest_issue_views (
+        digest_id TEXT PRIMARY KEY REFERENCES watch_digests (digest_id),
+        watch_id TEXT NOT NULL REFERENCES watches (watch_id),
+        view_json TEXT NOT NULL,
+        created_at_utc REAL NOT NULL
+    )
+    """,
+    """
+    CREATE TRIGGER watch_digest_issue_views_no_update BEFORE UPDATE ON watch_digest_issue_views
+    BEGIN SELECT RAISE(ABORT, 'issue history is append-only'); END
+    """,
+    """
+    CREATE TRIGGER watch_digest_issue_views_no_delete BEFORE DELETE ON watch_digest_issue_views
+    BEGIN SELECT RAISE(ABORT, 'issue history is append-only'); END
+    """,
 )
 
 

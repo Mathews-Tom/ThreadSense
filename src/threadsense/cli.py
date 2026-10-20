@@ -41,6 +41,7 @@ from threadsense.monitoring import (
     render_launchd,
     run_watch_sweep,
 )
+from threadsense.monitoring.issues import issue_policy
 from threadsense.monitoring.schedule import (
     ScheduleFormat,
     render_install_instructions,
@@ -691,6 +692,56 @@ def _build_watch_parser(subparsers: argparse._SubParsersAction[argparse.Argument
     _build_watch_execution_parsers(watch_subparsers)
 
 
+def _build_issues_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    issues_parser = subparsers.add_parser(
+        "issues",
+        help=(
+            "Inspect cross-thread issues and record operator membership decisions. "
+            "Suggestions are never merged automatically."
+        ),
+    )
+    issues_subparsers = issues_parser.add_subparsers(dest="issues_command", required=True)
+
+    inspect_parser = issues_subparsers.add_parser(
+        "inspect",
+        help=(
+            "List a watch's issues, or show one issue with its membership history and "
+            "suggestions. Read-only: inspect never writes state."
+        ),
+    )
+    inspect_parser.add_argument("--watch", dest="watch_id", required=True, help="Watch id.")
+    inspect_parser.add_argument(
+        "--issue",
+        dest="issue_id",
+        default=None,
+        help="Issue id; omit to list all issues for the watch.",
+    )
+    _add_config_argument(inspect_parser)
+
+    for command, help_text in (
+        ("link", "Link a thread to an issue by appending a membership event (append-only)."),
+        ("unlink", "Unlink a thread from an issue by appending a membership event (append-only)."),
+    ):
+        membership_parser = issues_subparsers.add_parser(
+            command,
+            help=f"{help_text} Suggestions are never merged automatically.",
+        )
+        membership_parser.add_argument("--watch", dest="watch_id", required=True, help="Watch id.")
+        membership_parser.add_argument("--issue", dest="issue_id", required=True, help="Issue id.")
+        membership_parser.add_argument(
+            "--thread",
+            dest="source_thread_id",
+            required=True,
+            help="Source thread id.",
+        )
+        membership_parser.add_argument(
+            "--reason",
+            required=True,
+            help="Operator reason recorded in the append-only membership event.",
+        )
+        _add_config_argument(membership_parser)
+
+
 def _add_watch_lease_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--lease-seconds",
@@ -885,6 +936,7 @@ def build_parser() -> argparse.ArgumentParser:
     _build_run_parser(subparsers)
     _build_research_parser(subparsers)
     _build_watch_parser(subparsers)
+    _build_issues_parser(subparsers)
     _build_decisions_parser(subparsers)
     return parser
 
@@ -1581,6 +1633,72 @@ def run_watch_inspect(config_path: Path | None, watch_id: str) -> int:
     return 0
 
 
+def run_issues_inspect(config_path: Path | None, watch_id: str, issue_id: str | None) -> int:
+    store = load_monitoring_store(config_path)
+    if issue_id is None:
+        emit_payload(
+            {
+                "artifact_type": "issue_list",
+                "status": "ok",
+                "state_path": str(store.path),
+                "watch_id": watch_id,
+                "issues": store.list_issues(watch_id),
+            }
+        )
+        return 0
+    # The issue's own lifecycle status must not replace the command status.
+    issue = store.inspect_issue(watch_id, issue_id)
+    issue_status = issue.pop("status")
+    emit_payload(
+        {
+            "artifact_type": "issue_inspection",
+            "status": "ok",
+            "state_path": str(store.path),
+            "issue_status": issue_status,
+            **issue,
+        }
+    )
+    return 0
+
+
+def run_issues_link(
+    config_path: Path | None,
+    watch_id: str,
+    issue_id: str,
+    source_thread_id: str,
+    reason: str,
+) -> int:
+    store = load_monitoring_store(config_path)
+    emit_payload(
+        {
+            "artifact_type": "issue_membership_change",
+            "status": "linked",
+            "state_path": str(store.path),
+            **store.link_issue_thread(watch_id, issue_id, source_thread_id, reason),
+        }
+    )
+    return 0
+
+
+def run_issues_unlink(
+    config_path: Path | None,
+    watch_id: str,
+    issue_id: str,
+    source_thread_id: str,
+    reason: str,
+) -> int:
+    store = load_monitoring_store(config_path)
+    emit_payload(
+        {
+            "artifact_type": "issue_membership_change",
+            "status": "unlinked",
+            "state_path": str(store.path),
+            **store.unlink_issue_thread(watch_id, issue_id, source_thread_id, reason),
+        }
+    )
+    return 0
+
+
 def watch_trace(run_id: str) -> TraceContext:
     return TraceContext.create(run_id=run_id, source_name="watch")
 
@@ -1602,6 +1720,7 @@ def run_watch_run(config_path: Path | None, watch_id: str, lease_seconds: int) -
         store=store,
         watch_id=watch_id,
         lease_seconds=lease_seconds,
+        issue_policy=issue_policy(config.issues),
         logger=logger,
         trace=trace,
     )
@@ -1624,6 +1743,7 @@ def run_watch_digest(config_path: Path | None, watch_id: str, lease_seconds: int
         store=store,
         watch_id=watch_id,
         lease_seconds=lease_seconds,
+        issue_policy=issue_policy(config.issues),
         logger=logger,
         trace=watch_trace("cli-watch-digest"),
     )
@@ -1808,6 +1928,22 @@ def _dispatch_watch_command(args: argparse.Namespace) -> int:
             raise _CommandDispatchError(args.command)
 
 
+def _dispatch_issues_command(args: argparse.Namespace) -> int:
+    match args.issues_command:
+        case "inspect":
+            return run_issues_inspect(args.config, args.watch_id, args.issue_id)
+        case "link":
+            return run_issues_link(
+                args.config, args.watch_id, args.issue_id, args.source_thread_id, args.reason
+            )
+        case "unlink":
+            return run_issues_unlink(
+                args.config, args.watch_id, args.issue_id, args.source_thread_id, args.reason
+            )
+        case _:
+            raise _CommandDispatchError(args.command)
+
+
 def parse_run_target(target: list[str]) -> tuple[str | None, str]:
     if len(target) == 1:
         return None, target[0]
@@ -1834,6 +1970,8 @@ def _dispatch_command(args: argparse.Namespace) -> int:
     match command_key:
         case ("watch", _, _, _, _):
             return _dispatch_watch_command(args)
+        case ("issues", _, _, _, _):
+            return _dispatch_issues_command(args)
         case ("decisions", _, _, _, _):
             return _dispatch_decisions_command(args)
         case ("preflight", _, _, _, _):

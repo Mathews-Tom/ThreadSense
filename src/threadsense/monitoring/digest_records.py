@@ -113,6 +113,8 @@ class PendingDigest:
     entries: tuple[dict[str, Any], ...]
     backlog: dict[str, Any]
     resumed: bool
+    # None only for a digest recorded before issue views existed (state schema < 5).
+    issue_view: dict[str, Any] | None
 
 
 @dataclass(frozen=True)
@@ -362,6 +364,37 @@ def _digest_row_by_id(conn: sqlite3.Connection, watch_id: str, digest_id: str) -
             details={"reason": "unknown_digest", "watch_id": watch_id, "digest_id": digest_id},
         )
     return _digest_row(row)
+
+
+def _insert_digest_issue_view(
+    conn: sqlite3.Connection,
+    watch_id: str,
+    digest_id: str,
+    *,
+    view: dict[str, Any],
+    created_at_utc: float,
+) -> None:
+    conn.execute(
+        "INSERT INTO watch_digest_issue_views (digest_id, watch_id, view_json, created_at_utc) "
+        "VALUES (?, ?, ?, ?)",
+        (digest_id, watch_id, _canonical_json(view, "issue_view"), created_at_utc),
+    )
+
+
+def _stored_digest_issue_view(
+    conn: sqlite3.Connection, watch_id: str, digest_id: str
+) -> dict[str, Any] | None:
+    """The digest's recorded issue view; None when it was recorded before issue views existed."""
+    row = conn.execute(
+        "SELECT view_json FROM watch_digest_issue_views WHERE watch_id = ? AND digest_id = ?",
+        (watch_id, digest_id),
+    ).fetchone()
+    if row is None:
+        return None
+    view = _stored_json(str(row[0]), digest_id=digest_id)
+    if not isinstance(view, dict):
+        raise _unreadable("stored digest issue view is not an object", digest_id=digest_id)
+    return view
 
 
 def _digest_row(row: tuple[Any, ...]) -> _DigestRow:

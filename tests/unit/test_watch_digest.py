@@ -6,6 +6,7 @@ import logging
 import sqlite3
 import tomllib
 from contextlib import closing
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,8 @@ from threadsense.monitoring.digest import (
     render_digest_markdown,
 )
 from threadsense.monitoring.digest_records import PendingDigest
+from threadsense.monitoring.issue_records import IssuePolicy, issue_id_for, report_id_for
+from threadsense.monitoring.issues import ingest_issue_evidence
 from threadsense.monitoring.state import RunClaim
 from threadsense.monitoring.sweep_records import (
     AcquisitionRecord,
@@ -44,6 +47,13 @@ THREAD_ID = "abc123"
 THREAD_URL = f"https://www.reddit.com/r/ClaudeAI/comments/{THREAD_ID}/"
 TITLE = "Agent friction"
 THREAD_TEXT_SHA256 = hashlib.sha256(b"thread text").hexdigest()
+ISSUE_POLICY = IssuePolicy(
+    candidate_window_days=30, max_candidate_comparisons=25, max_suggestions_per_thread=3
+)
+ISSUE_ID = issue_id_for(WATCH_ID, THREAD_ID)
+INDEPENDENCE_BASIS = (
+    "distinct accounts and communities are observations, not proof of independent sources"
+)
 LOGGER = logging.getLogger("threadsense.tests.watch_digest")
 TRACE = TraceContext.create(run_id="test-watch-digest", source_name="watch")
 Findings = list[tuple[str, list[str]]]
@@ -191,7 +201,12 @@ class Harness:
     def present(self) -> DigestResult:
         self.clock.now += 1.0
         return present_watch_digest(
-            store=self.store, watch_id=WATCH_ID, lease_seconds=600, logger=LOGGER, trace=TRACE
+            store=self.store,
+            watch_id=WATCH_ID,
+            lease_seconds=600,
+            issue_policy=ISSUE_POLICY,
+            logger=LOGGER,
+            trace=TRACE,
         )
 
     def materialize(self, claim: RunClaim) -> int:
@@ -354,6 +369,76 @@ def test_present_watch_digest_first_analysis_presents_deterministic_evidence_ent
     assert entries["thread_update"]["counts"]["initial_observation"] == 2
     assert entries["finding"]["novel_evidence_comment_ids"] == ["c1"]
     assert harness.store.digest_status(WATCH_ID)["unpresented_entries"] == 0
+    assert result.issues["policy_sha256"] == ISSUE_POLICY.sha256()
+    assert (
+        result.issues["entries"],
+        result.issues["threads_created"],
+        result.issues["reports_recorded"],
+    ) == (1, 1, 1)
+    assert artifact["schema_version"] == 2
+    assert artifact["issues"] == expected_single_thread_view(
+        list(result.entry_ids),
+        finding_id=expected_finding_id(revision_id, "latency"),
+        comment_text="latency is   bad\nhere",
+    )
+
+
+def expected_single_thread_view(
+    entry_ids: list[str], *, finding_id: str, comment_text: str
+) -> dict[str, Any]:
+    """Issue view of one thread whose finding cites comment c1 firsthand and no update cue."""
+    report = {
+        "report_id": report_id_for(WATCH_ID, THREAD_ID, "c1"),
+        "comment_id": "c1",
+        "lineage": "firsthand",
+        "copy_of_report_id": None,
+        "text_sha256": text_sha256(comment_text),
+    }
+    return {
+        "semantic_grouping": "not_eligible",
+        "entry_refs": [
+            {
+                "entry_id": entry_id,
+                "kind": "finding" if entry_id == finding_id else "thread_update",
+                "source_thread_id": THREAD_ID,
+                "issue_id": ISSUE_ID,
+                "home_issue_id": ISSUE_ID,
+                "reports": [report] if entry_id == finding_id else [],
+                "updates": [],
+            }
+            for entry_id in entry_ids
+        ],
+        "issues": [
+            {
+                "issue_id": ISSUE_ID,
+                "home_thread_id": THREAD_ID,
+                "state": "active",
+                "member_thread_ids": [THREAD_ID],
+                "counts": {
+                    "observed_threads": 1,
+                    "observed_communities": 1,
+                    "observed_accounts": 1,
+                    "reports_without_account": 0,
+                    "reports": 1,
+                    "firsthand_reports": 1,
+                    "exact_copies": 0,
+                    "independence": {
+                        "status": "not_verified",
+                        "verified_independent_reports": None,
+                        "basis": INDEPENDENCE_BASIS,
+                    },
+                },
+                "update_counts": {
+                    "reproduction": 0,
+                    "contradiction": 0,
+                    "workaround": 0,
+                    "resolution_claim": 0,
+                },
+                "unconfirmed_suggestions": 0,
+                "suggestions": [],
+            }
+        ],
+    }
 
 
 def test_materialize_digest_entries_existing_entry_ids_are_skipped(tmp_path: Path) -> None:
@@ -491,6 +576,9 @@ def test_present_watch_digest_crash_before_complete_resumes_same_digest(
     assert resumed.resumed is True
     assert (resumed.digest_id, resumed.sequence) == (pending["pending_digest_id"], 1)
     assert list(resumed.entry_ids) == crashed_ids
+    crashed_artifact = json.loads(crashed_files[json_name])
+    assert crashed_artifact["schema_version"] == 2
+    assert [ref["entry_id"] for ref in crashed_artifact["issues"]["entry_refs"]] == crashed_ids
     assert harness.digest_files() == crashed_files
     assert harness.query(
         "SELECT digest_id, COUNT(*) FROM watch_digest_entries GROUP BY digest_id"
@@ -574,7 +662,17 @@ def test_complete_digest_stale_claim_is_fenced_and_next_run_resumes(tmp_path: Pa
 
     assert raised.value.details["reason"] == "stale_owner"
     assert (resumed.digest_id, resumed.resumed) == (digest.digest_id, True)
+    # The digest began before any ingestion; the resume ingests the thread's issue history
+    # but keeps rendering the recorded, reference-free view.
+    assert digest.issue_view == {
+        "semantic_grouping": "not_eligible",
+        "entry_refs": [],
+        "issues": [],
+    }
+    assert resumed.issues["threads_created"] == 1
+    assert [issue["issue_id"] for issue in harness.store.list_issues(WATCH_ID)] == [ISSUE_ID]
     assert digest.json_path.read_bytes() == json_bytes
+    assert digest.markdown_path.read_bytes() == markdown_bytes
     assert harness.store.digest_status(WATCH_ID)["unpresented_entries"] == 0
 
 
@@ -624,7 +722,12 @@ def test_present_watch_digest_lost_claim_during_render_prevents_publication_and_
     monkeypatch.setattr(f"threadsense.monitoring.digest.{renderer_name}", lose_claim_after_render)
     with pytest.raises(RunClaimError) as raised:
         present_watch_digest(
-            store=harness.store, watch_id=WATCH_ID, lease_seconds=1, logger=LOGGER, trace=TRACE
+            store=harness.store,
+            watch_id=WATCH_ID,
+            lease_seconds=1,
+            issue_policy=ISSUE_POLICY,
+            logger=LOGGER,
+            trace=TRACE,
         )
 
     [digest] = rendered_digests
@@ -725,3 +828,221 @@ def test_render_digest_markdown_hostile_source_text_is_escaped(tmp_path: Path) -
     assert r"Thread update: \# Pwn \<img src=x\>" in markdown
     assert "<script>" not in markdown
     assert "<img src=x>" not in markdown
+    assert "## Issues" in markdown.splitlines()
+    assert markdown.splitlines().count(f"- Issue: {ISSUE_ID}") == 2
+
+
+def begin_ingested_digest(harness: Harness) -> tuple[RunClaim, PendingDigest]:
+    """Materialize, ingest issue evidence and begin a digest under one held claim."""
+    claim = harness.claim()
+    harness.materialize(claim)
+    ingest_issue_evidence(harness.store, claim, ISSUE_POLICY)
+    digest = harness.store.begin_digest(claim, 10)
+    assert digest is not None
+    return claim, digest
+
+
+def test_begin_digest_new_digest_records_issue_view_rendered_as_schema_two(
+    tmp_path: Path,
+) -> None:
+    harness = Harness(tmp_path)
+    revision_id = harness.sweep({"c1": "latency"}, findings=[("latency", ["c1"])])
+    assert revision_id is not None
+
+    _, digest = begin_ingested_digest(harness)
+
+    artifact = json.loads(render_digest_json(WATCH_ID, digest))
+    expected = expected_single_thread_view(
+        [str(entry["entry_id"]) for entry in digest.entries],
+        finding_id=expected_finding_id(revision_id, "latency"),
+        comment_text="latency",
+    )
+    assert digest.resumed is False
+    assert digest.issue_view == expected
+    assert (artifact["schema_version"], artifact["issues"]) == (2, expected)
+    [(stored_digest_id, view_json)] = harness.query(
+        "SELECT digest_id, view_json FROM watch_digest_issue_views"
+    )
+    assert (stored_digest_id, json.loads(view_json)) == (digest.digest_id, expected)
+
+
+def test_render_digest_json_without_issue_view_renders_schema_one_bytes(
+    tmp_path: Path,
+) -> None:
+    harness = Harness(tmp_path)
+    harness.sweep({"c1": "latency"}, findings=[("latency", ["c1"])])
+    _, digest = begin_ingested_digest(harness)
+    pre_issue = replace(digest, issue_view=None)
+    schema_one = {
+        "artifact_type": "watch_digest",
+        "schema_version": 1,
+        "watch_id": WATCH_ID,
+        "digest_id": digest.digest_id,
+        "sequence": digest.sequence,
+        "created_at_utc": digest.created_at_utc,
+        "entries": list(digest.entries),
+        "backlog": digest.backlog,
+    }
+
+    rendered = render_digest_json(WATCH_ID, pre_issue)
+
+    text = json.dumps(schema_one, indent=2, sort_keys=True, ensure_ascii=False, allow_nan=False)
+    assert rendered == (text + "\n").encode("utf-8")
+    assert "issues" not in json.loads(rendered)
+
+
+def test_render_digest_markdown_without_issue_view_omits_only_issue_lines(
+    tmp_path: Path,
+) -> None:
+    harness = Harness(tmp_path)
+    harness.sweep({"c1": "steps to reproduce: export twice"}, findings=[("latency", ["c1"])])
+    _, digest = begin_ingested_digest(harness)
+
+    with_issues = render_digest_markdown(WATCH_ID, digest).decode("utf-8").splitlines()
+    without = render_digest_markdown(WATCH_ID, replace(digest, issue_view=None))
+
+    start = with_issues.index("## Issues")
+    first_entry = next(index for index, line in enumerate(with_issues) if line.startswith("## 1. "))
+    stripped = [
+        line
+        for line in with_issues[: start - 1] + with_issues[first_entry - 1 :]
+        if not line.startswith(("- Issue: ", "- Update: ", "- Exact copy: "))
+    ]
+    assert without.decode("utf-8").splitlines() == stripped
+    assert len(stripped) < len(with_issues)
+
+
+def test_render_digest_markdown_issue_view_lists_issue_and_update_lines(tmp_path: Path) -> None:
+    harness = Harness(tmp_path)
+    harness.sweep({"c1": "steps to reproduce: export twice"}, findings=[("latency", ["c1"])])
+
+    result = harness.present()
+
+    lines = harness.digest_files()[f"000001-{result.digest_id}.md"].decode("utf-8").splitlines()
+    start = lines.index("## Issues")
+    assert lines[start : start + 11] == [
+        "## Issues",
+        "",
+        "- Semantic grouping: not eligible; suggestions are unconfirmed and never merge "
+        "memberships or counts.",
+        "",
+        f"### Issue {ISSUE_ID} (active, open)",
+        "",
+        f"- Member threads: {THREAD_ID}",
+        "- Firsthand reports: 1; exact copies: 0",
+        "- Observed threads: 1; accounts: 1; communities: 1; independence: not verified",
+        "- Updates: reproduction 1, contradiction 0, workaround 0, resolution claims 0 "
+        "(unverified; issue not resolved)",
+        "",
+    ]
+    revision_lines = [index for index, line in enumerate(lines) if line.startswith("- Revision: ")]
+    assert len(revision_lines) == 2
+    assert all(lines[index + 1] == f"- Issue: {ISSUE_ID}" for index in revision_lines)
+    assert lines.count('- Update: reproduction in c1 (cue "steps to reproduce", unverified)') == 1
+    assert not [line for line in lines if line.startswith("- Exact copy: ")]
+    assert not [
+        line
+        for line in lines
+        if line.startswith(("- Unconfirmed suggestion: ", "- Refused grouping: "))
+    ]
+
+
+HOSTILE_ISSUE_TEXT = "<b>x</b>\n*y* [z](u) #h |p| _q_ `c` \\"
+ESCAPED_ISSUE_TEXT = r"\<b\>x\</b\> \*y\* \[z\](u) \#h \|p\| \_q\_ \`c\` \\"
+
+
+def hostile_suggestion(status: str, *, currently_grouped: bool, source: str) -> dict[str, Any]:
+    return {
+        "source_thread_id": source,
+        "candidate_thread_id": HOSTILE_ISSUE_TEXT,
+        "status": status,
+        "refusal_reason": "shared_link_only" if status == "refused" else None,
+        "currently_grouped": currently_grouped,
+        "signals": {
+            "themes": [HOSTILE_ISSUE_TEXT],
+            "key_phrases": [HOSTILE_ISSUE_TEXT, "plain"],
+        },
+    }
+
+
+def hostile_issue_view(recorded: dict[str, Any], finding_id: str) -> dict[str, Any]:
+    """The recorded view with source-derived fields replaced by Markdown-hostile text."""
+    issue = {
+        **recorded["issues"][0],
+        "issue_id": HOSTILE_ISSUE_TEXT,
+        "member_thread_ids": [HOSTILE_ISSUE_TEXT],
+        "suggestions": [
+            hostile_suggestion("unconfirmed", currently_grouped=False, source=HOSTILE_ISSUE_TEXT),
+            hostile_suggestion("refused", currently_grouped=False, source=HOSTILE_ISSUE_TEXT),
+            hostile_suggestion("unconfirmed", currently_grouped=True, source="grouped-source"),
+        ],
+    }
+    copy_report = {
+        "report_id": "rpt-copy",
+        "comment_id": HOSTILE_ISSUE_TEXT,
+        "lineage": "exact_copy",
+        "copy_of_report_id": HOSTILE_ISSUE_TEXT,
+        "text_sha256": text_sha256("copied"),
+    }
+    update = {
+        "update_id": "upd-hostile",
+        "kind": "reproduction",
+        "cue": HOSTILE_ISSUE_TEXT,
+        "report_id": "rpt-copy",
+        "comment_id": HOSTILE_ISSUE_TEXT,
+    }
+    refs = [
+        {**ref, "issue_id": HOSTILE_ISSUE_TEXT, "reports": [copy_report], "updates": [update]}
+        for ref in recorded["entry_refs"]
+        if ref["entry_id"] == finding_id
+    ]
+    return {"semantic_grouping": "not_eligible", "entry_refs": refs, "issues": [issue]}
+
+
+def test_render_digest_markdown_hostile_issue_view_text_is_escaped(tmp_path: Path) -> None:
+    harness = Harness(tmp_path)
+    revision_id = harness.sweep({"c1": "latency"}, findings=[("latency", ["c1"])])
+    assert revision_id is not None
+    _, digest = begin_ingested_digest(harness)
+    assert digest.issue_view is not None
+    view = hostile_issue_view(digest.issue_view, expected_finding_id(revision_id, "latency"))
+
+    markdown = render_digest_markdown(WATCH_ID, replace(digest, issue_view=view)).decode("utf-8")
+
+    lines = markdown.splitlines()
+    text = ESCAPED_ISSUE_TEXT
+    assert f"### Issue {text} (active, open)" in lines
+    assert f"- Member threads: {text}" in lines
+    unconfirmed = (
+        f"- Unconfirmed suggestion: {text} and {text} (themes: {text}; key phrases: {text}, plain)"
+    )
+    assert lines.count(unconfirmed) == 1
+    assert lines.count(f"- Refused grouping: {text} and {text} (shared link only)") == 1
+    assert lines.count(f"- Issue: {text}") == 1
+    assert lines.count(f'- Update: reproduction in {text} (cue "{text}", unverified)') == 1
+    assert lines.count(f"- Exact copy: {text} copies {text}") == 1
+    assert "grouped-source" not in markdown
+    assert "<b>" not in markdown
+    assert "_q_" not in markdown
+
+
+def test_begin_digest_resumed_digest_renders_recorded_issue_view_bytes(tmp_path: Path) -> None:
+    harness = Harness(tmp_path)
+    harness.sweep({"c1": "latency"}, findings=[("latency", ["c1"])])
+    claim, digest = begin_ingested_digest(harness)
+    json_bytes = render_digest_json(WATCH_ID, digest)
+    markdown_bytes = render_digest_markdown(WATCH_ID, digest)
+    harness.store.finalize_run(claim.run_id, claim.owner_token, "failed")
+    harness.sweep(
+        {"c1": "latency", "c2": "steps to reproduce: export twice"},
+        findings=[("latency", ["c2"])],
+    )
+
+    _, resumed = begin_ingested_digest(harness)
+
+    [issue] = harness.store.list_issues(WATCH_ID)
+    assert (issue["counts"]["firsthand_reports"], issue["update_counts"]["reproduction"]) == (2, 1)
+    assert (resumed.digest_id, resumed.resumed) == (digest.digest_id, True)
+    assert resumed.issue_view == digest.issue_view
+    assert render_digest_json(WATCH_ID, resumed) == json_bytes
+    assert render_digest_markdown(WATCH_ID, resumed) == markdown_bytes
