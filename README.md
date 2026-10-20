@@ -100,7 +100,7 @@ uv run threadsense decisions annotate \
 
 The default `optional` requirement keeps unavailability visible and exits `0`; `--requirement required` exits `1` on any refused or unavailable comment. Preparing or reusing the service: [docs/laya-runtime.md](docs/laya-runtime.md). Artifact definitions: [docs/artifacts.md](docs/artifacts.md#typed-decision-annotations). Flags and exit codes: [docs/usage.md](docs/usage.md#decisions-annotate).
 
-`decisions evaluate` assesses saved annotations offline against a frozen dataset manifest and its labels. `decisions policy check` then checks one saved evaluation against an optional operator-authored activation policy and records whether a typed decision shape would be eligible for a semantic consumer. It never activates anything, installs no policy and keeps decisions shadow-only. Under the real runtime the result is `not_eligible`: the shipped labels are engineering-authored, not independent adjudication, and no domain tolerances exist. Policy format, checks and reason codes: [docs/artifacts.md](docs/artifacts.md#policy-check). Flags: [docs/usage.md](docs/usage.md#decisions-policy-check).
+`decisions evaluate` assesses saved annotations against a frozen dataset manifest and its labels. Typed replay is offline; a configured local runtime can supply an optional comparison. `decisions policy check` then checks one saved evaluation against an optional operator-authored activation policy and records whether a typed decision shape would be eligible for a semantic consumer. It never activates anything, installs no policy and keeps decisions shadow-only. Under the real runtime the result is `not_eligible`: the shipped labels are engineering-authored, not independent adjudication, and no domain tolerances exist. Policy format, checks and reason codes: [docs/artifacts.md](docs/artifacts.md#policy-check). Flags: [docs/usage.md](docs/usage.md#decisions-policy-check).
 
 ### Domain-aware analysis
 
@@ -189,7 +189,7 @@ uv run threadsense research reddit \
 | `batch run`       | Process multiple threads                            |
 | `watch`           | Save, sweep, digest and schedule research profiles  |
 | `decisions annotate` | Shadow typed annotations from a local Laya service |
-| `decisions evaluate` | Offline assessment of saved annotations against frozen labels |
+| `decisions evaluate` | Typed replay against frozen labels; optional local comparison |
 | `decisions policy check` | Offline activation eligibility check; never activates |
 | `preflight`       | Validate local environment                          |
 | `serve`           | Local API server                                    |

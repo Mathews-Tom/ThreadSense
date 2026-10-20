@@ -434,6 +434,7 @@ All refusals exit `1`. Every input, identity, binding, replay and integrity refu
 | `annotation_identity_mismatch`, `annotation_corpus_mismatch` | An annotation was produced under other identities or for other comments, or has `ok` items without checkpoint verification matching the pinned files (`field: checkpoint_verification`) |
 | `replay_identity_mismatch`, `replay_exchange_digest_mismatch`, `replay_mismatch` | Offline replay does not reproduce the saved items; `replay_identity_mismatch` also covers a saved `questions` object that differs from the rebuilt question set |
 | `heuristic_question_unavailable`, `heuristic_theme_outside_options` | The question set has no theme choice question for the keyword heuristic, or the heuristic produced a theme outside its options |
+| `invalid_confidence`, `invalid_theme`, `invalid_response_association` | Replay of retained model responses has invalid confidence, theme values or comment-ID association |
 | `reconciliation_failed` | Internal count reconciliation failed |
 
 Output location and publication refusals use `decision_input_error` (`output_inside_protected_storage`, `output_contains_protected_storage`, `output_aliases_input`, `output_root_not_directory`) and `decision_artifact_error` (`artifact_name_invalid`, `artifact_directory_symlink`, `artifact_conflict`, `artifact_write_failed`).
