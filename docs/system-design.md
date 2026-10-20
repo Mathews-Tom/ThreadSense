@@ -194,7 +194,7 @@ In human mode, the CLI renders a research summary panel instead of raw JSON.
 
 ## Monitoring Design
 
-The monitoring subsystem (`src/threadsense/monitoring/`) persists saved research profiles ("watches"), run-claim state and the durable history of bounded incremental sweeps. A sweep reuses the existing Reddit search, fetch, normalize and analyze stages; it does not call a model, schedule anything or deliver notifications, and the existing artifact pipeline does not depend on it.
+The monitoring subsystem (`src/threadsense/monitoring/`) persists saved research profiles ("watches"), run-claim state, the durable history of bounded incremental sweeps and the digests that present new evidence. A sweep reuses the existing Reddit search, fetch, normalize and analyze stages; it does not call a model, install a schedule or deliver notifications, and the existing artifact pipeline does not depend on it.
 
 ### Profile contract
 
@@ -210,8 +210,9 @@ The monitoring subsystem (`src/threadsense/monitoring/`) persists saved research
 - `state.py` owns a single SQLite database at `<storage root>/<monitoring_dirname>/state.sqlite3`; the path must stay inside the storage root
 - schema version `1` holds `watches`, `watch_revisions` and `watch_runs`; revisions are append-only
 - schema version `2` adds the sweep tables `watch_threads`, `watch_discoveries`, `watch_acquisitions`, `watch_fetch_failures`, `watch_comments`, `watch_comment_texts`, `watch_thread_revisions`, `watch_revision_analyses` and `watch_sweeps`
+- schema version `3` adds `watch_digests` and `watch_digest_entries`
 - saving identical content returns `unchanged` without writing; a changed profile appends a revision and returns `revised`
-- the database carries an application id and a schema version; a version `1` database is upgraded in place by the first writing command, inside one transaction that only creates the new tables and keeps every existing row, while read-only commands read it without modification; newer-schema, foreign and non-SQLite files are refused and never migrated or downgraded
+- the database carries an application id and a schema version; a version `1` or `2` database is upgraded in place by the first writing command, inside one transaction that only creates the missing tables and keeps every existing row, while read-only commands read it without modification and report an empty digest summary; newer-schema, foreign and non-SQLite files are refused and never migrated or downgraded
 - an existing file is probed through a read-only handle before any writable connection is opened, so a refused file is never opened for writing
 - a hot rollback journal left by a crashed writer is rolled back by SQLite only after a private copy of the database and journal recovers to a verified supported state with the same bytes; newer-schema, foreign and non-SQLite files and their journals are refused unchanged, and recovery that cannot complete reports `recovery_failed` or, when the files change underneath it, `recovery_conflict`
 - `watch list` and `watch inspect` never create a missing database and write nothing, except for the verified hot-journal rollback above
@@ -225,7 +226,11 @@ The monitoring subsystem (`src/threadsense/monitoring/`) persists saved research
 - the first claim after expiry marks the old run `abandoned` and records `recovered_by_run_id` on it
 - finalizing requires the matching owner token and an unexpired lease; an abandoned run's old owner is refused as `stale_owner`, and an owner whose lease has expired is refused as `lease_expired`
 - every sweep write repeats the owner-token and lease check inside its own transaction, so a sweep whose claim was recovered by another run cannot record observations or an outcome
-- the claim and sweep primitives are a library API; no CLI command starts a run yet
+- `watch run` and `watch digest` claim a run through these primitives, a sweep and
+  a digest each holding their own claim; a second invocation while a claim is
+  live is refused as `claim_held`; leases remain finite and unrenewed, so a run
+  that outlasts its lease can be recovered by the next invocation, after which
+  the overtaken run cannot record state or publish digest artifacts
 
 ### Sweeps
 
@@ -267,10 +272,34 @@ Only source failures (a failed search or fetch, an unreadable fetched payload, a
 
 The run claim is marked `succeeded` for `changes` and `no_changes` and `failed` otherwise, so a failed or partial fetch can never be reported as a successful `no_changes`.
 
+### Digests
+
+`digest.py` presents new evidence with `present_watch_digest`. It claims its own run, so `watch run` records a sweep run followed by a digest run, and a failure while the claim is live finalizes the run as `failed` and is re-raised.
+
+Entries are created from analyzed revisions and are deterministic and idempotent:
+
+- each analyzed revision yields one `thread_update` entry listing its novel comments, and one `finding` entry for each analysis finding whose evidence includes a novel comment; entry ids are hashes of the watch, revision and theme, and an existing id is never inserted twice
+- novelty folds the comment changes of every revision since the thread's last materialized revision, so a revision superseded before analysis does not lose its novel comments; a comment first seen inside that window keeps its first-observation label even if it was also edited there. Repeated edits to an existing comment keep the pre-window previous-text hash alongside the latest content hash and latest observation time
+- novel comments carry the labels `initial_observation`, `new_source_event`, `newly_observed_historical` or `edited`; an edit's source edit time is unknown and recorded as `null`
+- score and order changes create no entries, and a comment missing from a truncated fetch is neither an entry nor a deletion; a `partial` or `failed` sweep is never reported as `no_changes`
+- entry payloads quote the stored snapshot and analysis files after verifying their SHA-256 against the recorded values
+
+Presentation writes artifacts before the database marks anything presented:
+
+- a digest selects the oldest unpresented entries up to the profile `presented_findings` limit and is recorded as `pending` with its entry ids and a backlog snapshot; with nothing to present the run succeeds and no digest is created
+- the JSON and Markdown files are rendered separately, only from the pending record and without reading the clock, outside their respective publication fences; after each render, a writer transaction checks the live claim and holds its fence through that file's publication, so a takeover cannot race either write; publication uses a temporary file, a file flush, an atomic rename and a directory flush, reusing identical existing bytes and refusing different bytes as `artifact_conflict`
+- one fenced transaction then verifies both files and their SHA-256, marks the digest `written` and links its entries; only then are the entries presented
+- a crash or lease loss between publications or before completion leaves a `pending` digest; an already published JSON file remains recoverable, and the next run completes the digest with the same id, sequence, entries and bytes, so an entry is presented at most once; this is recoverable resumption, not an exactly-once delivery guarantee, and nothing is sent to a remote destination
+- the backlog reports the presentation limit, entries presented and still waiting, revisions pending analysis, tracked threads, threads pending refresh and the latest sweep outcome; `search_completeness` is always `unknown`
+
+### Scheduling
+
+`schedule.py` renders a launchd property list or a cron line for `watch run`. Rendering is pure: it writes no file, starts no process and installs and enables nothing, and the operator installs the output manually if they choose. The command uses absolute interpreter, workspace and storage paths, values are escaped for the target format (property list escaping for launchd; shell quoting with `%` escaped for cron), and a cron expression is produced only for intervals cron can express exactly, otherwise the render is refused. The lease equals the interval capped at 86400 seconds. Overlap is controlled by the run claim, not by the scheduler: a live claim refuses a second run, and a run outlasting its lease is fenced out of further writes once the next run recovers it. The rendered command pins the config file the render loaded, since schedulers do not inherit the shell environment.
+
 ### Boundaries
 
-- no CLI command, scheduler installation, model calls, API endpoints, notifications or deletion of watches or observations
-- existing JSON artifacts and their schemas are unchanged; sweep artifacts live under the monitoring directory
+- no scheduler installation or enablement, model calls, API endpoints, remote notifications, exactly-once delivery or deletion of watches or observations
+- existing JSON artifacts and their schemas are unchanged; sweep and digest artifacts live under the monitoring directory
 
 ## Artifact Boundaries
 
@@ -361,6 +390,6 @@ Once normalized, downstream analysis and reporting do not branch on source shape
 - no API route for `research reddit`
 - no corpus HTML report yet
 - research query grammar is intentionally constrained
-- sweeps are a library API only; no CLI command runs them and no scheduler is installed
+- sweeps and digests run only on demand or from a scheduler definition the operator installs manually; there is no daemon, remote notification or delivery tracking
 
 These are product and workflow gaps, not evidence-layer gaps.

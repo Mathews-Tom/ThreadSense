@@ -23,6 +23,7 @@ from threadsense.monitoring import (
     monitoring_state_path,
     parse_watch_profile,
 )
+from threadsense.monitoring.digest_records import DigestEntryRecord
 from threadsense.monitoring.state import (
     STATE_APPLICATION_ID,
     STATE_SCHEMA_VERSION,
@@ -966,13 +967,13 @@ def test_list_watches_hot_journal_on_v1_state_recovers_without_upgrade(tmp_path:
     ],
     ids=["refresh_queue", "sweep_status", "thread_history", "claim"],
 )
-def test_store_version_3_state_is_refused_without_modification(
+def test_store_version_4_state_is_refused_without_modification(
     tmp_path: Path, operation: Callable[[MonitoringStore], object]
 ) -> None:
     store = store_at(tmp_path)
     store.save_profile(parse_watch_profile(fixture_payload()))
     with closing(sqlite3.connect(store.path)) as conn:
-        conn.execute("PRAGMA user_version = 3")
+        conn.execute("PRAGMA user_version = 4")
         conn.commit()
     before = directory_snapshot(store.path.parent)
 
@@ -980,7 +981,7 @@ def test_store_version_3_state_is_refused_without_modification(
         operation(store)
 
     assert raised.value.details["reason"] == "unsupported_schema_version"
-    assert raised.value.details["schema_version"] == 3
+    assert raised.value.details["schema_version"] == 4
     assert directory_snapshot(store.path.parent) == before
 
 
@@ -1466,3 +1467,133 @@ def test_record_analysis_unknown_revision_is_refused(tmp_path: Path) -> None:
 
     assert raised.value.details["reason"] == "unknown_revision"
     assert query_state(store, "SELECT COUNT(*) FROM watch_revision_analyses") == [(0,)]
+
+
+EMPTY_DIGEST_STATUS = {
+    "entry_count": 0,
+    "unpresented_entries": 0,
+    "pending_digest_id": None,
+    "digest_count": 0,
+    "latest_digest": None,
+}
+
+
+def state_files(store: MonitoringStore) -> dict[str, bytes]:
+    return {
+        entry.name: entry.read_bytes()
+        for entry in sorted(store.path.parent.iterdir())
+        if entry.is_file()
+    }
+
+
+def create_v2_state_with_analysis(
+    tmp_path: Path,
+) -> tuple[MonitoringStore, ManualClock, RevisionRecord, str]:
+    """Write sweep history, then remove the digest tables so the file is a version 2 state."""
+    store, clock, claim = tracked_store(tmp_path)
+    initial = record_initial(store, claim, FIRST_COMMENT)
+    path, sha256 = write_artifact(
+        store,
+        f"watches/{WATCH_ID}/threads/{THREAD_ID}/analyses/{initial.revision_id}/a.json",
+        b"analysis",
+    )
+    store.record_analysis(claim, initial.revision_id, path, sha256)
+    store.complete_sweep(claim, "changes", {"refresh": {"pending": 0}})
+    with closing(sqlite3.connect(store.path)) as conn:
+        conn.execute("DROP TABLE watch_digest_entries")
+        conn.execute("DROP TABLE watch_digests")
+        conn.execute("PRAGMA user_version = 2")
+        conn.commit()
+    return store, clock, initial, claim.run_id
+
+
+def test_store_v2_state_read_only_access_returns_empty_digest_state_without_modification(
+    tmp_path: Path,
+) -> None:
+    store, _clock, _initial, _run_id = create_v2_state_with_analysis(tmp_path)
+    before = state_files(store)
+
+    inspected = store.inspect_watch(WATCH_ID)
+    status = store.digest_status(WATCH_ID)
+    unmaterialized = store.unmaterialized_revisions(WATCH_ID)
+
+    assert state_files(store) == before
+    assert schema_identity(store) == (STATE_APPLICATION_ID, 2)
+    assert inspected["digest"] == EMPTY_DIGEST_STATUS
+    assert status == EMPTY_DIGEST_STATUS
+    assert unmaterialized == []
+    assert inspected["sweep"]["revision_count"] == 1
+
+
+def test_store_v2_state_writable_call_upgrades_and_preserves_history(tmp_path: Path) -> None:
+    store, clock, initial, sweep_run_id = create_v2_state_with_analysis(tmp_path)
+    clock.now = 1_100.0
+
+    claim = store.claim_run(WATCH_ID, lease_seconds=600)
+    inspected = store.inspect_watch(WATCH_ID)
+    unmaterialized = store.unmaterialized_revisions(WATCH_ID)
+
+    assert schema_identity(store) == (STATE_APPLICATION_ID, STATE_SCHEMA_VERSION)
+    assert [revision["revision"] for revision in inspected["revisions"]] == [1]
+    assert {run["run_id"]: run["status"] for run in inspected["recent_runs"]} == {
+        sweep_run_id: "succeeded",
+        claim.run_id: "running",
+    }
+    assert inspected["sweep"]["revision_count"] == 1
+    assert inspected["sweep"]["latest_sweep"]["outcome"] == "changes"
+    assert inspected["digest"] == EMPTY_DIGEST_STATUS
+    assert [item.revision.revision_id for item in unmaterialized] == [initial.revision_id]
+    assert [change["comment_id"] for change in unmaterialized[0].novel_comments] == [
+        FIRST_COMMENT[0]
+    ]
+
+
+UNRECORDED_ENTRY = DigestEntryRecord(
+    entry_id="ent-" + "0" * 32,
+    source_thread_id=THREAD_ID,
+    revision_id="rev-unrecorded",
+    kind="thread_update",
+    theme_key=None,
+    payload={"kind": "thread_update", "entry_id": "ent-" + "0" * 32},
+)
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        lambda store, claim: store.materialize_digest_entries(claim, [UNRECORDED_ENTRY]),
+        lambda store, claim: store.begin_digest(claim, 10),
+        lambda store, claim: store.complete_digest(claim, "dig-" + "0" * 32, "0" * 64, "0" * 64),
+    ],
+    ids=["materialize_digest_entries", "begin_digest", "complete_digest"],
+)
+def test_digest_writes_stale_owner_after_recovery_are_refused(
+    tmp_path: Path, operation: Callable[[MonitoringStore, RunClaim], object]
+) -> None:
+    clock = ManualClock(1_000.0)
+    store = store_at(tmp_path, clock)
+    store.save_profile(parse_watch_profile(fixture_payload()))
+    stale = store.claim_run(WATCH_ID, lease_seconds=60)
+    clock.now = 1_061.0
+    current = store.claim_run(WATCH_ID, lease_seconds=60)
+
+    with pytest.raises(RunClaimError) as raised:
+        operation(store, stale)
+
+    assert raised.value.details["reason"] == "stale_owner"
+    assert raised.value.details["recovered_by_run_id"] == current.run_id
+    assert store.digest_status(WATCH_ID) == EMPTY_DIGEST_STATUS
+
+
+def test_begin_digest_claim_of_another_watch_is_refused(tmp_path: Path) -> None:
+    store = store_at(tmp_path)
+    store.save_profile(parse_watch_profile(fixture_payload()))
+    store.save_profile(parse_watch_profile(edited(id="other-watch")))
+    other = store.claim_run("other-watch", lease_seconds=60)
+    forged = dataclasses.replace(other, watch_id=WATCH_ID)
+
+    with pytest.raises(RunClaimError) as raised:
+        store.begin_digest(forged, 10)
+
+    assert raised.value.details["reason"] == "owner_mismatch"
+    assert query_state(store, "SELECT COUNT(*) FROM watch_digests") == [(0,)]

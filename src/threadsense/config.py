@@ -327,7 +327,10 @@ def _read_toml(path: Path | None) -> dict[str, Any]:
     return raw
 
 
-def _default_config_path(env: Mapping[str, str]) -> Path | None:
+def effective_config_path(config_path: Path | None, env: Mapping[str, str]) -> Path | None:
+    """Return the config file load_config reads: explicit path, THREADSENSE_CONFIG, or default."""
+    if config_path is not None:
+        return config_path
     env_path = env.get("THREADSENSE_CONFIG")
     if env_path:
         return Path(env_path)
@@ -375,7 +378,7 @@ def load_config(
     env: Mapping[str, str] | None = None,
 ) -> AppConfig:
     resolved_env = dict(os.environ if env is None else env)
-    raw = _read_toml(config_path if config_path is not None else _default_config_path(resolved_env))
+    raw = _read_toml(effective_config_path(config_path, resolved_env))
     config_dict = _build_config_dict(raw, resolved_env)
     try:
         return AppConfig.model_validate(config_dict)
