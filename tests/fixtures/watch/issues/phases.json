@@ -1,0 +1,266 @@
+{
+  "description": "Four consecutive watch sweeps of profile.toml against r/DevNotes and r/NoteApps. Each phase is one sweep; routes list every Reddit request that sweep is expected to make.",
+  "provenance": "Synthesized, representative Reddit JSON listing shapes with invented ids, authors, links and text. Not captured from live Reddit. Replay rules are documented in ../incremental/README.md.",
+  "phases": [
+    {
+      "name": "initial",
+      "notes": "Search finds A, B, D, E and F in r/DevNotes; r/NoteApps is empty. All five are baselined.",
+      "routes": [
+        {
+          "url": "https://www.reddit.com/r/DevNotes/search.json",
+          "params_match": {
+            "q": "export crash",
+            "restrict_sr": "on",
+            "sort": "new",
+            "t": "month"
+          },
+          "response": "responses/search_devnotes.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/NoteApps/search.json",
+          "params_match": {
+            "q": "export crash",
+            "restrict_sr": "on",
+            "sort": "new",
+            "t": "month"
+          },
+          "response": "responses/search_noteapps_empty.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/DevNotes/comments/ix1aaa/markdown_export_crashes_on_large_vaults.json",
+          "params_match": {},
+          "response": "responses/thread_a.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/DevNotes/comments/ix1bbb/exporter_fails_after_the_latest_update.json",
+          "params_match": {},
+          "response": "responses/thread_b.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/DevNotes/comments/ix1ddd/login_setup_loop_since_the_outage.json",
+          "params_match": {},
+          "response": "responses/thread_d.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/DevNotes/comments/ix1eee/invoices_doubled_in_the_billing_dashboard.json",
+          "params_match": {},
+          "response": "responses/thread_e.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/DevNotes/comments/ix1fff/plugin_crash_wipes_the_cache_folder.json",
+          "params_match": {},
+          "response": "responses/thread_f.json"
+        }
+      ],
+      "fresh_comment_ids": [],
+      "fresh_post_ids": [
+        "ix1aaa",
+        "ix1bbb",
+        "ix1ccc",
+        "ix1ddd",
+        "ix1eee",
+        "ix1fff"
+      ]
+    },
+    {
+      "name": "repost",
+      "notes": "r/NoteApps now lists C, whose only comment is a verbatim copy of A's first report. Other threads are unchanged.",
+      "routes": [
+        {
+          "url": "https://www.reddit.com/r/DevNotes/search.json",
+          "params_match": {
+            "q": "export crash",
+            "restrict_sr": "on",
+            "sort": "new",
+            "t": "month"
+          },
+          "response": "responses/search_devnotes.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/NoteApps/search.json",
+          "params_match": {
+            "q": "export crash",
+            "restrict_sr": "on",
+            "sort": "new",
+            "t": "month"
+          },
+          "response": "responses/search_noteapps_repost.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/DevNotes/comments/ix1aaa/markdown_export_crashes_on_large_vaults.json",
+          "params_match": {},
+          "response": "responses/thread_a.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/DevNotes/comments/ix1bbb/exporter_fails_after_the_latest_update.json",
+          "params_match": {},
+          "response": "responses/thread_b.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/DevNotes/comments/ix1ddd/login_setup_loop_since_the_outage.json",
+          "params_match": {},
+          "response": "responses/thread_d.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/DevNotes/comments/ix1eee/invoices_doubled_in_the_billing_dashboard.json",
+          "params_match": {},
+          "response": "responses/thread_e.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/DevNotes/comments/ix1fff/plugin_crash_wipes_the_cache_folder.json",
+          "params_match": {},
+          "response": "responses/thread_f.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/NoteApps/comments/ix1ccc/crosspost_markdown_export_crashes_on_large_vaults.json",
+          "params_match": {},
+          "response": "responses/thread_c.json"
+        }
+      ],
+      "fresh_comment_ids": [],
+      "fresh_post_ids": [
+        "ix1aaa",
+        "ix1bbb",
+        "ix1ccc",
+        "ix1ddd",
+        "ix1eee",
+        "ix1fff"
+      ]
+    },
+    {
+      "name": "updates",
+      "notes": "A gains a reproduction, a contradiction, a workaround and a resolution claim. Other threads are unchanged.",
+      "routes": [
+        {
+          "url": "https://www.reddit.com/r/DevNotes/search.json",
+          "params_match": {
+            "q": "export crash",
+            "restrict_sr": "on",
+            "sort": "new",
+            "t": "month"
+          },
+          "response": "responses/search_devnotes_updates.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/NoteApps/search.json",
+          "params_match": {
+            "q": "export crash",
+            "restrict_sr": "on",
+            "sort": "new",
+            "t": "month"
+          },
+          "response": "responses/search_noteapps_repost.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/DevNotes/comments/ix1aaa/markdown_export_crashes_on_large_vaults.json",
+          "params_match": {},
+          "response": "responses/thread_a_updates.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/DevNotes/comments/ix1bbb/exporter_fails_after_the_latest_update.json",
+          "params_match": {},
+          "response": "responses/thread_b.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/DevNotes/comments/ix1ddd/login_setup_loop_since_the_outage.json",
+          "params_match": {},
+          "response": "responses/thread_d.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/DevNotes/comments/ix1eee/invoices_doubled_in_the_billing_dashboard.json",
+          "params_match": {},
+          "response": "responses/thread_e.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/DevNotes/comments/ix1fff/plugin_crash_wipes_the_cache_folder.json",
+          "params_match": {},
+          "response": "responses/thread_f.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/NoteApps/comments/ix1ccc/crosspost_markdown_export_crashes_on_large_vaults.json",
+          "params_match": {},
+          "response": "responses/thread_c.json"
+        }
+      ],
+      "fresh_comment_ids": [
+        "ia3",
+        "ia4",
+        "ia5",
+        "ia6"
+      ],
+      "fresh_post_ids": [
+        "ix1aaa",
+        "ix1bbb",
+        "ix1ccc",
+        "ix1ddd",
+        "ix1eee",
+        "ix1fff"
+      ]
+    },
+    {
+      "name": "unchanged",
+      "notes": "Every thread is unchanged, so the sweep records no revision and no digest entry.",
+      "routes": [
+        {
+          "url": "https://www.reddit.com/r/DevNotes/search.json",
+          "params_match": {
+            "q": "export crash",
+            "restrict_sr": "on",
+            "sort": "new",
+            "t": "month"
+          },
+          "response": "responses/search_devnotes_updates.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/NoteApps/search.json",
+          "params_match": {
+            "q": "export crash",
+            "restrict_sr": "on",
+            "sort": "new",
+            "t": "month"
+          },
+          "response": "responses/search_noteapps_repost.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/DevNotes/comments/ix1aaa/markdown_export_crashes_on_large_vaults.json",
+          "params_match": {},
+          "response": "responses/thread_a_updates.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/DevNotes/comments/ix1bbb/exporter_fails_after_the_latest_update.json",
+          "params_match": {},
+          "response": "responses/thread_b.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/DevNotes/comments/ix1ddd/login_setup_loop_since_the_outage.json",
+          "params_match": {},
+          "response": "responses/thread_d.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/DevNotes/comments/ix1eee/invoices_doubled_in_the_billing_dashboard.json",
+          "params_match": {},
+          "response": "responses/thread_e.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/DevNotes/comments/ix1fff/plugin_crash_wipes_the_cache_folder.json",
+          "params_match": {},
+          "response": "responses/thread_f.json"
+        },
+        {
+          "url": "https://www.reddit.com/r/NoteApps/comments/ix1ccc/crosspost_markdown_export_crashes_on_large_vaults.json",
+          "params_match": {},
+          "response": "responses/thread_c.json"
+        }
+      ],
+      "fresh_comment_ids": [],
+      "fresh_post_ids": [
+        "ix1aaa",
+        "ix1bbb",
+        "ix1ccc",
+        "ix1ddd",
+        "ix1eee",
+        "ix1fff"
+      ]
+    }
+  ]
+}

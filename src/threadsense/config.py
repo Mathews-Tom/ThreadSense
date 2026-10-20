@@ -210,6 +210,43 @@ class CorpusConfig(BaseModel):
         return v
 
 
+ISSUE_CANDIDATE_WINDOW_DAYS_RANGE = (1, 365)
+ISSUE_MAX_CANDIDATE_COMPARISONS_RANGE = (1, 500)
+ISSUE_MAX_SUGGESTIONS_RANGE = (1, 50)
+
+
+class IssuesConfig(BaseModel):
+    """Bounds on cross-thread issue candidate comparisons for one newly tracked thread."""
+
+    model_config = ConfigDict(frozen=True)
+
+    candidate_window_days: int = 30
+    max_candidate_comparisons: int = 25
+    max_suggestions_per_thread: int = 3
+
+    @field_validator("candidate_window_days")
+    @classmethod
+    def validate_window(cls, v: int) -> int:
+        return _bounded(v, "candidate_window_days", ISSUE_CANDIDATE_WINDOW_DAYS_RANGE)
+
+    @field_validator("max_candidate_comparisons")
+    @classmethod
+    def validate_comparisons(cls, v: int) -> int:
+        return _bounded(v, "max_candidate_comparisons", ISSUE_MAX_CANDIDATE_COMPARISONS_RANGE)
+
+    @field_validator("max_suggestions_per_thread")
+    @classmethod
+    def validate_suggestions(cls, v: int) -> int:
+        return _bounded(v, "max_suggestions_per_thread", ISSUE_MAX_SUGGESTIONS_RANGE)
+
+
+def _bounded(value: int, field: str, bounds: tuple[int, int]) -> int:
+    low, high = bounds
+    if not low <= value <= high:
+        raise ValueError(f"{field} must be between {low} and {high}")
+    return value
+
+
 class AppConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -228,6 +265,7 @@ class AppConfig(BaseModel):
     limits: LimitsConfig = LimitsConfig()
     analysis: AnalysisConfig = AnalysisConfig()
     corpus: CorpusConfig = CorpusConfig()
+    issues: IssuesConfig = IssuesConfig()
 
 
 # Maps environment variable names to their (section, field) path in the config dict.
@@ -287,6 +325,9 @@ _ENV_MAP: dict[str, tuple[str, ...]] = {
     "THREADSENSE_ANALYSIS_DUPLICATE_THRESHOLD": ("analysis", "duplicate_threshold"),
     "THREADSENSE_CORPUS_TREND_PERIOD": ("corpus", "trend_period"),
     "THREADSENSE_CORPUS_EVIDENCE_LIMIT": ("corpus", "evidence_limit"),
+    "THREADSENSE_ISSUES_CANDIDATE_WINDOW_DAYS": ("issues", "candidate_window_days"),
+    "THREADSENSE_ISSUES_MAX_CANDIDATE_COMPARISONS": ("issues", "max_candidate_comparisons"),
+    "THREADSENSE_ISSUES_MAX_SUGGESTIONS_PER_THREAD": ("issues", "max_suggestions_per_thread"),
 }
 
 # Maps TOML section names to config model keys, with field renames where needed.
@@ -304,6 +345,7 @@ _TOML_SECTION_MAP: dict[str, str] = {
     "limits": "limits",
     "analysis": "analysis",
     "corpus": "corpus",
+    "issues": "issues",
 }
 
 _TOML_APP_FIELDS = ("inference_backend", "privacy_mode")

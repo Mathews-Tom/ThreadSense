@@ -1,0 +1,56 @@
+[
+  {
+    "kind": "Listing",
+    "data": {
+      "children": [
+        {
+          "kind": "t3",
+          "data": {
+            "id": "ix1bbb",
+            "title": "Exporter fails after the latest update",
+            "selftext": "Since updating, every export crash leaves my vault half written.",
+            "subreddit": "DevNotes",
+            "author": "lena_codes",
+            "permalink": "/r/DevNotes/comments/ix1bbb/exporter_fails_after_the_latest_update/",
+            "score": 31,
+            "num_comments": 2,
+            "created_utc": 1760003600.0
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "Listing",
+    "data": {
+      "children": [
+        {
+          "kind": "t1",
+          "data": {
+            "id": "ib1",
+            "author": "lena_codes",
+            "body": "Markdown export crash again after updating, my vault of four thousand notes stops at the attachments step with an error.",
+            "score": 4,
+            "created_utc": 1760003720.0,
+            "parent_id": "t3_ix1bbb",
+            "permalink": "/r/DevNotes/comments/ix1bbb/exporter_fails_after_the_latest_update/ib1/",
+            "replies": ""
+          }
+        },
+        {
+          "kind": "t1",
+          "data": {
+            "id": "ib2",
+            "author": "quill_ops",
+            "body": "Our team hits a markdown export crash on the shared vault too, the error mentions a missing attachment index.",
+            "score": 4,
+            "created_utc": 1760004000.0,
+            "parent_id": "t3_ix1bbb",
+            "permalink": "/r/DevNotes/comments/ix1bbb/exporter_fails_after_the_latest_update/ib2/",
+            "replies": ""
+          }
+        }
+      ]
+    }
+  }
+]

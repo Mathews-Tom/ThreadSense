@@ -37,6 +37,28 @@ from threadsense.monitoring.digest_records import (
     _validate_entry,
     digest_id_for,
 )
+from threadsense.monitoring.issue_lineage import (
+    _empty_issue_ingestion,
+    _pending_issue_entries,
+    _record_issue_evidence,
+    _validate_issue_batch,
+)
+from threadsense.monitoring.issue_records import (
+    _ISSUE_SCHEMA_VERSION,
+    ISSUE_SCHEMA_STATEMENTS,
+    IssueEntryInput,
+    IssueIngestion,
+    IssuePolicy,
+    PendingIssueEntry,
+)
+from threadsense.monitoring.issue_views import (
+    _change_issue_membership,
+    _inspect_issue,
+    _issue_request,
+    _list_issues,
+    _require_issue_ids,
+    _unknown_issue,
+)
 from threadsense.monitoring.profiles import (
     WATCH_PROFILE_VERSION,
     WatchProfile,
@@ -79,7 +101,7 @@ from threadsense.monitoring.sweep_records import (
     _validate_observed_at,
 )
 
-STATE_SCHEMA_VERSION = 3
+STATE_SCHEMA_VERSION = 4
 STATE_APPLICATION_ID = 0x54534D4E
 STATE_FILENAME = "state.sqlite3"
 BUSY_TIMEOUT_SECONDS = 5.0
@@ -272,6 +294,7 @@ _SCHEMA_STATEMENTS: dict[int, tuple[str, ...]] = {
     1: _SCHEMA_V1,
     2: _SCHEMA_V2,
     3: DIGEST_SCHEMA_STATEMENTS,
+    4: ISSUE_SCHEMA_STATEMENTS,
 }
 
 
@@ -1046,6 +1069,64 @@ class MonitoringStore:
             conn, version = handle
             return _digest_status(conn, version, watch_id, root)
 
+    def pending_issue_entries(self, watch_id: str) -> list[PendingIssueEntry]:
+        """Finding entries not yet in issue history, with their recorded artifacts."""
+        validate_watch_id(watch_id)
+        root = self.monitoring_root()
+        with self._connect_issue_readonly() as conn:
+            if conn is None:
+                return []
+            return _pending_issue_entries(conn, watch_id, root)
+
+    def record_issue_evidence(
+        self, claim: RunClaim, entries: Sequence[IssueEntryInput], policy: IssuePolicy
+    ) -> IssueIngestion:
+        """Record finding evidence as issue history in one fenced, append-only transaction."""
+        batch = _validate_issue_batch(entries, policy)
+        with self._connect_writable(create=False) as conn, _immediate(conn):
+            # Fence first: a stale owner is refused even when it has nothing to record.
+            now = self._fence_claim(conn, claim)
+            if not batch:
+                return _empty_issue_ingestion(claim.run_id)
+            return _record_issue_evidence(conn, claim, batch, policy=policy, now=now)
+
+    def link_issue_thread(
+        self, watch_id: str, issue_id: str, source_thread_id: str, reason: str
+    ) -> dict[str, Any]:
+        """Move a thread into an active issue with one operator membership event."""
+        request = _issue_request(watch_id, issue_id, source_thread_id, reason)
+        with self._connect_writable(create=False) as conn, _immediate(conn):
+            self._require_watch(conn, watch_id)
+            return _change_issue_membership(conn, request, "linked", self.now())
+
+    def unlink_issue_thread(
+        self, watch_id: str, issue_id: str, source_thread_id: str, reason: str
+    ) -> dict[str, Any]:
+        """Return a linked thread to its home issue with one operator membership event."""
+        request = _issue_request(watch_id, issue_id, source_thread_id, reason)
+        with self._connect_writable(create=False) as conn, _immediate(conn):
+            self._require_watch(conn, watch_id)
+            return _change_issue_membership(conn, request, "unlinked", self.now())
+
+    def inspect_issue(self, watch_id: str, issue_id: str) -> dict[str, Any]:
+        _require_issue_ids(watch_id, issue_id)
+        with self._connect_known_watch_readonly(watch_id) as (conn, version):
+            if version < _ISSUE_SCHEMA_VERSION:
+                raise _unknown_issue(watch_id, issue_id)
+            return _inspect_issue(conn, watch_id, issue_id)
+
+    def list_issues(self, watch_id: str) -> list[dict[str, Any]]:
+        validate_watch_id(watch_id)
+        with self._connect_known_watch_readonly(watch_id) as (conn, version):
+            if version < _ISSUE_SCHEMA_VERSION:
+                return []
+            return _list_issues(conn, watch_id)
+
+    @staticmethod
+    def _require_watch(conn: sqlite3.Connection, watch_id: str) -> None:
+        if conn.execute("SELECT 1 FROM watches WHERE watch_id = ?", (watch_id,)).fetchone() is None:
+            raise _unknown_watch(watch_id)
+
     def _verified_artifact(self, path: Path, sha256: str) -> str:
         """Verify an artifact inside the monitoring root; return its stored relative path."""
         root = self.monitoring_root().resolve()
@@ -1191,6 +1272,26 @@ class MonitoringStore:
         """Read digest tables; a missing state or a pre-digest schema reads as empty."""
         with self._connect_readonly() as handle:
             if handle is None or handle[1] < _DIGEST_SCHEMA_VERSION:
+                yield None
+                return
+            yield handle[0]
+
+    @contextmanager
+    def _connect_known_watch_readonly(
+        self, watch_id: str
+    ) -> Iterator[tuple[sqlite3.Connection, int]]:
+        """Read state for a watch that must exist; a missing state or watch is refused."""
+        with self._connect_readonly() as handle:
+            if handle is None:
+                raise _unknown_watch(watch_id)
+            self._require_watch(handle[0], watch_id)
+            yield handle
+
+    @contextmanager
+    def _connect_issue_readonly(self) -> Iterator[sqlite3.Connection | None]:
+        """Read issue tables; a missing state or a pre-issue schema reads as empty."""
+        with self._connect_readonly() as handle:
+            if handle is None or handle[1] < _ISSUE_SCHEMA_VERSION:
                 yield None
                 return
             yield handle[0]

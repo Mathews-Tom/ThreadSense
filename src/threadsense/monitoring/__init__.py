@@ -6,6 +6,18 @@ from threadsense.monitoring.digest_records import (
     MaterializationInput,
     PendingDigest,
 )
+from threadsense.monitoring.issue_records import (
+    IssueEntryInput,
+    IssueIngestion,
+    IssuePolicy,
+    IssueReportInput,
+    PendingIssueEntry,
+)
+from threadsense.monitoring.issues import (
+    build_issue_entry_input,
+    ingest_issue_evidence,
+    issue_policy,
+)
 from threadsense.monitoring.profiles import (
     WATCH_PROFILE_VERSION,
     WatchLimits,
@@ -42,9 +54,14 @@ __all__ = [
     "CommentChange",
     "DigestEntryRecord",
     "DigestResult",
+    "IssueEntryInput",
+    "IssueIngestion",
+    "IssuePolicy",
+    "IssueReportInput",
     "MaterializationInput",
     "MonitoringStore",
     "PendingDigest",
+    "PendingIssueEntry",
     "ProfileWriteResult",
     "RevisionRef",
     "RunClaim",
@@ -55,8 +72,11 @@ __all__ = [
     "TrackedThread",
     "WatchLimits",
     "WatchProfile",
+    "build_issue_entry_input",
     "build_schedule_spec",
     "cron_expression",
+    "ingest_issue_evidence",
+    "issue_policy",
     "load_watch_profile_file",
     "monitoring_state_path",
     "parse_watch_profile",

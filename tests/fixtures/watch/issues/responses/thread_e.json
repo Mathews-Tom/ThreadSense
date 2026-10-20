@@ -1,0 +1,56 @@
+[
+  {
+    "kind": "Listing",
+    "data": {
+      "children": [
+        {
+          "kind": "t3",
+          "data": {
+            "id": "ix1eee",
+            "title": "Invoices doubled in the billing dashboard",
+            "selftext": "Not an export crash: every invoice shows up twice since the outage.",
+            "subreddit": "DevNotes",
+            "author": "ravi_ops",
+            "permalink": "/r/DevNotes/comments/ix1eee/invoices_doubled_in_the_billing_dashboard/",
+            "score": 22,
+            "num_comments": 2,
+            "created_utc": 1760093600.0
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "Listing",
+    "data": {
+      "children": [
+        {
+          "kind": "t1",
+          "data": {
+            "id": "ie1",
+            "author": "ravi_ops",
+            "body": "After the outage at https://status.example.com/incidents/77 the billing dashboard doubled every invoice row in our batch pipeline.",
+            "score": 4,
+            "created_utc": 1760093700.0,
+            "parent_id": "t3_ix1eee",
+            "permalink": "/r/DevNotes/comments/ix1eee/invoices_doubled_in_the_billing_dashboard/ie1/",
+            "replies": ""
+          }
+        },
+        {
+          "kind": "t1",
+          "data": {
+            "id": "ie2",
+            "author": "tess_fin",
+            "body": "Our billing dashboard doubled invoice rows as well, the batch pipeline now needs manual cleanup every night.",
+            "score": 4,
+            "created_utc": 1760094100.0,
+            "parent_id": "t3_ix1eee",
+            "permalink": "/r/DevNotes/comments/ix1eee/invoices_doubled_in_the_billing_dashboard/ie2/",
+            "replies": ""
+          }
+        }
+      ]
+    }
+  }
+]
