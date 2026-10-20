@@ -601,12 +601,16 @@ def _digest_issue_view(
     """
     entry_refs: list[dict[str, Any]] = []
     issue_ids: list[str] = []
+    # Each thread's reports are read once per digest, however many of its entries it presents.
+    thread_reports: dict[str, list[dict[str, Any]]] = {}
     for entry in entries:
         entry_id = str(entry["entry_id"])
         source_thread_id, kind = _entry_identity(conn, watch_id, entry_id)
         issue_id = _current_issue(conn, watch_id, source_thread_id)
         if issue_id is None:
             continue
+        if source_thread_id not in thread_reports:
+            thread_reports[source_thread_id] = _member_reports(conn, watch_id, [source_thread_id])
         entry_refs.append(
             {
                 "entry_id": entry_id,
@@ -614,7 +618,7 @@ def _digest_issue_view(
                 "source_thread_id": source_thread_id,
                 "issue_id": issue_id,
                 "home_issue_id": issue_id_for(watch_id, source_thread_id),
-                "reports": _entry_reports(conn, watch_id, entry_id),
+                "reports": _entry_reports(entry_id, thread_reports[source_thread_id]),
                 "updates": _entry_updates(conn, watch_id, entry_id),
             }
         )
@@ -645,16 +649,19 @@ def _digest_issue(conn: sqlite3.Connection, watch_id: str, issue_id: str) -> dic
     return {**summary, "suggestions": suggestions}
 
 
-def _entry_reports(conn: sqlite3.Connection, watch_id: str, entry_id: str) -> list[dict[str, Any]]:
-    rows = conn.execute(
-        "SELECT ev.report_id, r.comment_id, r.lineage, r.copy_of_report_id, ev.text_sha256 "
-        "FROM watch_issue_evidence AS ev "
-        "JOIN watch_issue_reports AS r ON r.report_id = ev.report_id "
-        "WHERE ev.watch_id = ? AND ev.entry_id = ? "
-        "ORDER BY r.comment_id ASC, ev.report_id ASC",
-        (watch_id, entry_id),
-    ).fetchall()
-    return [dict(zip(_ENTRY_REPORT_KEYS, row, strict=True)) for row in rows]
+def _entry_reports(entry_id: str, thread_reports: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """This entry's evidence rows, with the lineage `_member_reports` gives each report."""
+    pairs = [
+        (report, evidence)
+        for report in thread_reports
+        for evidence in report["evidence"]
+        if evidence["entry_id"] == entry_id
+    ]
+    pairs.sort(key=lambda pair: (pair[0]["comment_id"], pair[0]["report_id"]))
+    return [
+        {key: evidence[key] if key == "text_sha256" else report[key] for key in _ENTRY_REPORT_KEYS}
+        for report, evidence in pairs
+    ]
 
 
 def _entry_updates(conn: sqlite3.Connection, watch_id: str, entry_id: str) -> list[dict[str, Any]]:

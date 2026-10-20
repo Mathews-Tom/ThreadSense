@@ -664,12 +664,14 @@ Output modes and the error payload are as for `watch`. A refusal is a `monitorin
 
 ### How evidence is recorded
 
-`watch run` and `watch digest` record issue evidence for every finding entry they materialize, after materialization and before the digest is created, using the `[issues]` settings below. A report is one source comment cited as finding evidence. Its lineage is fixed when first recorded:
+`watch run` and `watch digest` record issue evidence for every finding entry they materialize, after materialization and before the digest is created, using the `[issues]` settings below. A report is one source comment cited as finding evidence. Its recorded lineage is fixed when first recorded:
 
 - `exact_copy` when the whitespace-collapsed text has at least 40 characters and is identical to an earlier firsthand report from another comment, where the origin was posted no later than the copy
 - `firsthand` otherwise
 
 A new thread joins another issue automatically only when every report first recorded for it is an exact copy of a report in another thread; the thread then joins the issue of the earliest such origin (basis `exact_content_lineage`). Any firsthand report makes the thread its own issue (basis `thread_seed`). A partial copy never groups; it is a candidate signal (`exact_copies`) only. After assignment each new thread is compared with a bounded set of other threads whose first evidence falls inside the candidate window, and shared themes or key phrases become `unconfirmed` suggestions. A shared link without shared themes or phrases is recorded as `refused` with reason `shared_link_only`. Suggestions never change memberships or counts.
+
+Recorded lineage is an ingestion-time fact and is never edited. A later report can be ingested before its earlier original, so a repost may be recorded `firsthand`. When a later ingestion discovers that earlier original, it appends a correction event to its ingestion-ledger row (`watch_issue_ingestions.summary_json`), and the public ingestion summary reports the number as the integer `lineage_corrections` (`0` when none). Each event in `lineage_events` carries `watch_id`, `run_id`, `policy_sha256`, `report_id`, `origin_report_id`, `previous_origin_report_id`, `text_sha256`, `discovered_report_id` and `discovery_entry_id`. The latest event for a report sets its effective lineage (`exact_copy` of `origin_report_id`); counts and update cues use effective lineage. A correction never regroups threads: grouping stays an operator action, and suggestions stay `unconfirmed` until an operator runs `link`. Raw reports, evidence, earlier ledger rows and digests already recorded are never rewritten.
 
 Update cues are lexical: a firsthand report records an update of kind `reproduction`, `contradiction`, `workaround` or `resolution_claim` when its text contains one of the fixed cue phrases (word-boundary, case-insensitive). An exact copy records cues only for text its origin never had. Updates are unverified claims; a `resolution_claim` never resolves an issue.
 
@@ -726,6 +728,8 @@ With `--issue`, inspect one issue:
   "grouping_policy": {"sha256": "...", "...": "..."}
 }
 ```
+
+Each report's `lineage` and `copy_of_report_id` are the effective values: the recorded lineage overridden by the latest correction event. `recorded_lineage` and `recorded_copy_of_report_id` keep the ingestion-time facts, and `lineage_correction` is the latest correction event or `null`. `firsthand_reports` and `exact_copies` follow effective lineage, while `observed_*` counts do not change. An update cue of a corrected copy whose text equals the copied text is excluded from `update_counts`, and each inspected update gains `copied_from_report_id`. Digests recorded earlier keep their original lineage; a new digest captures effective lineage at presentation.
 
 `issue_status` is always `open`; ThreadSense has no resolved state. `observed_*` counts are observations over member threads (accounts are SHA-256 hashes of source and username; `reports_without_account` counts deleted or blank authors). Distinct accounts or communities are not proof of independent sources, so `independence.status` is always `not_verified`, and `exact_copies` are listed but never corroborate a firsthand report. An unknown issue, an issue of another watch or a state database older than schema version `4` is refused with reason `unknown_issue`.
 
