@@ -1,0 +1,88 @@
+{
+  "artifact_kind": "canonical_thread",
+  "schema_version": 2,
+  "normalization_version": "canonical-thread-v2",
+  "thread": {
+    "thread_id": "fixture:eng-unsupported-language",
+    "source": {
+      "source_name": "fixture",
+      "community": "engineering-cases",
+      "source_thread_id": "eng-unsupported-language",
+      "thread_url": "https://example.invalid/threads/eng-unsupported-language"
+    },
+    "title": "API timeout configuration questions",
+    "body": null,
+    "permalink": "https://example.invalid/threads/eng-unsupported-language",
+    "author": {
+      "username": "fixture-op",
+      "source_author_id": null
+    },
+    "comments": [
+      {
+        "thread_id": "fixture:eng-unsupported-language",
+        "comment_id": "fixture:ul-1",
+        "parent_comment_id": null,
+        "author": {
+          "username": "dani",
+          "source_author_id": null
+        },
+        "body": "La documentación de la API no explica cómo configurar el tiempo de espera.",
+        "score": 1,
+        "created_utc": 1760000001.0,
+        "depth": 0,
+        "permalink": "https://example.invalid/threads/eng-unsupported-language/ul-1"
+      },
+      {
+        "thread_id": "fixture:eng-unsupported-language",
+        "comment_id": "fixture:ul-2",
+        "parent_comment_id": null,
+        "author": {
+          "username": "egon",
+          "source_author_id": null
+        },
+        "body": "Die Erweiterung stürzt jedes Mal ab, wenn ich eine große Datei öffne.",
+        "score": 1,
+        "created_utc": 1760000002.0,
+        "depth": 0,
+        "permalink": "https://example.invalid/threads/eng-unsupported-language/ul-2"
+      },
+      {
+        "thread_id": "fixture:eng-unsupported-language",
+        "comment_id": "fixture:ul-3",
+        "parent_comment_id": null,
+        "author": {
+          "username": "fumi",
+          "source_author_id": null
+        },
+        "body": "検索がとても遅くて、大きなリポジトリでは使えません。",
+        "score": 1,
+        "created_utc": 1760000003.0,
+        "depth": 0,
+        "permalink": "https://example.invalid/threads/eng-unsupported-language/ul-3"
+      },
+      {
+        "thread_id": "fixture:eng-unsupported-language",
+        "comment_id": "fixture:ul-4",
+        "parent_comment_id": null,
+        "author": {
+          "username": "gwen",
+          "source_author_id": null
+        },
+        "body": "The API documentation does not explain how to configure the timeout either.",
+        "score": 1,
+        "created_utc": 1760000004.0,
+        "depth": 0,
+        "permalink": "https://example.invalid/threads/eng-unsupported-language/ul-4"
+      }
+    ],
+    "comment_count": 4,
+    "provenance": {
+      "raw_artifact_path": "engineering-authored/eng-unsupported-language",
+      "raw_sha256": "engineering-authored-no-raw-artifact",
+      "retrieved_at_utc": 1760000000.0,
+      "normalized_at_utc": 1760000000.0,
+      "schema_version": 2,
+      "normalization_version": "canonical-thread-v2"
+    }
+  }
+}

@@ -1,0 +1,102 @@
+{
+  "artifact_kind": "canonical_thread",
+  "schema_version": 2,
+  "normalization_version": "canonical-thread-v2",
+  "thread": {
+    "thread_id": "fixture:eng-option-relabeling",
+    "source": {
+      "source_name": "fixture",
+      "community": "engineering-cases",
+      "source_thread_id": "eng-option-relabeling",
+      "thread_url": "https://example.invalid/threads/eng-option-relabeling"
+    },
+    "title": "Triage thread: which bucket does this belong in?",
+    "body": null,
+    "permalink": "https://example.invalid/threads/eng-option-relabeling",
+    "author": {
+      "username": "fixture-op",
+      "source_author_id": null
+    },
+    "comments": [
+      {
+        "thread_id": "fixture:eng-option-relabeling",
+        "comment_id": "fixture:opt-1",
+        "parent_comment_id": null,
+        "author": {
+          "username": "pia",
+          "source_author_id": null
+        },
+        "body": "This is not a performance thing, the API reference documents the wrong flag name for the timeout.",
+        "score": 1,
+        "created_utc": 1760000001.0,
+        "depth": 0,
+        "permalink": "https://example.invalid/threads/eng-option-relabeling/opt-1"
+      },
+      {
+        "thread_id": "fixture:eng-option-relabeling",
+        "comment_id": "fixture:opt-2",
+        "parent_comment_id": null,
+        "author": {
+          "username": "quin",
+          "source_author_id": null
+        },
+        "body": "Not a question, a feature request: let the dashboard group runs by branch.",
+        "score": 1,
+        "created_utc": 1760000002.0,
+        "depth": 0,
+        "permalink": "https://example.invalid/threads/eng-option-relabeling/opt-2"
+      },
+      {
+        "thread_id": "fixture:eng-option-relabeling",
+        "comment_id": "fixture:opt-3",
+        "parent_comment_id": null,
+        "author": {
+          "username": "rosa",
+          "source_author_id": null
+        },
+        "body": "Calling this a bug is wrong; the crash only happens because the docs tell you to use an old config key.",
+        "score": 1,
+        "created_utc": 1760000003.0,
+        "depth": 0,
+        "permalink": "https://example.invalid/threads/eng-option-relabeling/opt-3"
+      },
+      {
+        "thread_id": "fixture:eng-option-relabeling",
+        "comment_id": "fixture:opt-4",
+        "parent_comment_id": null,
+        "author": {
+          "username": "sami",
+          "source_author_id": null
+        },
+        "body": "The word 'slow' appears in every complaint here, but my actual problem is that the plugin settings are impossible to find.",
+        "score": 1,
+        "created_utc": 1760000004.0,
+        "depth": 0,
+        "permalink": "https://example.invalid/threads/eng-option-relabeling/opt-4"
+      },
+      {
+        "thread_id": "fixture:eng-option-relabeling",
+        "comment_id": "fixture:opt-5",
+        "parent_comment_id": null,
+        "author": {
+          "username": "tess",
+          "source_author_id": null
+        },
+        "body": "Neither a problem report nor a change request, just saying thanks to the maintainers.",
+        "score": 1,
+        "created_utc": 1760000005.0,
+        "depth": 0,
+        "permalink": "https://example.invalid/threads/eng-option-relabeling/opt-5"
+      }
+    ],
+    "comment_count": 5,
+    "provenance": {
+      "raw_artifact_path": "engineering-authored/eng-option-relabeling",
+      "raw_sha256": "engineering-authored-no-raw-artifact",
+      "retrieved_at_utc": 1760000000.0,
+      "normalized_at_utc": 1760000000.0,
+      "schema_version": 2,
+      "normalization_version": "canonical-thread-v2"
+    }
+  }
+}

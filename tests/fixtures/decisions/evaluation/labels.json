@@ -1,0 +1,596 @@
+{
+  "artifact_kind": "typed_decision_evaluation_labels",
+  "schema_version": 1,
+  "origin": {
+    "kind": "engineering_authored",
+    "authored_by": "ThreadSense engineering fixture authored by an AI coding agent",
+    "method": "Expected answers were written from each case's stated intent before any model run, one question at a time, with a one-sentence rationale per label.",
+    "disclosure": "These labels are engineering boundary checks for negation, quoting, mixed intent, option relabeling, repetition, context budgets and language exclusion. They are not independent human adjudication, not representative of any population and not ground truth."
+  },
+  "labels": [
+    {
+      "thread_id": "fixture:eng-negation",
+      "comment_id": "fixture:neg-1",
+      "question_id": "request_intent",
+      "expected": "neither",
+      "case": "negation",
+      "rationale": "The documentation problem is explicitly negated and nothing is requested."
+    },
+    {
+      "thread_id": "fixture:eng-negation",
+      "comment_id": "fixture:neg-1",
+      "question_id": "theme",
+      "expected": "documentation",
+      "case": "negation",
+      "rationale": "The comment is about the docs and the quickstart even though it praises them."
+    },
+    {
+      "thread_id": "fixture:eng-negation",
+      "comment_id": "fixture:neg-1",
+      "question_id": "actionability",
+      "expected": 0,
+      "case": "negation",
+      "rationale": "Praise with a negated complaint gives a team nothing to act on."
+    },
+    {
+      "thread_id": "fixture:eng-negation",
+      "comment_id": "fixture:neg-2",
+      "question_id": "request_intent",
+      "expected": "neither",
+      "case": "negation",
+      "rationale": "Both feature requests are negated and the author reports no problem."
+    },
+    {
+      "thread_id": "fixture:eng-negation",
+      "comment_id": "fixture:neg-2",
+      "question_id": "evidence_type",
+      "expected": "opinion_or_preference",
+      "case": "negation",
+      "rationale": "The author states a preference about the feature set without a concrete report."
+    },
+    {
+      "thread_id": "fixture:eng-negation",
+      "comment_id": "fixture:neg-3",
+      "question_id": "request_intent",
+      "expected": "problem_report",
+      "case": "negation",
+      "rationale": "Despite the word not, the comment describes search failing to find defined functions."
+    },
+    {
+      "thread_id": "fixture:eng-negation",
+      "comment_id": "fixture:neg-3",
+      "question_id": "evidence_type",
+      "expected": "firsthand_experience",
+      "case": "negation",
+      "rationale": "The author describes behavior they observed in their own open file."
+    },
+    {
+      "thread_id": "fixture:eng-negation",
+      "comment_id": "fixture:neg-3",
+      "question_id": "objective_relevance",
+      "expected": 2,
+      "case": "negation",
+      "rationale": "A concrete search failure is direct friction evidence."
+    },
+    {
+      "thread_id": "fixture:eng-negation",
+      "comment_id": "fixture:neg-3",
+      "question_id": "actionability",
+      "expected": 2,
+      "case": "negation",
+      "rationale": "The failing input and condition are specific enough to reproduce."
+    },
+    {
+      "thread_id": "fixture:eng-negation",
+      "comment_id": "fixture:neg-4",
+      "question_id": "request_intent",
+      "expected": "neither",
+      "case": "negation",
+      "rationale": "Crash and slowness are both negated, so no problem is reported."
+    },
+    {
+      "thread_id": "fixture:eng-negation",
+      "comment_id": "fixture:neg-4",
+      "question_id": "promotional_framing",
+      "expected": false,
+      "case": "negation",
+      "rationale": "The comment reports stability and promotes nothing."
+    },
+    {
+      "thread_id": "fixture:eng-negation",
+      "comment_id": "fixture:neg-5",
+      "question_id": "request_intent",
+      "expected": "change_request",
+      "case": "negation",
+      "rationale": "The negated rewrite request is followed by a real request for a quiet flag."
+    },
+    {
+      "thread_id": "fixture:eng-negation",
+      "comment_id": "fixture:neg-5",
+      "question_id": "actionability",
+      "expected": 2,
+      "case": "negation",
+      "rationale": "A named command-line flag is a concrete change a team could make."
+    },
+    {
+      "thread_id": "fixture:eng-quoted-claims",
+      "comment_id": "fixture:qc-1",
+      "question_id": "request_intent",
+      "expected": "neither",
+      "case": "quoted_claim",
+      "rationale": "The quoted crash claim is disputed, so the author reports no problem."
+    },
+    {
+      "thread_id": "fixture:eng-quoted-claims",
+      "comment_id": "fixture:qc-1",
+      "question_id": "evidence_type",
+      "expected": "firsthand_experience",
+      "case": "quoted_claim",
+      "rationale": "The author answers the quoted claim with their own two years of use."
+    },
+    {
+      "thread_id": "fixture:eng-quoted-claims",
+      "comment_id": "fixture:qc-2",
+      "question_id": "evidence_type",
+      "expected": "secondhand_report",
+      "case": "quoted_claim",
+      "rationale": "The memory leak is relayed from a teammate and explicitly unverified."
+    },
+    {
+      "thread_id": "fixture:eng-quoted-claims",
+      "comment_id": "fixture:qc-2",
+      "question_id": "theme",
+      "expected": "performance",
+      "case": "quoted_claim",
+      "rationale": "A memory leak over time is a performance concern in this vocabulary."
+    },
+    {
+      "thread_id": "fixture:eng-quoted-claims",
+      "comment_id": "fixture:qc-3",
+      "question_id": "evidence_type",
+      "expected": "firsthand_experience",
+      "case": "quoted_claim",
+      "rationale": "The author contrasts the quoted changelog claim with their own sync timing."
+    },
+    {
+      "thread_id": "fixture:eng-quoted-claims",
+      "comment_id": "fixture:qc-3",
+      "question_id": "request_intent",
+      "expected": "problem_report",
+      "case": "quoted_claim",
+      "rationale": "Sync remaining slow contrary to the changelog is a reported problem."
+    },
+    {
+      "thread_id": "fixture:eng-quoted-claims",
+      "comment_id": "fixture:qc-3",
+      "question_id": "theme",
+      "expected": "performance",
+      "case": "quoted_claim",
+      "rationale": "The comment is about sync speed."
+    },
+    {
+      "thread_id": "fixture:eng-quoted-claims",
+      "comment_id": "fixture:qc-4",
+      "question_id": "evidence_type",
+      "expected": "question",
+      "case": "quoted_claim",
+      "rationale": "The author relays a forum tip only to ask whether it is safe."
+    },
+    {
+      "thread_id": "fixture:eng-quoted-claims",
+      "comment_id": "fixture:qc-5",
+      "question_id": "request_intent",
+      "expected": "problem_report",
+      "case": "quoted_claim",
+      "rationale": "The quoted README promise is reported as untrue for current versions."
+    },
+    {
+      "thread_id": "fixture:eng-quoted-claims",
+      "comment_id": "fixture:qc-5",
+      "question_id": "theme",
+      "expected": "documentation",
+      "case": "quoted_claim",
+      "rationale": "The problem is an outdated statement in the README."
+    },
+    {
+      "thread_id": "fixture:eng-mixed-intents",
+      "comment_id": "fixture:mix-1",
+      "question_id": "request_intent",
+      "expected": "problem_and_request",
+      "case": "mixed_intent",
+      "rationale": "The comment reports failing exports and asks for a higher limit or streaming."
+    },
+    {
+      "thread_id": "fixture:eng-mixed-intents",
+      "comment_id": "fixture:mix-1",
+      "question_id": "objective_relevance",
+      "expected": 2,
+      "case": "mixed_intent",
+      "rationale": "A reproducible export failure is direct friction evidence."
+    },
+    {
+      "thread_id": "fixture:eng-mixed-intents",
+      "comment_id": "fixture:mix-1",
+      "question_id": "actionability",
+      "expected": 2,
+      "case": "mixed_intent",
+      "rationale": "The size threshold and two concrete remedies make it actionable."
+    },
+    {
+      "thread_id": "fixture:eng-mixed-intents",
+      "comment_id": "fixture:mix-2",
+      "question_id": "request_intent",
+      "expected": "problem_report",
+      "case": "mixed_intent",
+      "rationale": "The question form carries a complaint about required admin rights without asking for a specific change."
+    },
+    {
+      "thread_id": "fixture:eng-mixed-intents",
+      "comment_id": "fixture:mix-3",
+      "question_id": "request_intent",
+      "expected": "change_request",
+      "case": "mixed_intent",
+      "rationale": "Praise is followed by a request for keyboard shortcuts and no problem."
+    },
+    {
+      "thread_id": "fixture:eng-mixed-intents",
+      "comment_id": "fixture:mix-4",
+      "question_id": "promotional_framing",
+      "expected": true,
+      "case": "mixed_intent",
+      "rationale": "The comment advertises the author's paid course and profile link."
+    },
+    {
+      "thread_id": "fixture:eng-mixed-intents",
+      "comment_id": "fixture:mix-5",
+      "question_id": "request_intent",
+      "expected": "problem_and_request",
+      "case": "mixed_intent",
+      "rationale": "Losing changes on a confusing page is a problem and autosave is a requested change."
+    },
+    {
+      "thread_id": "fixture:eng-mixed-intents",
+      "comment_id": "fixture:mix-5",
+      "question_id": "theme",
+      "expected": "usability",
+      "case": "mixed_intent",
+      "rationale": "The friction is a confusing settings page that loses user input."
+    },
+    {
+      "thread_id": "fixture:eng-option-relabeling",
+      "comment_id": "fixture:opt-1",
+      "question_id": "theme",
+      "expected": "documentation",
+      "case": "option_relabeling",
+      "rationale": "The performance keyword is negated and the defect is a wrong flag name in the API reference."
+    },
+    {
+      "thread_id": "fixture:eng-option-relabeling",
+      "comment_id": "fixture:opt-2",
+      "question_id": "request_intent",
+      "expected": "change_request",
+      "case": "option_relabeling",
+      "rationale": "Naming the question option is a label, while the text asks for dashboard grouping."
+    },
+    {
+      "thread_id": "fixture:eng-option-relabeling",
+      "comment_id": "fixture:opt-2",
+      "question_id": "theme",
+      "expected": "workflow",
+      "case": "option_relabeling",
+      "rationale": "Grouping dashboard runs by branch is a workflow feature."
+    },
+    {
+      "thread_id": "fixture:eng-option-relabeling",
+      "comment_id": "fixture:opt-3",
+      "question_id": "theme",
+      "expected": "documentation",
+      "case": "option_relabeling",
+      "rationale": "The crash keyword appears, but the author attributes the cause to docs naming an old key."
+    },
+    {
+      "thread_id": "fixture:eng-option-relabeling",
+      "comment_id": "fixture:opt-3",
+      "question_id": "request_intent",
+      "expected": "problem_report",
+      "case": "option_relabeling",
+      "rationale": "Outdated docs that lead to a crash are a reported problem."
+    },
+    {
+      "thread_id": "fixture:eng-option-relabeling",
+      "comment_id": "fixture:opt-4",
+      "question_id": "theme",
+      "expected": "usability",
+      "case": "option_relabeling",
+      "rationale": "The quoted performance keyword is dismissed in favor of hard-to-find settings."
+    },
+    {
+      "thread_id": "fixture:eng-option-relabeling",
+      "comment_id": "fixture:opt-5",
+      "question_id": "request_intent",
+      "expected": "neither",
+      "case": "option_relabeling",
+      "rationale": "The comment literally names both intents only to say it is neither."
+    },
+    {
+      "thread_id": "fixture:eng-option-relabeling",
+      "comment_id": "fixture:opt-5",
+      "question_id": "objective_relevance",
+      "expected": 0,
+      "case": "option_relabeling",
+      "rationale": "A thank-you note carries no friction evidence."
+    },
+    {
+      "thread_id": "fixture:eng-option-relabeling",
+      "comment_id": "fixture:opt-5",
+      "question_id": "actionability",
+      "expected": 0,
+      "case": "option_relabeling",
+      "rationale": "Thanks to maintainers is nothing a team could act on."
+    },
+    {
+      "thread_id": "fixture:eng-repetition",
+      "comment_id": "fixture:rep-1",
+      "question_id": "theme",
+      "expected": "reliability",
+      "case": "repetition",
+      "rationale": "The extension crashing on large files is a reliability defect."
+    },
+    {
+      "thread_id": "fixture:eng-repetition",
+      "comment_id": "fixture:rep-1",
+      "question_id": "request_intent",
+      "expected": "problem_report",
+      "case": "repetition",
+      "rationale": "The comment reports a crash and asks for nothing."
+    },
+    {
+      "thread_id": "fixture:eng-repetition",
+      "comment_id": "fixture:rep-2",
+      "question_id": "theme",
+      "expected": "reliability",
+      "case": "repetition",
+      "rationale": "An exact copy of rep-1 must receive the same theme."
+    },
+    {
+      "thread_id": "fixture:eng-repetition",
+      "comment_id": "fixture:rep-2",
+      "question_id": "request_intent",
+      "expected": "problem_report",
+      "case": "repetition",
+      "rationale": "An exact copy of rep-1 must receive the same intent."
+    },
+    {
+      "thread_id": "fixture:eng-repetition",
+      "comment_id": "fixture:rep-3",
+      "question_id": "theme",
+      "expected": "reliability",
+      "case": "repetition",
+      "rationale": "A casing variant of rep-1 must receive the same theme."
+    },
+    {
+      "thread_id": "fixture:eng-repetition",
+      "comment_id": "fixture:rep-4",
+      "question_id": "theme",
+      "expected": "reliability",
+      "case": "repetition",
+      "rationale": "A whitespace variant of rep-1 must receive the same theme."
+    },
+    {
+      "thread_id": "fixture:eng-repetition",
+      "comment_id": "fixture:rep-5",
+      "question_id": "theme",
+      "expected": "reliability",
+      "case": "repetition",
+      "rationale": "The page falling over when expanding comments is the same crash as reddit:c5 in other words."
+    },
+    {
+      "thread_id": "fixture:eng-repetition",
+      "comment_id": "fixture:rep-5",
+      "question_id": "request_intent",
+      "expected": "problem_report",
+      "case": "repetition",
+      "rationale": "The comment reports a crash and asks for nothing."
+    },
+    {
+      "thread_id": "fixture:eng-long-context",
+      "comment_id": "fixture:lc-1",
+      "question_id": "request_intent",
+      "expected": "problem_and_request",
+      "case": "long_context_boundary",
+      "rationale": "The parent reports slow builds and asks for graph caching or phase timing output."
+    },
+    {
+      "thread_id": "fixture:eng-long-context",
+      "comment_id": "fixture:lc-1",
+      "question_id": "theme",
+      "expected": "performance",
+      "case": "long_context_boundary",
+      "rationale": "The comment is about build duration measured across versions."
+    },
+    {
+      "thread_id": "fixture:eng-long-context",
+      "comment_id": "fixture:lc-2",
+      "question_id": "evidence_type",
+      "expected": "firsthand_experience",
+      "case": "long_context_boundary",
+      "rationale": "The reply confirms the slow graph walk from the author's own builds, which needs the parent for context."
+    },
+    {
+      "thread_id": "fixture:eng-long-context",
+      "comment_id": "fixture:lc-2",
+      "question_id": "theme",
+      "expected": "performance",
+      "case": "long_context_boundary",
+      "rationale": "The reply only makes sense as agreement with the parent's performance report."
+    },
+    {
+      "thread_id": "fixture:eng-long-context",
+      "comment_id": "fixture:lc-3",
+      "question_id": "theme",
+      "expected": "performance",
+      "case": "long_context_boundary",
+      "rationale": "A 2000-character timing report about slow builds sits exactly at the comment budget."
+    },
+    {
+      "thread_id": "fixture:eng-long-context",
+      "comment_id": "fixture:lc-3",
+      "question_id": "request_intent",
+      "expected": "problem_report",
+      "case": "long_context_boundary",
+      "rationale": "The report documents a regression without asking for a specific change."
+    },
+    {
+      "thread_id": "fixture:eng-long-context",
+      "comment_id": "fixture:lc-4",
+      "question_id": "theme",
+      "expected": "performance",
+      "case": "long_context_boundary",
+      "rationale": "A 2001-character timing report must be refused by the client budget, so this label is expected to stay uncovered."
+    },
+    {
+      "thread_id": "fixture:eng-unsupported-language",
+      "comment_id": "fixture:ul-1",
+      "question_id": "theme",
+      "expected": "documentation",
+      "case": "unsupported_language",
+      "rationale": "The Spanish comment says the API documentation omits timeout configuration; it must be excluded, not scored."
+    },
+    {
+      "thread_id": "fixture:eng-unsupported-language",
+      "comment_id": "fixture:ul-2",
+      "question_id": "theme",
+      "expected": "reliability",
+      "case": "unsupported_language",
+      "rationale": "The German comment reports the extension crashing on large files; it must be excluded, not scored."
+    },
+    {
+      "thread_id": "fixture:eng-unsupported-language",
+      "comment_id": "fixture:ul-3",
+      "question_id": "theme",
+      "expected": "performance",
+      "case": "unsupported_language",
+      "rationale": "The Japanese comment says search is too slow on large repositories; it must be excluded, not scored."
+    },
+    {
+      "thread_id": "fixture:eng-unsupported-language",
+      "comment_id": "fixture:ul-4",
+      "question_id": "theme",
+      "expected": "documentation",
+      "case": "baseline",
+      "rationale": "The English control comment reports missing timeout documentation."
+    },
+    {
+      "thread_id": "fixture:eng-unsupported-language",
+      "comment_id": "fixture:ul-4",
+      "question_id": "request_intent",
+      "expected": "problem_report",
+      "case": "baseline",
+      "rationale": "Missing documentation is reported without a requested change."
+    },
+    {
+      "thread_id": "reddit:analysis123",
+      "comment_id": "reddit:c1",
+      "question_id": "theme",
+      "expected": "documentation",
+      "case": "baseline",
+      "rationale": "The comment is about confusing onboarding docs and a missing quickstart."
+    },
+    {
+      "thread_id": "reddit:analysis123",
+      "comment_id": "reddit:c1",
+      "question_id": "request_intent",
+      "expected": "problem_and_request",
+      "case": "baseline",
+      "rationale": "It reports incomplete docs and asks for a quickstart."
+    },
+    {
+      "thread_id": "reddit:analysis123",
+      "comment_id": "reddit:c1",
+      "question_id": "promotional_framing",
+      "expected": false,
+      "case": "baseline",
+      "rationale": "The comment promotes nothing."
+    },
+    {
+      "thread_id": "reddit:analysis123",
+      "comment_id": "reddit:c2",
+      "question_id": "theme",
+      "expected": "documentation",
+      "case": "baseline",
+      "rationale": "An exact copy of c1 is about the same onboarding docs."
+    },
+    {
+      "thread_id": "reddit:analysis123",
+      "comment_id": "reddit:c3",
+      "question_id": "theme",
+      "expected": "performance",
+      "case": "baseline",
+      "rationale": "Slow search and lag on large threads are performance complaints."
+    },
+    {
+      "thread_id": "reddit:analysis123",
+      "comment_id": "reddit:c3",
+      "question_id": "request_intent",
+      "expected": "problem_report",
+      "case": "baseline",
+      "rationale": "It describes slowness without asking for a change."
+    },
+    {
+      "thread_id": "reddit:analysis123",
+      "comment_id": "reddit:c5",
+      "question_id": "theme",
+      "expected": "reliability",
+      "case": "baseline",
+      "rationale": "A crash when expanding comments is a reliability defect."
+    },
+    {
+      "thread_id": "reddit:analysis123",
+      "comment_id": "reddit:c5",
+      "question_id": "evidence_type",
+      "expected": "firsthand_experience",
+      "case": "baseline",
+      "rationale": "The author says they hit the crash themselves."
+    },
+    {
+      "thread_id": "reddit:analysis123",
+      "comment_id": "reddit:c5",
+      "question_id": "request_intent",
+      "expected": "problem_report",
+      "case": "baseline",
+      "rationale": "It reports a crash and asks for nothing."
+    },
+    {
+      "thread_id": "reddit:analysis123",
+      "comment_id": "reddit:c6",
+      "question_id": "theme",
+      "expected": "workflow",
+      "case": "baseline",
+      "rationale": "Export to markdown and json is a workflow capability."
+    },
+    {
+      "thread_id": "reddit:analysis123",
+      "comment_id": "reddit:c6",
+      "question_id": "request_intent",
+      "expected": "change_request",
+      "case": "baseline",
+      "rationale": "The comment asks for a new export feature."
+    },
+    {
+      "thread_id": "reddit:analysis123",
+      "comment_id": "reddit:c7",
+      "question_id": "theme",
+      "expected": "workflow",
+      "case": "baseline",
+      "rationale": "A themes dashboard is a workflow capability in this vocabulary."
+    },
+    {
+      "thread_id": "reddit:analysis123",
+      "comment_id": "reddit:c7",
+      "question_id": "request_intent",
+      "expected": "change_request",
+      "case": "baseline",
+      "rationale": "Saying a dashboard would help asks for new behavior."
+    }
+  ]
+}
