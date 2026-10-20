@@ -57,7 +57,8 @@ FIXTURE_PROVENANCE = (
 )
 SCENARIO_SCOPE = (
     "real local checkpoint through the shipped CLI; source data is a committed fixture, "
-    "no live source; evaluation and policy checks run offline"
+    "no live source; evaluation conditionally acquires a configured local comparator capture, "
+    "then replays frozen evidence and checks policy offline"
 )
 LABEL_ORIGIN_DISCLOSURE = (
     "engineering-authored labels: not independent adjudication, not representative of any "
@@ -68,8 +69,9 @@ LABEL_RESOURCE = (
     "not quality, not peak, not comparative"
 )
 GENERATIVE_NOTE = (
-    "availability observed through the configured loopback model listing only; no generative "
-    "comparison was performed and no accuracy is attributed to the generative comparator"
+    "first acquisition observes the configured runtime and conditionally performs comparison; "
+    "replay uses its frozen capture, or disables acquisition for typed/heuristic-only evidence; "
+    "engineering labels do not establish population accuracy"
 )
 REAL_OUTCOME_NOTE = (
     "not_eligible is the supported real outcome: the engineering labels are not independent "
@@ -405,7 +407,7 @@ def write_json_file(path: Path, payload: dict[str, Any]) -> Path:
 
 
 class EvaluationScenario(AnnotationsScenario):
-    """Real annotations, offline evaluation and the activation policy checker, end to end."""
+    """Real annotations, conditional comparator acquisition, frozen replay and policy checks."""
 
     def __init__(self, work_dir: Path, endpoint: str) -> None:
         super().__init__(work_dir, endpoint)
@@ -442,6 +444,7 @@ class EvaluationScenario(AnnotationsScenario):
         self.engineering_path = Path()
         self.engineering_payload: dict[str, Any] = {}
         self.engineering_document: dict[str, Any] = {}
+        self.engineering_capture_path: Path | None = None
         self.constructed_manifest = Path()
         self.constructed_path = Path()
         self.constructed_document: dict[str, Any] = {}
@@ -491,11 +494,18 @@ class EvaluationScenario(AnnotationsScenario):
         )
 
     def evaluate(
-        self, manifest: Path, annotations: list[Path], *, configured_runtime: bool = False
+        self,
+        manifest: Path,
+        annotations: list[Path],
+        *,
+        configured_runtime: bool = False,
+        capture_path: Path | None = None,
     ) -> tuple[int, dict[str, Any]]:
         args = ["decisions", "evaluate", "--manifest", str(manifest)]
         for annotation in annotations:
             args += ["--annotation", str(annotation)]
+        if capture_path is not None:
+            args += ["--generative-capture", str(capture_path)]
         if configured_runtime:
             args += ["--config", str(self.repo_root / "threadsense.toml")]
             return self.cli_with_configured_runtime(*args)
@@ -953,13 +963,39 @@ class EvaluationScenario(AnnotationsScenario):
         )
         check(summary["excluded"] == self.declared_excluded, f"excluded {summary['excluded']}")
         generative = run["generative_comparator"]
+        cli_generative = payload["generative_comparator"]
         check(
-            payload["generative_comparator"]
-            == {"status": generative["status"], "reason": generative["reason"]},
+            all(
+                cli_generative.get(key) == generative.get(key)
+                for key in ("status", "reason", "capture_sha256")
+            ),
             "payload and run record disagree on generative availability",
         )
+        cli_capture = cli_generative.get("capture_path")
+        run_capture = generative.get("capture_path")
+        # Run paths are relative to the evaluation output namespace, not the work directory.
+        capture_path = self.published_path(cli_capture).resolve() if cli_capture else None
+        run_capture_path = None
+        if run_capture:
+            run_capture_path = Path(run_capture)
+            if not run_capture_path.is_absolute():
+                run_capture_path = path.parents[2] / run_capture_path
+            run_capture_path = run_capture_path.resolve()
+        check(capture_path == run_capture_path, "payload and run record disagree on capture path")
+        check(
+            (capture_path is not None) == (generative.get("capture_sha256") is not None),
+            "capture path and digest presence disagree",
+        )
+        if capture_path is not None:
+            check(capture_path.is_file(), "generative capture is missing")
+            check(
+                file_sha256(capture_path) == generative["capture_sha256"],
+                "generative capture digest mismatch",
+            )
         comparison = document["comparators"]["generative"]
-        check(comparison["comparison"] == "not_performed", f"generative {comparison}")
+        expected_comparison = "performed" if capture_path is not None else "not_performed"
+        check(comparison["comparison"] == expected_comparison, f"generative {comparison}")
+        self.engineering_capture_path = capture_path
         self.engineering_path, self.engineering_document = path, document
         self.engineering_payload = payload
         self.observations["generative_comparator_availability"] = generative
@@ -986,7 +1022,13 @@ class EvaluationScenario(AnnotationsScenario):
     def evaluation_replay(self) -> None:
         first = self.engineering_payload
         annotations = list(self.annotations.values())
-        code, payload = self.evaluate(self.staged_manifest, annotations, configured_runtime=True)
+        capture = self.engineering_capture_path
+        code, payload = self.evaluate(
+            self.staged_manifest,
+            annotations,
+            configured_runtime=capture is not None,
+            capture_path=capture,
+        )
         check(code == 0, f"evaluation replay exited {code}: {payload}")
         check(payload["evaluation_sha256"] == first["evaluation_sha256"], "replay sha256")
         check(payload["evaluation_path"] == first["evaluation_path"], "replay path")
@@ -996,6 +1038,14 @@ class EvaluationScenario(AnnotationsScenario):
             evaluation_sha256=payload["evaluation_sha256"],
             first_run_id=first["run_id"],
             second_run_id=payload["run_id"],
+            replay_mode="frozen_capture" if capture is not None else "typed_heuristic_only",
+            acquisition="none",
+            replay_reason=(
+                "same runtime configuration and frozen capture; no listing or inference"
+                if capture is not None
+                else "first acquisition produced no capture; runtime disabled for deterministic "
+                "typed/heuristic-only replay, not a fresh acquisition"
+            ),
         )
 
     def evaluation_refusal(self, code: int, payload: dict[str, Any], reason: str) -> dict[str, Any]:

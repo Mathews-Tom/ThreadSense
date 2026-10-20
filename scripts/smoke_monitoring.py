@@ -25,9 +25,12 @@ this scenario and refused for the others. It uses a committed fixture, not a liv
 
 The evaluation scenario (scripts/smoke_evaluation.py) annotates the committed engineering
 evaluation fixture against the same kind of --endpoint (also required), then runs `threadsense
-decisions evaluate` and `threadsense decisions policy check` offline. The real result is
-`not_eligible`; a disclosed constructed test-only fixture exercises the eligible path, which can
-never permit activation. It never starts, stops or configures a service.
+decisions evaluate` with the source runtime configuration, conditionally acquiring a local
+generative capture. Its second evaluation replays that capture without listing or inference,
+or disables acquisition for typed/heuristic-only replay if no capture was produced. Policy
+checks run offline. The real result is `not_eligible`; a disclosed constructed test-only fixture
+exercises the eligible path, which can never permit activation. It never starts, stops or
+configures a service.
 """
 
 from __future__ import annotations

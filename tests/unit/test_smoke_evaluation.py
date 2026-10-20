@@ -391,3 +391,161 @@ def test_main_evaluation_failure_writes_redacted_failed_evidence_with_observatio
     output = capsys.readouterr().out
     assert "scenario=evaluation status=failed" in output
     assert private_path not in output
+
+
+@pytest.mark.parametrize("capture_mode", ["capture", "no_capture", "legacy"])
+def test_real_evaluation_replays_only_frozen_evidence(
+    smoke_modules: dict[str, ModuleType],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capture_mode: str,
+) -> None:
+    scenario, payload, run, document, path = evaluation_consumer(
+        smoke_modules["smoke_evaluation"], tmp_path, monkeypatch, capture_mode
+    )
+    calls: list[tuple[str, ...]] = []
+
+    def configured(*args: str) -> tuple[int, dict[str, Any]]:
+        calls.append(args)
+        if len(calls) == 1:
+            assert "--generative-capture" not in args
+            return 0, payload
+        # An available runtime must never become a fresh acquisition on replay.
+        assert capture_mode == "capture"
+        assert args[args.index("--generative-capture") + 1] == str(
+            scenario.engineering_capture_path
+        )
+        return 0, {**payload, "run_id": "second"}
+
+    def disabled(*args: str) -> tuple[int, dict[str, Any]]:
+        calls.append(args)
+        assert capture_mode != "capture"
+        assert "--generative-capture" not in args
+        return 0, {**payload, "run_id": "second"}
+
+    monkeypatch.setattr(scenario, "cli_with_configured_runtime", configured)
+    monkeypatch.setattr(scenario, "cli", disabled)
+    scenario.real_evaluation()
+    assert (
+        scenario.observations["generative_comparator_availability"] == run["generative_comparator"]
+    )
+    assert scenario.engineering_document is document
+    assert scenario.engineering_path == path
+    scenario.evaluation_replay()
+    assert len(calls) == 2
+    replay = scenario.evidence[-1]["observed"]
+    assert replay["acquisition"] == "none"
+    assert replay["replay_mode"] == (
+        "frozen_capture" if capture_mode == "capture" else "typed_heuristic_only"
+    )
+    assert replay["first_run_id"] != replay["second_run_id"]
+
+
+def evaluation_consumer(
+    evaluation: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capture_mode: str,
+) -> tuple[Any, dict[str, Any], dict[str, Any], dict[str, Any], Path]:
+    """Keep the smoke consumer real; replace only CLI and unrelated audit reconciliation."""
+    scenario = evaluation.EvaluationScenario(tmp_path, "http://127.0.0.1:8123")
+    root = tmp_path / "annotations"
+    path = root / "evaluations" / ("a" * 64) / ("b" * 64 + ".json")
+    capture = path.parent / "generative-captures" / "capture.json"
+    generative: dict[str, Any] = {"status": "unavailable", "reason": "model_not_served"}
+    cli_generative = dict(generative)
+    if capture_mode == "capture":
+        capture.parent.mkdir(parents=True)
+        capture.write_bytes(b'{"frozen":true}\n')
+        digest = evaluation.file_sha256(capture)
+        generative.update(
+            status="available",
+            reason=None,
+            capture_sha256=digest,
+            capture_path=capture.relative_to(root).as_posix(),
+        )
+        cli_generative = {**generative, "capture_path": str(capture)}
+    elif capture_mode != "legacy":
+        generative.update(capture_sha256=None, capture_path=None)
+        cli_generative = dict(generative)
+    payload = {
+        "generative_comparator": cli_generative,
+        "evaluation_path": str(path),
+        "evaluation_sha256": "b" * 64,
+        "run_id": "first",
+        "manifest_sha256": "a" * 64,
+        "label_origin": "engineering_authored",
+        "independent_adjudication": False,
+        "partitions": {},
+    }
+    run = {"generative_comparator": generative, "wall_seconds": 0.1}
+    document = {
+        "comparators": {
+            "generative": {
+                "comparison": "performed" if capture_mode == "capture" else "not_performed"
+            }
+        },
+        "claims": {"population_accuracy": False},
+    }
+    monkeypatch.setattr(scenario, "checked_evaluation", lambda *args: (path, document, run))
+    monkeypatch.setattr(
+        scenario, "reconcile_evaluation", lambda document: {"rejected": [], "excluded": []}
+    )
+    monkeypatch.setattr(scenario, "cli_with_configured_runtime", lambda *args: (0, payload))
+    return scenario, payload, run, document, path
+
+
+@pytest.mark.parametrize("field", ["status", "reason", "capture_sha256", "capture_path"])
+def test_real_evaluation_rejects_cli_run_provenance_mismatch(
+    smoke_modules: dict[str, ModuleType],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+) -> None:
+    evaluation = smoke_modules["smoke_evaluation"]
+    scenario, payload, _, _, _ = evaluation_consumer(evaluation, tmp_path, monkeypatch, "capture")
+    payload["generative_comparator"][field] = "wrong"
+    with pytest.raises(smoke_modules["smoke_annotations"].SmokeFailure, match="disagree"):
+        scenario.real_evaluation()
+    assert scenario.engineering_payload == {}
+
+
+@pytest.mark.parametrize("capture_mode", ["capture", "no_capture"])
+def test_real_evaluation_rejects_comparison_without_matching_capture_state(
+    smoke_modules: dict[str, ModuleType],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capture_mode: str,
+) -> None:
+    evaluation = smoke_modules["smoke_evaluation"]
+    scenario, _, _, document, _ = evaluation_consumer(
+        evaluation, tmp_path, monkeypatch, capture_mode
+    )
+    document["comparators"]["generative"]["comparison"] = (
+        "not_performed" if capture_mode == "capture" else "performed"
+    )
+    with pytest.raises(smoke_modules["smoke_annotations"].SmokeFailure, match="generative"):
+        scenario.real_evaluation()
+
+
+@pytest.mark.parametrize("field", ["evaluation_sha256", "evaluation_path"])
+def test_evaluation_replay_rejects_changed_frozen_identity(
+    smoke_modules: dict[str, ModuleType],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+) -> None:
+    scenario, payload, _, _, _ = evaluation_consumer(
+        smoke_modules["smoke_evaluation"], tmp_path, monkeypatch, "no_capture"
+    )
+    scenario.real_evaluation()
+    replay = {**payload, "run_id": "second", field: "changed"}
+    monkeypatch.setattr(scenario, "cli", lambda *args: (0, replay))
+
+    def forbid_fresh_acquisition(*args: str) -> Any:
+        pytest.fail("replay attempted fresh configured acquisition")
+
+    monkeypatch.setattr(scenario, "cli_with_configured_runtime", forbid_fresh_acquisition)
+    with pytest.raises(smoke_modules["smoke_annotations"].SmokeFailure, match="replay"):
+        scenario.evaluation_replay()
+    assert scenario.evidence[-1]["step"] == "real_evaluation"
