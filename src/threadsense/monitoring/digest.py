@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -20,6 +20,7 @@ from threadsense.monitoring.digest_records import (
     finding_entry_id,
     thread_update_entry_id,
 )
+from threadsense.monitoring.explain import rank_digest
 from threadsense.monitoring.issue_records import IssuePolicy
 from threadsense.monitoring.issues import ingest_issue_evidence
 from threadsense.monitoring.state import MonitoringStore, RunClaim
@@ -28,9 +29,11 @@ from threadsense.observability import TraceContext, emit_log
 
 DigestStatus = Literal["presented", "no_entries"]
 DIGEST_ARTIFACT_TYPE = "watch_digest"
-# Digests recorded with issue references render schema 2; digests recorded before issue
-# views existed (state schema < 5) keep rendering schema 1 so a resume reproduces their bytes.
-DIGEST_ARTIFACT_SCHEMA_VERSION = 2
+# Digests recorded with a ranking basis render schema 3. Digests recorded before rankings
+# existed (state schema < 7) keep rendering schema 2, and before issue views existed (state
+# schema < 5) schema 1, so a resume reproduces their bytes.
+DIGEST_ARTIFACT_SCHEMA_VERSION = 3
+DIGEST_ARTIFACT_PRE_RANKING_SCHEMA_VERSION = 2
 DIGEST_ARTIFACT_PRE_ISSUE_SCHEMA_VERSION = 1
 EXCERPT_MAX_CHARS = 280
 _CHANGE_KINDS = ("initial_observation", "new_source_event", "newly_observed_historical", "edited")
@@ -51,6 +54,7 @@ class DigestResult:
     materialized_entries: int
     backlog: dict[str, Any] | None
     issues: dict[str, Any]
+    ranking: dict[str, Any] | None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -66,6 +70,7 @@ class DigestResult:
             "materialized_entries": self.materialized_entries,
             "backlog": self.backlog,
             "issues": self.issues,
+            "ranking": self.ranking,
         }
 
 
@@ -169,10 +174,32 @@ def _finding_entry(
     )
 
 
+def rank_pending_digest(
+    store: MonitoringStore, watch_id: str, digest: PendingDigest
+) -> PendingDigest:
+    """Materialize the digest's order from its recorded basis; older digests stay unranked."""
+    if digest.ranking_basis is None:
+        return digest
+    ranking = rank_digest(store, watch_id, digest.entries, digest.issue_view, digest.ranking_basis)
+    return replace(digest, ranking=ranking)
+
+
+def _required_ranking(digest: PendingDigest) -> dict[str, Any] | None:
+    if digest.ranking_basis is not None and digest.ranking is None:
+        raise MonitoringStateError(
+            "digest ranking was not materialized from its recorded basis",
+            details={"reason": "ranking_not_materialized", "digest_id": digest.digest_id},
+        )
+    return digest.ranking
+
+
 def render_digest_json(watch_id: str, digest: PendingDigest) -> bytes:
     """Render the digest artifact from the recorded digest only; no clock is read."""
     issue_view = digest.issue_view
+    ranking = _required_ranking(digest)
     schema_version = DIGEST_ARTIFACT_SCHEMA_VERSION
+    if ranking is None:
+        schema_version = DIGEST_ARTIFACT_PRE_RANKING_SCHEMA_VERSION
     if issue_view is None:
         schema_version = DIGEST_ARTIFACT_PRE_ISSUE_SCHEMA_VERSION
     payload: dict[str, Any] = {
@@ -187,6 +214,8 @@ def render_digest_json(watch_id: str, digest: PendingDigest) -> bytes:
     }
     if issue_view is not None:
         payload["issues"] = issue_view
+    if ranking is not None:
+        payload["ranking"] = ranking
     text = json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False, allow_nan=False)
     return (text + "\n").encode("utf-8")
 
@@ -213,12 +242,26 @@ def render_digest_markdown(watch_id: str, digest: PendingDigest) -> bytes:
         f"- Search completeness: {_md(str(backlog['search_completeness']))}",
     ]
     issue_view = digest.issue_view
+    ranking = _required_ranking(digest)
     refs: dict[str, dict[str, Any]] = {}
     if issue_view is not None:
         lines.extend(["", *_issues_lines(issue_view)])
         refs = {str(ref["entry_id"]): ref for ref in issue_view["entry_refs"]}
-    for index, entry in enumerate(digest.entries, start=1):
-        lines.extend(["", *_entry_lines(index, entry, refs.get(str(entry["entry_id"])))])
+    entries = list(digest.entries)
+    ranked: dict[str, dict[str, Any]] = {}
+    if ranking is not None:
+        lines.extend(["", *_ranking_lines(ranking)])
+        ranked = {str(item["entry_id"]): item for item in ranking["order"]}
+        by_id = {str(entry["entry_id"]): entry for entry in entries}
+        # Presentation follows the ranked order; the entries themselves are unchanged.
+        entries = [by_id[str(item["entry_id"])] for item in ranking["order"]]
+    for index, entry in enumerate(entries, start=1):
+        entry_id = str(entry["entry_id"])
+        block = _entry_lines(index, entry, refs.get(entry_id))
+        if entry_id in ranked:
+            # Rank lines follow the heading, before the entry's facts and quoted evidence.
+            block[2:2] = _rank_lines(ranked[entry_id])
+        lines.extend(["", *block])
     return ("\n".join(lines) + "\n").encode("utf-8")
 
 
@@ -245,6 +288,29 @@ def _entry_lines(index: int, entry: dict[str, Any], ref: dict[str, Any] | None) 
     lines.append(f"- Novel comments: {len(comments)}")
     for comment in comments:
         lines.extend(_comment_lines(comment))
+    return lines
+
+
+def _ranking_lines(ranking: dict[str, Any]) -> list[str]:
+    basis = ranking["basis"]
+    return [
+        "## Ranking",
+        "",
+        f"- Policy: {_md(str(basis['policy_name']))} ({_md(str(basis['policy_id']))})",
+        f"- Objective: {_words(basis['objective'])}; profile revision {basis['profile_revision']}",
+        f"- Preferences applied up to sequence {basis['preference_sequence']}",
+        f"- Semantic component: {_words(ranking['semantic']['status'])}; contributes no points",
+        "- Ranking orders presentation only; evidence, counts and corrections are unchanged.",
+    ]
+
+
+def _rank_lines(item: dict[str, Any]) -> list[str]:
+    scored = [component for component in item["components"] if component["points"] is not None]
+    parts = "; ".join(f"{component['component']} {component['points']:+d}" for component in scored)
+    lines = [f"- Rank {item['rank']}: score {item['score']} ({parts})"]
+    for component in scored:
+        if component["component"] == "preference" and component["matched"]:
+            lines.append(f"- Preference: {_md(str(component['reason']))}")
     return lines
 
 
@@ -408,8 +474,8 @@ def _present(store: MonitoringStore, claim: RunClaim, policy: IssuePolicy) -> Di
         entries = build_digest_entries(watch_id, item)
         materialized += store.materialize_digest_entries(claim, entries)
     ingestion = ingest_issue_evidence(store, claim, policy)
-    digest = store.begin_digest(claim, profile.limits.presented_findings)
-    if digest is None:
+    pending = store.begin_digest(claim, profile.limits.presented_findings)
+    if pending is None:
         return DigestResult(
             run_id=claim.run_id,
             watch_id=watch_id,
@@ -423,7 +489,9 @@ def _present(store: MonitoringStore, claim: RunClaim, policy: IssuePolicy) -> Di
             materialized_entries=materialized,
             backlog=None,
             issues=ingestion.to_dict(),
+            ranking=None,
         )
+    digest = rank_pending_digest(store, watch_id, pending)
     json_bytes = render_digest_json(watch_id, digest)
     with store.fenced_artifact_write(claim):
         json_sha256 = _publish_bytes(digest.json_path, json_bytes)
@@ -444,7 +512,17 @@ def _present(store: MonitoringStore, claim: RunClaim, policy: IssuePolicy) -> Di
         materialized_entries=materialized,
         backlog=digest.backlog,
         issues=ingestion.to_dict(),
+        ranking=_ranking_summary(digest.ranking),
     )
+
+
+def _ranking_summary(ranking: dict[str, Any] | None) -> dict[str, Any] | None:
+    if ranking is None:
+        return None
+    return {
+        **ranking["basis"],
+        "ranked_entry_ids": [item["entry_id"] for item in ranking["order"]],
+    }
 
 
 def _fail_digest_run(store: MonitoringStore, claim: RunClaim) -> RunClaimError | None:
