@@ -397,6 +397,109 @@ def record_inputs(harness: IssueHarness, inputs: list[IssueEntryInput]) -> Issue
     return result
 
 
+def test_record_issue_evidence_duplicate_second_entry_rolls_back_first_pending_write(
+    tmp_path: Path,
+) -> None:
+    harness = build_harness(tmp_path / "store")
+    materialize_phase(harness, "initial")
+    store = harness.store
+    inputs = sorted(
+        (build_issue_entry_input(pending) for pending in store.pending_issue_entries(WATCH_ID)),
+        key=lambda entry: (
+            min(report.source_created_utc for report in entry.reports),
+            entry.entry_id,
+        ),
+    )
+    first, duplicate = inputs[0], inputs[-1]
+    assert first.entry_id != duplicate.entry_id
+    # The recorder sorts by earliest report time, then entry ID. Preserve that order
+    # so the pending entry is inserted before the second entry's duplicate refusal.
+    assert (
+        min(report.source_created_utc for report in first.reports),
+        first.entry_id,
+    ) < (
+        min(report.source_created_utc for report in duplicate.reports),
+        duplicate.entry_id,
+    )
+    seeded = record_inputs(harness, [duplicate])
+    assert seeded.entries == 1
+    assert count_rows(store.path, "watch_issue_entries") == 1
+    pending_before = store.pending_issue_entries(WATCH_ID)
+    pending_ids = {entry.entry_id for entry in pending_before}
+    assert first.entry_id in pending_ids
+    assert duplicate.entry_id not in pending_ids
+    claim = store.claim_run(WATCH_ID, lease_seconds=LEASE_SECONDS)
+    tables = [
+        str(row[0])
+        for row in query_rows(
+            store.path,
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "AND (name LIKE 'watch_issue%' OR name IN "
+            "('watch_digest_entries', 'watch_digest_issue_views')) ORDER BY name",
+            (),
+        )
+    ]
+    rows_before = {
+        table: sorted(query_rows(store.path, f"SELECT * FROM {table}", ()), key=repr)
+        for table in tables
+    }
+
+    with pytest.raises(MonitoringStateError) as caught:
+        store.record_issue_evidence(claim, [first, duplicate], default_policy(harness))
+
+    assert caught.value.details["reason"] == "issue_entry_already_recorded"
+    assert caught.value.details["entry_id"] == duplicate.entry_id
+    assert {
+        table: sorted(query_rows(store.path, f"SELECT * FROM {table}", ()), key=repr)
+        for table in tables
+    } == rows_before
+    assert store.pending_issue_entries(WATCH_ID) == pending_before
+    assert count_rows(store.path, "watch_issue_entries") == 1
+
+
+def test_record_issue_evidence_invalid_report_text_hash_preserves_pending_state(
+    tmp_path: Path,
+) -> None:
+    harness = build_harness(tmp_path / "store")
+    materialize_phase(harness, "initial")
+    store = harness.store
+    pending_before = store.pending_issue_entries(WATCH_ID)
+    entry = build_issue_entry_input(pending_before[0])
+    assert entry.reports
+    invalid = replace(
+        entry,
+        reports=(replace(entry.reports[0], text_sha256="x"), *entry.reports[1:]),
+    )
+    claim = store.claim_run(WATCH_ID, lease_seconds=LEASE_SECONDS)
+    tables = [
+        str(row[0])
+        for row in query_rows(
+            store.path,
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "AND (name LIKE 'watch_issue%' OR name IN "
+            "('watch_digest_entries', 'watch_digest_issue_views')) ORDER BY name",
+            (),
+        )
+    ]
+    rows_before = {
+        table: sorted(query_rows(store.path, f"SELECT * FROM {table}", ()), key=repr)
+        for table in tables
+    }
+
+    with pytest.raises(MonitoringInputError) as caught:
+        store.record_issue_evidence(claim, [invalid], default_policy(harness))
+
+    assert caught.value.details["reason"] == "invalid_issue_input"
+    assert caught.value.details["field"] == "text_sha256"
+    assert caught.value.details["entry_id"] == entry.entry_id
+    assert {
+        table: sorted(query_rows(store.path, f"SELECT * FROM {table}", ()), key=repr)
+        for table in tables
+    } == rows_before
+    assert store.pending_issue_entries(WATCH_ID) == pending_before
+    assert count_rows(store.path, "watch_issue_entries") == 0
+
+
 def test_record_issue_evidence_partial_copy_seeds_own_issue_with_copy_signal(
     harness: IssueHarness,
 ) -> None:

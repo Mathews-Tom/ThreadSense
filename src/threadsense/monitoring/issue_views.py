@@ -619,7 +619,9 @@ def _digest_issue_view(
                 "issue_id": issue_id,
                 "home_issue_id": issue_id_for(watch_id, source_thread_id),
                 "reports": _entry_reports(entry_id, thread_reports[source_thread_id]),
-                "updates": _entry_updates(conn, watch_id, entry_id),
+                "updates": _entry_updates(
+                    conn, watch_id, entry_id, thread_reports[source_thread_id]
+                ),
             }
         )
         if issue_id not in issue_ids:
@@ -664,12 +666,28 @@ def _entry_reports(entry_id: str, thread_reports: Sequence[dict[str, Any]]) -> l
     ]
 
 
-def _entry_updates(conn: sqlite3.Connection, watch_id: str, entry_id: str) -> list[dict[str, Any]]:
+def _entry_updates(
+    conn: sqlite3.Connection,
+    watch_id: str,
+    entry_id: str,
+    thread_reports: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Keep entry cues from original or edited-added text, not a copy's first text."""
     rows = conn.execute(
-        "SELECT u.update_id, u.kind, u.cue, u.report_id, r.comment_id "
+        "SELECT u.update_id, u.kind, u.cue, u.report_id, r.comment_id, u.text_sha256 "
         "FROM watch_issue_updates AS u "
         "JOIN watch_issue_reports AS r ON r.report_id = u.report_id "
         "WHERE u.watch_id = ? AND u.entry_id = ? ORDER BY u.update_id ASC",
         (watch_id, entry_id),
     ).fetchall()
-    return [dict(zip(_ENTRY_UPDATE_KEYS, row, strict=True)) for row in rows]
+    reports = {str(report["report_id"]): report for report in thread_reports}
+    updates: list[dict[str, Any]] = []
+    for row in rows:
+        report_id = str(row[3])
+        report = reports.get(report_id)
+        if report is None:
+            raise _issue_unreadable("stored update has no member report", report_id=report_id)
+        if report["lineage"] == "exact_copy" and row[5] == report["first_text_sha256"]:
+            continue
+        updates.append(dict(zip(_ENTRY_UPDATE_KEYS, row[:5], strict=True)))
+    return updates
