@@ -327,6 +327,14 @@ def annotation_paths(
             )
     require_run_id(run_id)
     snapshot_root = output_root / snapshot_sha256
+    # The output root is canonicalized separately; only its generated descendants
+    # must be real directories, so existing links cannot redirect publication.
+    for directory in (snapshot_root, snapshot_root / "decisions", snapshot_root / "runs"):
+        if directory.is_symlink():
+            raise DecisionArtifactError(
+                "annotation artifact directories must not be symbolic links",
+                details={"reason": "artifact_directory_symlink", "path": str(directory)},
+            )
     return AnnotationPaths(
         decision_path=snapshot_root / "decisions" / f"{decision_sha256}.json",
         run_path=snapshot_root / "runs" / f"{run_id}.json",

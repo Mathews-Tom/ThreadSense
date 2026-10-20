@@ -42,7 +42,12 @@ from threadsense.decisions.annotate import (
     AnnotationOutcome,
     annotate_canonical_thread,
 )
-from threadsense.decisions.artifact import AnnotationItem, publish_immutable
+from threadsense.decisions.artifact import (
+    AnnotationItem,
+    annotation_paths,
+    check_output_location,
+    publish_immutable,
+)
 from threadsense.decisions.client import TypedDecisionClient
 from threadsense.decisions.contracts import (
     PINNED_CONTEXT_POLICY,
@@ -1081,6 +1086,112 @@ def test_annotate_output_in_protected_storage_is_refused_before_any_http_call(
     assert raised.value.details["reason"] == "output_inside_protected_storage"
     assert calls.total == 0
     assert not store.exists()
+
+
+@pytest.mark.parametrize("consumer", ["annotate", "publish"])
+@pytest.mark.parametrize("protected_name", ["normalized", "monitoring"])
+@pytest.mark.parametrize("link_component", ["snapshot", "decisions", "runs"])
+def test_publication_refuses_descendant_symlinks_without_changing_protected_storage(
+    staged: Staged, consumer: str, protected_name: str, link_component: str
+) -> None:
+    store = staged.root / "store"
+    protected_roots = (store / "normalized", store / "monitoring")
+    for protected in protected_roots:
+        protected.mkdir(parents=True)
+        (protected / "baseline.json").write_bytes(b"original protected evidence\n")
+    protected_before = {
+        path: (path.read_bytes(), path.stat().st_mtime_ns)
+        for protected in protected_roots
+        for path in protected.iterdir()
+    }
+    input_before = (staged.input_path.read_bytes(), staged.input_path.stat().st_mtime_ns)
+    snapshot_sha256 = hashlib.sha256(input_before[0]).hexdigest()
+    snapshot_root = staged.output_root / snapshot_sha256
+    link_path = snapshot_root if link_component == "snapshot" else snapshot_root / link_component
+    link_path.parent.mkdir(parents=True)
+    link_path.symlink_to(store / protected_name, target_is_directory=True)
+    output_entries_before = set(staged.output_root.rglob("*"))
+
+    with pytest.raises(DecisionArtifactError) as raised:
+        if consumer == "annotate":
+            calls = Calls()
+            client = _client(_serve_text(staged.response_text), calls)
+            _annotate(staged, client, job=_job(staged, protected_roots=protected_roots))
+        else:
+            output_root = check_output_location(
+                staged.output_root, staged.input_path, protected_roots
+            )
+            content = b"decision\n"
+            paths = annotation_paths(
+                output_root, snapshot_sha256, hashlib.sha256(content).hexdigest(), "run-1"
+            )
+            publish_immutable(paths.decision_path, content, reuse_identical=True)
+            publish_immutable(paths.run_path, b"run\n", reuse_identical=False)
+
+    assert raised.value.details["reason"] == "artifact_directory_symlink"
+    assert link_path.is_symlink()
+    assert set(staged.output_root.rglob("*")) == output_entries_before
+    assert {
+        path: (path.read_bytes(), path.stat().st_mtime_ns)
+        for protected in protected_roots
+        for path in protected.rglob("*")
+    } == protected_before
+    assert (staged.input_path.read_bytes(), staged.input_path.stat().st_mtime_ns) == input_before
+    assert _stray_temp_files(staged.output_root) == []
+    assert _stray_temp_files(store) == []
+
+
+def test_annotate_canonicalized_output_root_preserves_reuse_and_run_no_clobber(
+    staged: Staged,
+) -> None:
+    protected = staged.root / "store" / "normalized"
+    protected.mkdir(parents=True)
+    baseline = protected / "baseline.json"
+    baseline.write_bytes(b"original baseline\n")
+    baseline_before = (baseline.read_bytes(), baseline.stat().st_mtime_ns)
+    input_before = (staged.input_path.read_bytes(), staged.input_path.stat().st_mtime_ns)
+    staged.output_root.mkdir()
+    output_alias = staged.root / "output-alias"
+    output_alias.symlink_to(staged.output_root, target_is_directory=True)
+    job = _job(staged, output_root=output_alias, protected_roots=(protected,))
+    serve = _serve_text(staged.response_text)
+    first = _annotate(staged, _client(serve, Calls()), job=job, run_id="run-a")
+    decision_before = (first.decision_path.read_bytes(), first.decision_path.stat().st_ino)
+    first_run_before = first.run_path.read_bytes()
+
+    canonical_job = replace(job, output_root=staged.output_root.resolve())
+    second = _annotate(
+        staged,
+        _client(serve, Calls()),
+        job=canonical_job,
+        run_id="run-b",
+        wall_start=2000.0,
+    )
+    second_run_before = second.run_path.read_bytes()
+    with pytest.raises(DecisionArtifactError) as raised:
+        _annotate(
+            staged,
+            _client(serve, Calls()),
+            job=canonical_job,
+            run_id="run-b",
+            wall_start=3000.0,
+        )
+
+    assert raised.value.details["reason"] == "artifact_conflict"
+    assert first.coverage.status is second.coverage.status is AggregateStatus.COMPLETE
+    assert first.decision_path == second.decision_path
+    assert first.decision_path.is_relative_to(staged.output_root.resolve())
+    assert (first.decision_path.read_bytes(), first.decision_path.stat().st_ino) == decision_before
+    assert first.run_path.read_bytes() == first_run_before
+    assert second.run_path.read_bytes() == second_run_before
+    assert sorted(path.name for path in first.run_path.parent.iterdir()) == [
+        "run-a.json",
+        "run-b.json",
+    ]
+    assert list(protected.iterdir()) == [baseline]
+    assert (baseline.read_bytes(), baseline.stat().st_mtime_ns) == baseline_before
+    assert (staged.input_path.read_bytes(), staged.input_path.stat().st_mtime_ns) == input_before
+    assert _stray_temp_files(staged.output_root) == []
 
 
 def test_annotate_output_beside_a_protected_root_with_a_shared_name_prefix_is_accepted(
