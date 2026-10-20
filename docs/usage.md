@@ -720,7 +720,7 @@ Refusals exit `1` and write nothing; the `reason` is in `details`:
 - `cross_watch_target`: the entry belongs to a different watch
 - `ranking_replay_mismatch`: the replayed ranking differs from the one in the written digest
 - `artifact_hash_mismatch` or `artifact_missing`: the written digest JSON, or an analysis artifact the ranking reads, no longer matches its recorded hash or is gone
-- `unknown_policy` or `ranking_policy_unreadable`: the recorded policy is missing or no longer hashes to its id
+- `unknown_policy` or `ranking_policy_unreadable`: the recorded policy is missing, fails stored validation, or no longer matches its recorded id and canonical bytes
 - `digest_state_unreadable` or `ranking_input_unreadable`: a stored digest, entry payload or ranking input cannot be read
 - `ranking_basis_missing`: a written digest artifact contains a ranking but its recorded ranking basis is missing
 
@@ -844,7 +844,7 @@ Refusals exit `1` and write nothing; the `reason` is in `details`:
 - `invalid_ranking_policy` (`monitoring_input_error`): the file is not valid TOML, or a field is missing, unknown, not an integer or out of range; `details.field` names the field that failed validation
 - `unknown_policy`: `--select` names a malformed id or a policy not recorded in this state database
 - `unknown_watch`: no such watch
-- `ranking_policy_unreadable`: a stored policy no longer hashes to its recorded id
+- `ranking_policy_unreadable`: a stored policy is malformed, fails validation, or no longer matches its recorded id and canonical bytes. This is a `monitoring_state_error`; invalid operator-supplied policy documents remain `monitoring_input_error`.
 
 ### State location
 

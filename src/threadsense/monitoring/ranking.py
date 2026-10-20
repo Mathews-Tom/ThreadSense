@@ -271,7 +271,10 @@ def stored_ranking_policy(policy_id: str, policy_json: str) -> RankingPolicy:
         raise _unreadable_policy(policy_id) from error
     if not isinstance(payload, dict):
         raise _unreadable_policy(policy_id)
-    policy = parse_ranking_policy(payload)
+    try:
+        policy = parse_ranking_policy(payload)
+    except MonitoringInputError as error:
+        raise _unreadable_policy(policy_id) from error
     if policy.policy_id != policy_id or policy.canonical_json() != policy_json:
         raise _unreadable_policy(policy_id)
     return policy

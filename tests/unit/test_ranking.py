@@ -257,6 +257,10 @@ def test_stored_ranking_policy_matching_canonical_json_returns_policy() -> None:
         ),
         pytest.param("{", id="not-json"),
         pytest.param("[]", id="not-an-object"),
+        pytest.param("{}", id="missing-required-fields"),
+        pytest.param(
+            json.dumps(policy_payload(("severity", "high"), 101)), id="out-of-range-weight"
+        ),
     ],
 )
 def test_stored_ranking_policy_hash_mismatch_raises_ranking_policy_unreadable(
