@@ -861,7 +861,7 @@ def _build_decisions_parser(
 
     evaluate_parser = decisions_subparsers.add_parser(
         "evaluate",
-        help="Assess saved typed decision artifacts against a frozen dataset manifest offline.",
+        help="Assess saved typed decisions; optionally compare with the configured local runtime.",
     )
     evaluate_parser.add_argument(
         "--manifest",

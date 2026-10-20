@@ -106,7 +106,7 @@ The analysis layer uses a contract system with domain-specific vocabularies (dev
 
 ### Frozen decision assessment
 
-`decisions evaluate` assesses saved annotations offline against a frozen dataset manifest and its labels. It never re-annotates or activates a policy. It compares typed and keyword themes; a fresh comparison with an available configured local generative model can also classify the same supported theme cohort: typed-eligible, supported-language comments of at most 300 characters. The other five typed dimensions have no existing generative counterpart. These boundary-case labels do not establish population quality.
+`decisions evaluate` assesses saved annotations against a frozen dataset manifest and its labels. Typed replay is offline; the command never re-annotates or activates a policy. It compares typed and keyword themes; a fresh comparison with an available configured local generative model can also classify the same supported theme cohort: typed-eligible, supported-language comments of at most 300 characters. The other five typed dimensions have no existing generative counterpart. These boundary-case labels do not establish population quality.
 
 A fresh comparison acquires an immutable raw request/response capture and reports its path and SHA-256. Supply `--generative-capture PATH` to replay that frozen comparison offline, with no model listing or inference. Another fresh acquisition is not a deterministic replay. An absent configured model is reported as unavailable, not as a loss; disabled or invalid-endpoint guards are `not_observed` because no request was made. See [evaluation usage](docs/usage.md#decisions-evaluate) for the command and [capture semantics](docs/artifacts.md#comparators) for its proof boundaries.
 
