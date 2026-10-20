@@ -88,6 +88,18 @@ uv run threadsense watch schedule --id agent-memory --format launchd
 
 Field bounds and output shapes: [docs/usage.md](docs/usage.md).
 
+### Cross-thread issue history
+
+Each watch thread with finding evidence gets a stable issue identified by its home thread. A thread joins another issue automatically only when every report first recorded for it is an exact copy of an earlier report in another thread, and an operator can link or unlink a thread explicitly. Every change is an appended event, so history is reversible and never rewritten. Counts report observed threads, accounts and communities and never verify independence; exact copies never count as corroboration. Each report keeps the lineage recorded at ingestion, and when a later ingestion discovers an earlier original of a report recorded as firsthand, an append-only correction event in the ingestion ledger (`lineage_corrections`, `lineage_events`) makes the report's effective lineage an exact copy. Firsthand and exact-copy counts follow effective lineage while observed counts stay unchanged; a correction never regroups threads, and suggestions stay unconfirmed until an operator links. Digests and issue views already recorded keep their original bytes; new digests capture effective lineage. Candidate issues are bounded, unconfirmed suggestions that never merge memberships or counts (semantic grouping is `not_eligible`), and update cues such as reproduction, contradiction, workaround and resolution claims are unverified lexical signals that never resolve an issue. `watch run` and `watch digest` record the evidence and add an `issues` section to digests.
+
+```bash
+uv run threadsense issues inspect --watch agent-memory [--issue ISSUE_ID]
+uv run threadsense issues link --watch agent-memory --issue ISSUE_ID --thread THREAD_ID --reason TEXT
+uv run threadsense issues unlink --watch agent-memory --issue ISSUE_ID --thread THREAD_ID --reason TEXT
+```
+
+Bounds, output shapes and refusal reasons: [docs/usage.md](docs/usage.md).
+
 ### Typed decision annotations (shadow)
 
 `decisions annotate` asks a separate, operator-provisioned local Laya service six fixed typed questions about every comment of a canonical thread artifact and writes the answers as shadow artifacts. They are uncalibrated and never change baseline findings, reports or monitoring. The service is pinned, loopback-only and never installed or started by ThreadSense; comment text goes only to that local endpoint.
@@ -186,6 +198,7 @@ uv run threadsense research reddit \
 | `inspect`         | Examine persisted artifacts                         |
 | `batch run`       | Process multiple threads                            |
 | `watch`           | Save, sweep, digest and schedule research profiles  |
+| `issues`          | Inspect and link cross-thread issue history         |
 | `decisions annotate` | Shadow typed annotations from a local Laya service |
 | `preflight`       | Validate local environment                          |
 | `serve`           | Local API server                                    |
@@ -261,6 +274,15 @@ uv run python scripts/smoke_monitoring.py --scenario incremental --work-dir DIR
 ```
 
 Replace `DIR` with a working directory for the scenario. The scenario prints `scenario=incremental status=passed evidence=...` only after every assertion passes and writes `incremental-evidence.json` into that directory.
+
+The issue-history flow has its own scenario and integration test. The scenario drives the actual CLI against synthesized recorded Reddit JSON served in-process, with no network and no model, so it is not a live acquisition:
+
+```bash
+uv run pytest tests/integration/test_issue_history.py
+uv run python scripts/smoke_monitoring.py --scenario issues --work-dir "${THREADSENSE_SMOKE_DIR:?}"
+```
+
+Set `THREADSENSE_SMOKE_DIR` to a working directory for the scenario. The scenario prints `scenario=issues status=passed evidence=...` only after every assertion passes and writes `issues-evidence.json` into that directory.
 
 ## Current Limits
 

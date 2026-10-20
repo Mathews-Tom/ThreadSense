@@ -583,3 +583,111 @@ def _grouping_policy(conn: sqlite3.Connection, policy_sha256: str) -> dict[str, 
             "issue grouping policy is not an object", policy_sha256=policy_sha256
         )
     return {"sha256": policy_sha256, **policy}
+
+
+# Digest issue references -----------------------------------------------------------------
+
+_ENTRY_REPORT_KEYS = ("report_id", "comment_id", "lineage", "copy_of_report_id", "text_sha256")
+_ENTRY_UPDATE_KEYS = ("update_id", "kind", "cue", "report_id", "comment_id")
+
+
+def _digest_issue_view(
+    conn: sqlite3.Connection, watch_id: str, entries: Sequence[dict[str, Any]]
+) -> dict[str, Any]:
+    """Issue references of one new digest, recorded with it so a resume renders the same bytes.
+
+    Entries follow digest order and appear only when their thread has issue history; each
+    referenced current issue is summarized once, in first-reference order.
+    """
+    entry_refs: list[dict[str, Any]] = []
+    issue_ids: list[str] = []
+    # Each thread's reports are read once per digest, however many of its entries it presents.
+    thread_reports: dict[str, list[dict[str, Any]]] = {}
+    for entry in entries:
+        entry_id = str(entry["entry_id"])
+        source_thread_id, kind = _entry_identity(conn, watch_id, entry_id)
+        issue_id = _current_issue(conn, watch_id, source_thread_id)
+        if issue_id is None:
+            continue
+        if source_thread_id not in thread_reports:
+            thread_reports[source_thread_id] = _member_reports(conn, watch_id, [source_thread_id])
+        entry_refs.append(
+            {
+                "entry_id": entry_id,
+                "kind": kind,
+                "source_thread_id": source_thread_id,
+                "issue_id": issue_id,
+                "home_issue_id": issue_id_for(watch_id, source_thread_id),
+                "reports": _entry_reports(entry_id, thread_reports[source_thread_id]),
+                "updates": _entry_updates(
+                    conn, watch_id, entry_id, thread_reports[source_thread_id]
+                ),
+            }
+        )
+        if issue_id not in issue_ids:
+            issue_ids.append(issue_id)
+    return {
+        "semantic_grouping": "not_eligible",
+        "entry_refs": entry_refs,
+        "issues": [_digest_issue(conn, watch_id, issue_id) for issue_id in issue_ids],
+    }
+
+
+def _entry_identity(conn: sqlite3.Connection, watch_id: str, entry_id: str) -> tuple[str, str]:
+    """The stored thread and kind of a digest entry; its payload is not trusted for identity."""
+    row = conn.execute(
+        "SELECT source_thread_id, kind FROM watch_digest_entries "
+        "WHERE watch_id = ? AND entry_id = ?",
+        (watch_id, entry_id),
+    ).fetchone()
+    if row is None:
+        raise _issue_unreadable("digest entry is not recorded", entry_id=entry_id)
+    return str(row[0]), str(row[1])
+
+
+def _digest_issue(conn: sqlite3.Connection, watch_id: str, issue_id: str) -> dict[str, Any]:
+    summary = _issue_summary(conn, watch_id, issue_id)
+    suggestions = _member_suggestions(conn, watch_id, summary["member_thread_ids"])
+    return {**summary, "suggestions": suggestions}
+
+
+def _entry_reports(entry_id: str, thread_reports: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """This entry's evidence rows, with the lineage `_member_reports` gives each report."""
+    pairs = [
+        (report, evidence)
+        for report in thread_reports
+        for evidence in report["evidence"]
+        if evidence["entry_id"] == entry_id
+    ]
+    pairs.sort(key=lambda pair: (pair[0]["comment_id"], pair[0]["report_id"]))
+    return [
+        {key: evidence[key] if key == "text_sha256" else report[key] for key in _ENTRY_REPORT_KEYS}
+        for report, evidence in pairs
+    ]
+
+
+def _entry_updates(
+    conn: sqlite3.Connection,
+    watch_id: str,
+    entry_id: str,
+    thread_reports: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Keep entry cues from original or edited-added text, not a copy's first text."""
+    rows = conn.execute(
+        "SELECT u.update_id, u.kind, u.cue, u.report_id, r.comment_id, u.text_sha256 "
+        "FROM watch_issue_updates AS u "
+        "JOIN watch_issue_reports AS r ON r.report_id = u.report_id "
+        "WHERE u.watch_id = ? AND u.entry_id = ? ORDER BY u.update_id ASC",
+        (watch_id, entry_id),
+    ).fetchall()
+    reports = {str(report["report_id"]): report for report in thread_reports}
+    updates: list[dict[str, Any]] = []
+    for row in rows:
+        report_id = str(row[3])
+        report = reports.get(report_id)
+        if report is None:
+            raise _issue_unreadable("stored update has no member report", report_id=report_id)
+        if report["lineage"] == "exact_copy" and row[5] == report["first_text_sha256"]:
+            continue
+        updates.append(dict(zip(_ENTRY_UPDATE_KEYS, row[:5], strict=True)))
+    return updates

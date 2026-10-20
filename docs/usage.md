@@ -38,6 +38,7 @@ Top-level commands:
 - `run`
 - `research`
 - `watch`
+- `issues`
 - `decisions`
 
 ## Happy Paths
@@ -562,11 +563,12 @@ Each analyzed revision is turned into digest entries, once, and entries are pres
   "markdown_path": "<monitoring directory>/watches/agent-memory/digests/000001-dig-....md",
   "entry_ids": ["ent-..."],
   "materialized_entries": 1,
-  "backlog": {"presentation_limit": 10, "presented_in_digest": 1, "...": "..."}
+  "backlog": {"presentation_limit": 10, "presented_in_digest": 1, "...": "..."},
+  "issues": {"run_id": "...", "policy_sha256": "...", "entries": 1, "...": "..."}
 }
 ```
 
-`status` is `presented` when a digest was written or resumed, and `no_entries` when nothing is waiting; then `digest_id`, `sequence`, `json_path`, `markdown_path` and `backlog` are `null` and `entry_ids` is empty. `materialized_entries` counts entries created by this invocation. The command exits `0` in both cases.
+`status` is `presented` when a digest was written or resumed, and `no_entries` when nothing is waiting; then `digest_id`, `sequence`, `json_path`, `markdown_path` and `backlog` are `null` and `entry_ids` is empty. `materialized_entries` counts entries created by this invocation. The command exits `0` in both cases. `issues` is the issue-evidence ingestion result described under [`issues`](#issues) (counts of entries, new issues, lineage assignments, reports, exact copies, evidence, updates, comparisons, suggestions, `suggestions_truncated` and refusals), present whether or not a digest was presented.
 
 `backlog` fields:
 
@@ -647,6 +649,137 @@ The `threadsense.monitoring` Python package provides the run-claim primitive tha
 - a competing claim while the lease is live is refused with `run_claim_error`, reason `claim_held`
 - after the lease expires, the next claim marks the old run `abandoned` with `recovered_by_run_id` pointing at the new run
 - the previous owner can no longer finalize that run (reason `stale_owner`); an owner whose lease expired without a newer claim cannot finalize either (reason `lease_expired`)
+
+## `issues`
+
+Read and correct cross-thread issue history. An issue groups the watch threads that report the same problem. Every watch thread with finding evidence has a home issue identified by that thread; the history is append-only, so inspection never mutates state and `link` and `unlink` only add events.
+
+```bash
+uv run threadsense issues inspect --watch ID [--issue ISSUE_ID] [--config PATH]
+uv run threadsense issues link --watch ID --issue ISSUE_ID --thread THREAD_ID --reason TEXT [--config PATH]
+uv run threadsense issues unlink --watch ID --issue ISSUE_ID --thread THREAD_ID --reason TEXT [--config PATH]
+```
+
+Output modes and the error payload are as for `watch`. A refusal is a `monitoring_state_error` (or `monitoring_input_error` for a malformed request) with the refusal `reason` in `details`, exit code `1`, and nothing is written.
+
+### How evidence is recorded
+
+`watch run` and `watch digest` record issue evidence for every finding entry they materialize, after materialization and before the digest is created, using the `[issues]` settings below. A report is one source comment cited as finding evidence. Its recorded lineage is fixed when first recorded:
+
+- `exact_copy` when the whitespace-collapsed text has at least 40 characters and is identical to an earlier firsthand report from another comment, where the origin was posted no later than the copy
+- `firsthand` otherwise
+
+A new thread joins another issue automatically only when every report first recorded for it is an exact copy of a report in another thread; the thread then joins the issue of the earliest such origin (basis `exact_content_lineage`). Any firsthand report makes the thread its own issue (basis `thread_seed`). A partial copy never groups; it is a candidate signal (`exact_copies`) only. After assignment each new thread is compared with a bounded set of other threads whose first evidence falls inside the candidate window, and shared themes or key phrases become `unconfirmed` suggestions. A shared link without shared themes or phrases is recorded as `refused` with reason `shared_link_only`. Suggestions never change memberships or counts.
+
+Recorded lineage is an ingestion-time fact and is never edited. A later report can be ingested before its earlier original, so a repost may be recorded `firsthand`. When a later ingestion discovers that earlier original, it appends a correction event to its ingestion-ledger row (`watch_issue_ingestions.summary_json`), and the public ingestion summary reports the number as the integer `lineage_corrections` (`0` when none). Each event in `lineage_events` carries `watch_id`, `run_id`, `policy_sha256`, `report_id`, `origin_report_id`, `previous_origin_report_id`, `text_sha256`, `discovered_report_id` and `discovery_entry_id`. The latest event for a report sets its effective lineage (`exact_copy` of `origin_report_id`); counts and update cues use effective lineage. A correction never regroups threads: grouping stays an operator action, and suggestions stay `unconfirmed` until an operator runs `link`. Raw reports, evidence, earlier ledger rows and digests already recorded are never rewritten.
+
+Update cues are lexical: a firsthand report records an update of kind `reproduction`, `contradiction`, `workaround` or `resolution_claim` when its text contains one of the fixed cue phrases (word-boundary, case-insensitive). An exact copy records cues only for text its origin never had. Updates are unverified claims; a `resolution_claim` never resolves an issue.
+
+### `issues inspect`
+
+Without `--issue`, list the issues of a watch in creation order:
+
+```json
+{
+  "artifact_type": "issue_list",
+  "status": "ok",
+  "state_path": "<resolved storage root>/monitoring/state.sqlite3",
+  "watch_id": "agent-memory",
+  "issues": [
+    {
+      "issue_id": "iss-...",
+      "home_thread_id": "...",
+      "state": "active",
+      "member_thread_ids": ["..."],
+      "counts": {"observed_threads": 1, "...": "..."},
+      "update_counts": {"reproduction": 0, "contradiction": 0, "workaround": 0, "resolution_claim": 0},
+      "unconfirmed_suggestions": 1
+    }
+  ]
+}
+```
+
+A watch without issue history, or a state database older than schema version `4`, lists `[]`. `state` is `active` while the home thread is a member of its own issue and `inactive` once it has been linked elsewhere. `unconfirmed_suggestions` counts unconfirmed suggestions that touch a member and are not currently grouped.
+
+With `--issue`, inspect one issue:
+
+```json
+{
+  "artifact_type": "issue_inspection",
+  "status": "ok",
+  "state_path": "<resolved storage root>/monitoring/state.sqlite3",
+  "issue_status": "open",
+  "issue_id": "iss-...",
+  "watch_id": "agent-memory",
+  "home_thread_id": "...",
+  "state": "active",
+  "resolution": {"resolved": false, "resolution_claims": 0, "basis": "resolution claims are unverified updates; a claim never resolves an issue"},
+  "members": [{"source_thread_id": "...", "thread_url": "...", "subreddit": "...", "title": "...", "basis": "thread_seed", "joined_event_id": 1, "joined_at_utc": 0.0}],
+  "counts": {
+    "observed_threads": 1, "observed_communities": 1, "observed_accounts": 2,
+    "reports_without_account": 0, "reports": 2, "firsthand_reports": 2, "exact_copies": 0,
+    "independence": {"status": "not_verified", "verified_independent_reports": null, "basis": "..."}
+  },
+  "update_counts": {"reproduction": 0, "contradiction": 0, "workaround": 0, "resolution_claim": 0},
+  "reports": [{"report_id": "rpt-...", "lineage": "firsthand", "copy_of_report_id": null, "evidence": [{"entry_id": "ent-...", "text_sha256": "...", "links": []}], "...": "..."}],
+  "updates": [{"update_id": "upd-...", "kind": "workaround", "cue": "workaround", "report_id": "rpt-...", "...": "..."}],
+  "membership_history": [{"event_id": 1, "action": "assigned", "basis": "thread_seed", "...": "..."}],
+  "suggestions": [{"suggestion_id": "sug-...", "status": "unconfirmed", "refusal_reason": null, "signals": {"themes": [], "key_phrases": [], "links": [], "source_time_gap_seconds": 0.0}, "currently_grouped": false, "...": "..."}],
+  "grouping_policy": {"sha256": "...", "...": "..."}
+}
+```
+
+Each report's `lineage` and `copy_of_report_id` are the effective values: the recorded lineage overridden by the latest correction event. `recorded_lineage` and `recorded_copy_of_report_id` keep the ingestion-time facts, and `lineage_correction` is the latest correction event or `null`. `firsthand_reports` and `exact_copies` follow effective lineage, while `observed_*` counts do not change. An update cue of a corrected copy whose text equals the copied text is excluded from `update_counts`, and each inspected update gains `copied_from_report_id`. Digests recorded earlier keep their original lineage; a new digest captures effective lineage at presentation and omits copied-first-text cues from its entry updates while retaining cues in edited-added text.
+
+`issue_status` is always `open`; ThreadSense has no resolved state. `observed_*` counts are observations over member threads (accounts are SHA-256 hashes of source and username; `reports_without_account` counts deleted or blank authors). Distinct accounts or communities are not proof of independent sources, so `independence.status` is always `not_verified`, and `exact_copies` are listed but never corroborate a firsthand report. An unknown issue, an issue of another watch or a state database older than schema version `4` is refused with reason `unknown_issue`.
+
+### `issues link` and `issues unlink`
+
+`link` moves a thread into another active issue; `unlink` returns a linked thread to its own home issue. `--reason` is required, is stored stripped, and must be 1-500 characters without control characters.
+
+```json
+{
+  "artifact_type": "issue_membership_change",
+  "status": "linked",
+  "state_path": "<resolved storage root>/monitoring/state.sqlite3",
+  "event": {
+    "event_id": 7, "watch_id": "agent-memory", "source_thread_id": "...", "issue_id": "iss-...",
+    "previous_issue_id": "iss-...", "action": "linked", "basis": "operator", "reason": "...",
+    "report_id": null, "policy_sha256": null, "run_id": null, "created_at_utc": 0.0
+  },
+  "membership": {"source_thread_id": "...", "issue_id": "iss-...", "home_issue_id": "iss-..."}
+}
+```
+
+`unlink` returns the same shape with `status: "unlinked"` and `action: "unlinked"`. Reverse a link with `unlink`, or a lineage assignment with `unlink` too; the earlier events stay in `membership_history`.
+
+Refusal reasons:
+
+- `invalid_issue_request`: a malformed watch id, issue id, thread id or reason (`details.field` names it)
+- `unknown_watch`: no such watch
+- `unknown_issue`: no such issue in this watch
+- `unknown_issue_thread`: the thread has no issue history in this watch
+- `already_member` (link): the thread is already in the target issue
+- `inactive_issue` (link): the target issue's home thread has been linked elsewhere
+- `issue_has_other_members` (link): the thread's own issue still has other member threads (`details.member_thread_ids`)
+- `not_member` (unlink): the thread is not in the named issue
+- `not_linked` (unlink): the thread is already in its own home issue
+
+### `[issues]` configuration
+
+Bounds on the candidate comparison made for each newly tracked thread:
+
+| Key | Environment variable | Default | Range |
+| --- | --- | --- | --- |
+| `candidate_window_days` | `THREADSENSE_ISSUES_CANDIDATE_WINDOW_DAYS` | `30` | 1-365 |
+| `max_candidate_comparisons` | `THREADSENSE_ISSUES_MAX_CANDIDATE_COMPARISONS` | `25` | 1-500 |
+| `max_suggestions_per_thread` | `THREADSENSE_ISSUES_MAX_SUGGESTIONS_PER_THREAD` | `3` | 1-50 |
+
+Candidates must have first evidence within `candidate_window_days` of the new thread's first evidence, are compared nearest first up to `max_candidate_comparisons`, and at most `max_suggestions_per_thread` unconfirmed suggestions are kept per thread (candidates beyond that are counted in `suggestions_truncated`; shared-link refusals are all kept). Out-of-range values are rejected when the configuration loads. The effective settings are stored as a policy row and cited by `grouping_policy` on every issue.
+
+### Digest issue section
+
+A digest created by a state database at schema version `5` is a `schema_version: 2` JSON artifact with a top-level `issues` section, and its Markdown artifact gains an Issues section and per-entry issue lines. A digest still pending from an earlier schema version keeps `schema_version: 1` and no issue section. See [artifacts.md](artifacts.md) for the recorded shape.
 
 ## `decisions`
 

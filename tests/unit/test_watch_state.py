@@ -1506,6 +1506,7 @@ def create_v2_state_with_analysis(
         ).fetchall()
         for (table,) in later_tables:
             conn.execute(f"DROP TABLE {table}")
+        conn.execute("DROP TABLE watch_digest_issue_views")
         conn.execute("DROP TABLE watch_digest_entries")
         conn.execute("DROP TABLE watch_digests")
         conn.execute("PRAGMA user_version = 2")
@@ -1603,3 +1604,82 @@ def test_begin_digest_claim_of_another_watch_is_refused(tmp_path: Path) -> None:
 
     assert raised.value.details["reason"] == "owner_mismatch"
     assert query_state(store, "SELECT COUNT(*) FROM watch_digests") == [(0,)]
+
+
+V4_KEPT_TABLES = ("watch_digests", "watch_digest_entries", "watch_thread_revisions")
+
+
+def create_v4_state_with_pending_digest(
+    tmp_path: Path,
+) -> tuple[MonitoringStore, ManualClock, str]:
+    """Record a pending digest, then drop its issue views so the file is a version 4 state."""
+    store, clock, claim = tracked_store(tmp_path)
+    initial = record_initial(store, claim, FIRST_COMMENT)
+    path, sha256 = write_artifact(
+        store,
+        f"watches/{WATCH_ID}/threads/{THREAD_ID}/analyses/{initial.revision_id}/a.json",
+        b"analysis",
+    )
+    store.record_analysis(claim, initial.revision_id, path, sha256)
+    store.complete_sweep(claim, "changes", {"refresh": {"pending": 0}})
+    clock.now = 1_100.0
+    digest_claim = store.claim_run(WATCH_ID, lease_seconds=600)
+    entry_id = "ent-" + "1" * 32
+    store.materialize_digest_entries(
+        digest_claim,
+        [
+            DigestEntryRecord(
+                entry_id=entry_id,
+                source_thread_id=THREAD_ID,
+                revision_id=initial.revision_id,
+                kind="thread_update",
+                theme_key=None,
+                payload={"kind": "thread_update", "entry_id": entry_id},
+            )
+        ],
+    )
+    digest = store.begin_digest(digest_claim, 10)
+    assert digest is not None
+    store.finalize_run(digest_claim.run_id, digest_claim.owner_token, "failed")
+    with closing(sqlite3.connect(store.path)) as conn:
+        conn.execute("DROP TABLE watch_digest_issue_views")
+        conn.execute("PRAGMA user_version = 4")
+        conn.commit()
+    return store, clock, digest.digest_id
+
+
+def test_store_v4_state_writable_call_adds_append_only_digest_issue_views(
+    tmp_path: Path,
+) -> None:
+    store, clock, digest_id = create_v4_state_with_pending_digest(tmp_path)
+    kept_before = {
+        table: query_state(store, f"SELECT * FROM {table} ORDER BY 1") for table in V4_KEPT_TABLES
+    }
+    clock.now = 1_200.0
+
+    claim = store.claim_run(WATCH_ID, lease_seconds=600)
+
+    assert schema_identity(store) == (STATE_APPLICATION_ID, STATE_SCHEMA_VERSION)
+    assert STATE_SCHEMA_VERSION == 5
+    assert {
+        table: query_state(store, f"SELECT * FROM {table} ORDER BY 1") for table in V4_KEPT_TABLES
+    } == kept_before
+    assert len(kept_before["watch_digest_entries"]) == 1
+    assert query_state(store, "SELECT COUNT(*) FROM watch_digest_issue_views") == [(0,)]
+    resumed = store.begin_digest(claim, 10)
+    assert resumed is not None
+    assert (resumed.digest_id, resumed.resumed, resumed.issue_view) == (digest_id, True, None)
+    with closing(sqlite3.connect(store.path)) as conn:
+        conn.execute(
+            "INSERT INTO watch_digest_issue_views VALUES (?, ?, ?, 1200.0)",
+            (digest_id, WATCH_ID, json.dumps({"entry_refs": []})),
+        )
+        conn.commit()
+        with pytest.raises(sqlite3.DatabaseError, match="issue history is append-only"):
+            conn.execute("UPDATE watch_digest_issue_views SET view_json = '{}'")
+        with pytest.raises(sqlite3.DatabaseError, match="issue history is append-only"):
+            conn.execute("DELETE FROM watch_digest_issue_views")
+        conn.rollback()
+    assert query_state(store, "SELECT digest_id, view_json FROM watch_digest_issue_views") == [
+        (digest_id, '{"entry_refs": []}')
+    ]

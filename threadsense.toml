@@ -82,3 +82,9 @@ duplicate_threshold = 0.88
 [corpus]
 trend_period = "month"
 evidence_limit = 3
+
+[issues]
+# Bounds on candidate issue comparison for each newly tracked thread.
+candidate_window_days = 30
+max_candidate_comparisons = 25
+max_suggestions_per_thread = 3
