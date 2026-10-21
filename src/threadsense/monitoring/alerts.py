@@ -156,7 +156,7 @@ def present_watch_alerts(
                 budget,
                 store.now(),
                 lambda report_id, json_hash, markdown_hash: store.complete_alert_report(
-                    claim, report_id, json_hash, markdown_hash, budget=budget
+                    claim, report_id, json_hash, markdown_hash, session=session, budget=budget
                 ),
             )
     except Exception as error:

@@ -59,6 +59,10 @@ class AlertBudget:
 
     def admit(self, unit: str, **costs: int) -> None:
         self.check()
+        self._charge(unit, **costs)
+
+    def _charge(self, unit: str, **costs: int) -> None:
+        """Charge a raw fixed guard probe without recursively invoking the guard."""
         for dimension, required in costs.items():
             configured = int(getattr(self, dimension))
             if required < 0:
@@ -96,13 +100,68 @@ class AlertBudget:
         }
 
 
-@dataclass(frozen=True)
+@dataclass
 class AlertSession:
     conn: sqlite3.Connection
     root: Path
     watch_id: str
-    fence: Callable[[], AbstractContextManager[None]]
-    check: Callable[[], None]
+    transaction_fence: Callable[[], AbstractContextManager[None]]
+    check_claim: Callable[[], None]
+    expected_epoch: tuple[int, int, int] | None = None
+    epoch_budget: AlertBudget | None = field(default=None, repr=False)
+    exit_probe_allowance: int = 0
+    exiting: bool = False
+
+    def physical_epoch(self) -> tuple[int, int, int]:
+        """Raw physical probe: never calls check/admission or opens another session."""
+        if self.exiting and self.exit_probe_allowance:
+            self.exit_probe_allowance -= 1
+        elif self.epoch_budget is not None:
+            self.epoch_budget._charge("source epoch guard", input_bytes=256)
+        main = next(
+            (row for row in self.conn.execute("PRAGMA database_list") if row[1] == "main"), None
+        )
+        if main is None or not main[2]:
+            raise MonitoringStateError(
+                "alert source requires a file", details={"reason": "source_epoch_requires_file"}
+            )
+        try:
+            stat = Path(main[2]).stat()
+        except OSError as error:
+            raise MonitoringStateError(
+                "alert source epoch unreadable", details={"reason": "source_epoch_unreadable"}
+            ) from error
+        cookie = int(self.conn.execute("PRAGMA main.schema_version").fetchone()[0])
+        return stat.st_dev, stat.st_ino, cookie
+
+    def bind_epoch(self, budget: AlertBudget) -> tuple[int, int, int]:
+        if self.epoch_budget is None:
+            budget._charge("source epoch exit probes", input_bytes=512)
+            self.exit_probe_allowance = 2
+        self.epoch_budget = budget
+        observed = self.physical_epoch()
+        if self.expected_epoch is None:
+            self.expected_epoch = observed
+        elif observed != self.expected_epoch:
+            raise MonitoringStateError(
+                "alert source epoch changed", details={"reason": "source_epoch_changed"}
+            )
+        return self.expected_epoch
+
+    def check(self) -> None:
+        self.check_claim()
+        if self.expected_epoch is not None and self.physical_epoch() != self.expected_epoch:
+            raise MonitoringStateError(
+                "alert source epoch changed", details={"reason": "source_epoch_changed"}
+            )
+
+    @contextmanager
+    def fence(self) -> Iterator[None]:
+        self.check()
+        with self.transaction_fence():
+            self.check()
+            yield
+            self.check()
 
 
 @dataclass(frozen=True)

@@ -10,12 +10,12 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from threadsense.errors import MonitoringStateError
 from threadsense.monitoring.alert_budget import AlertBudget, AlertSession, text_size
 from threadsense.monitoring.alert_source_schema import (
+    EPOCH_CORRECTION_STATEMENTS,
     ORDER_COLUMN_BY_KIND,
     SOURCE_SCHEMA_STATEMENTS,
     SOURCE_SPECS,
@@ -24,6 +24,7 @@ from threadsense.monitoring.alert_source_schema import (
 )
 
 __all__ = [
+    "EPOCH_CORRECTION_STATEMENTS",
     "SOURCE_SCHEMA_STATEMENTS",
     "SourceChange",
     "bootstrap",
@@ -57,34 +58,21 @@ def _refuse(reason: str, **details: Any) -> MonitoringStateError:
     )
 
 
-def _epoch(session: AlertSession, budget: AlertBudget) -> tuple[int, int, int]:
-    session.check()
-    budget.admit("source epoch metadata", input_bytes=256)
-    rows = session.conn.execute("PRAGMA database_list").fetchall()
-    main = next((row for row in rows if row[1] == "main"), None)
-    if main is None or not main[2]:
-        raise _refuse("source_epoch_requires_file")
-    try:
-        stat = Path(main[2]).stat()
-    except OSError as error:
-        raise _refuse("source_epoch_unreadable") from error
-    cookie = int(session.conn.execute("PRAGMA main.schema_version").fetchone()[0])
-    return stat.st_dev, stat.st_ino, cookie
-
-
 def _validate_epoch(
     session: AlertSession,
     budget: AlertBudget,
     expected: tuple[int, int, int],
 ) -> None:
-    if _epoch(session, budget) != expected:
+    if session.physical_epoch() != expected:
         raise _refuse("source_epoch_changed")
 
 
 def _ensure_epoch(session: AlertSession, budget: AlertBudget) -> tuple[int, int, int]:
-    observed = _epoch(session, budget)
+    observed = session.bind_epoch(budget)
+    budget.admit("source epoch state", input_bytes=64)
     row = session.conn.execute(
-        "SELECT device,inode,schema_cookie FROM alert_source_epoch WHERE singleton=1"
+        "SELECT device,inode,schema_cookie,legacy_complete "
+        "FROM alert_source_epoch WHERE singleton=1"
     ).fetchone()
     if row is None:
         with session.fence():
@@ -95,9 +83,10 @@ def _ensure_epoch(session: AlertSession, budget: AlertBudget) -> tuple[int, int,
                 observed,
             )
             row = session.conn.execute(
-                "SELECT device,inode,schema_cookie FROM alert_source_epoch WHERE singleton=1"
+                "SELECT device,inode,schema_cookie,legacy_complete "
+                "FROM alert_source_epoch WHERE singleton=1"
             ).fetchone()
-    if row is None or tuple(row) != observed:
+    if row is None or (not row[3] and tuple(row[:3]) != observed):
         raise _refuse("source_epoch_changed")
     return observed
 
@@ -432,7 +421,8 @@ def _order_legacy_one(
         session.conn.execute(
             "INSERT INTO alert_legacy_heads(watch_id,report_id,observed_ordinal,position) "
             "VALUES(?,?,?,?) ON CONFLICT(watch_id) DO UPDATE SET "
-            "report_id=excluded.report_id,observed_ordinal=excluded.observed_ordinal,position=excluded.position",
+            "report_id=excluded.report_id,observed_ordinal=excluded.observed_ordinal,"
+            "position=excluded.position",
             (data["watch_id"], data["report_id"], data["observed_ordinal"], result.lastrowid),
         )
         _validate_epoch(session, budget, epoch)
@@ -451,26 +441,73 @@ def _order_legacy(
             return
 
 
+def _unpositioned(session: AlertSession, budget: AlertBudget) -> bool:
+    budget.admit("legacy unpositioned absence", input_bytes=32)
+    row = session.conn.execute(
+        "SELECT 1 FROM alert_legacy_reports INDEXED BY alert_legacy_unpositioned "
+        "WHERE position IS NULL ORDER BY watch_id,observed_ordinal,report_id LIMIT 1"
+    ).fetchone()
+    if row is not None:
+        budget.admit("legacy unpositioned candidate", source_rows=1)
+    return row is not None
+
+
+def _legacy_sealed(session: AlertSession, budget: AlertBudget) -> bool:
+    budget.admit("legacy seal state", input_bytes=32)
+    row = session.conn.execute(
+        "SELECT legacy_complete FROM alert_source_epoch WHERE singleton=1"
+    ).fetchone()
+    if row is None or not row[0]:
+        return False
+    if _unpositioned(session, budget):
+        raise _refuse("legacy_unpositioned_after_seal")
+    return True
+
+
 def bootstrap_legacy(session: AlertSession, budget: AlertBudget) -> bool:
     """Admit reports/completions and their order before unrelated source payloads."""
     epoch = _ensure_epoch(session, budget)
+    if _legacy_sealed(session, budget):
+        return True
     for spec in SOURCE_SPECS[:2]:
         while True:
             with budget.unit("legacy bootstrap " + spec.name):
                 complete = _bootstrap_one(session, budget, spec, epoch)
             if complete:
                 break
-    _order_legacy(session, budget, epoch)
-    with session.fence():
-        _validate_epoch(session, budget, epoch)
-        session.conn.execute("UPDATE alert_source_epoch SET legacy_complete=1 WHERE singleton=1")
-    return True
+    while True:
+        _order_legacy(session, budget, epoch)
+        # Exact PK capture states and indexed absence are rechecked under the
+        # same writer fence. An insert racing the outside observation stays work.
+        with budget.unit("legacy seal"):
+            budget.admit("legacy capture seal states", input_bytes=64, source_rows=2)
+            with session.fence():
+                _validate_epoch(session, budget, epoch)
+                for spec in SOURCE_SPECS[:2]:
+                    row = session.conn.execute(
+                        "SELECT complete FROM alert_source_bootstrap WHERE kind=?", (spec.name,)
+                    ).fetchone()
+                    if row is None or row[0] != 1:
+                        raise _refuse("legacy_capture_incomplete", kind=spec.name)
+                if _unpositioned(session, budget):
+                    continue
+                session.conn.execute(
+                    "UPDATE alert_source_epoch SET legacy_complete=1 WHERE singleton=1"
+                )
+                _validate_epoch(session, budget, epoch)
+                return True
 
 
 def bootstrap(session: AlertSession, budget: AlertBudget) -> bool:
     """Finish all finite frozen PK keysets, or raise an honest admission boundary."""
     bootstrap_legacy(session, budget)
     epoch = _ensure_epoch(session, budget)
+    budget.admit("source bootstrap completion state", input_bytes=32)
+    row = session.conn.execute(
+        "SELECT complete FROM alert_source_epoch WHERE singleton=1"
+    ).fetchone()
+    if row is not None and row[0]:
+        return True
     for spec in SOURCE_SPECS[2:]:
         while True:
             with budget.unit("source bootstrap " + spec.name):
@@ -535,16 +572,32 @@ def next_change(
     if after >= through:
         return None
     with budget.unit("next source candidate"):
-        budget.admit("next source metadata", input_bytes=32)
-        row = session.conn.execute(
-            "SELECT sequence FROM alert_source_versions WHERE sequence>? AND sequence<=? "
-            "ORDER BY sequence LIMIT 1",
-            (after, through),
-        ).fetchone()
-        if row is None:
-            return None
-        budget.admit("next source candidate", source_rows=1)
-        return _change(session, budget, int(row[0]))
+        # Fixed indexed probes avoid scanning irrelevant claim/presentation traffic.
+        # Sweep/run/profile/policy inputs are frozen exact-reference lookups instead.
+        kinds = (
+            "watch_digest_entries",
+            "watch_thread_revisions",
+            "watch_revision_analyses",
+            "watch_acquisitions",
+            "watch_threads",
+            "watch_comments",
+            "watch_issue_reports",
+            "watch_issue_evidence",
+            "watch_issue_memberships",
+            "watch_alert_seen",
+        )
+        budget.admit("next source metadata", source_rows=len(kinds), input_bytes=32 * len(kinds))
+        sequence: int | None = None
+        for kind in kinds:
+            row = session.conn.execute(
+                "SELECT sequence FROM alert_source_versions "
+                "WHERE watch_id=? AND kind=? AND sequence>? AND sequence<=? "
+                "ORDER BY sequence LIMIT 1",
+                (session.watch_id, kind, after, through),
+            ).fetchone()
+            if row is not None and (sequence is None or int(row[0]) < sequence):
+                sequence = int(row[0])
+        return None if sequence is None else _change(session, budget, sequence)
 
 
 def get_version(
@@ -597,6 +650,69 @@ def latest_change(
         return _change(session, budget, int(row[0]))
 
 
+def _positioned_report(
+    session: AlertSession, budget: AlertBudget, position: int, *, payload: bool
+) -> tuple[dict[str, Any], SourceChange]:
+    """Point-check explicit identity without consulting historical physical rowids."""
+    budget.admit("legacy explicit identity", source_rows=1, input_bytes=96)
+    record = _read_columns(
+        session,
+        budget,
+        "alert_legacy_positions",
+        position,
+        ("report_id", "watch_id", "predecessor_report_id"),
+        "legacy explicit identity",
+    )
+    if record["watch_id"] != session.watch_id:
+        raise _refuse("legacy_position_invalid")
+    row = session.conn.execute(
+        "SELECT rowid FROM alert_legacy_reports WHERE report_id=?", (record["report_id"],)
+    ).fetchone()
+    if row is None:
+        raise _refuse("legacy_source_missing", report_id=record["report_id"])
+    budget.admit("legacy explicit report identity", source_rows=1)
+    metadata = _read_columns(
+        session,
+        budget,
+        "alert_legacy_reports",
+        int(row[0]),
+        ("report_id", "watch_id", "completed", "position", "predecessor_report_id"),
+        "legacy explicit report identity",
+    )
+    if metadata["position"] != position or any(
+        metadata[column] != record[column]
+        for column in ("report_id", "watch_id", "predecessor_report_id")
+    ):
+        raise _refuse("legacy_position_invalid", report_id=record["report_id"])
+    key = _encode([record["report_id"]])
+    budget.admit("legacy source identity metadata", input_bytes=64)
+    source = session.conn.execute(
+        "SELECT sequence FROM alert_source_heads WHERE kind='watch_alert_reports' AND source_key=?",
+        (key,),
+    ).fetchone()
+    live = session.conn.execute(
+        "SELECT rowid FROM watch_alert_reports WHERE report_id=?", (record["report_id"],)
+    ).fetchone()
+    if source is None or live is None:
+        raise _refuse("legacy_source_missing", report_id=record["report_id"])
+    budget.admit("legacy source identity", source_rows=2)
+    change = _change(session, budget, int(source[0]))
+    columns = SPEC_BY_KIND["watch_alert_reports"].columns if payload else ("report_id", "watch_id")
+    actual = _read_columns(
+        session, budget, "watch_alert_reports", int(live[0]), columns, "legacy source identity"
+    )
+    if (
+        change.kind != "watch_alert_reports"
+        or change.key != key
+        or change.watch_id != session.watch_id
+        or change.data.get("report_id") != record["report_id"]
+        or change.data.get("watch_id") != session.watch_id
+        or any(actual[column] != change.data.get(column) for column in columns)
+    ):
+        raise _refuse("legacy_source_identity_changed", report_id=record["report_id"])
+    return metadata, change
+
+
 def legacy_report(
     session: AlertSession,
     budget: AlertBudget,
@@ -604,46 +720,57 @@ def legacy_report(
     pending_only: bool = True,
     latest: bool = False,
 ) -> SourceChange | None:
-    row = session.conn.execute(
-        "SELECT legacy_complete FROM alert_source_epoch WHERE singleton=1"
-    ).fetchone()
-    if row is None or not row[0]:
-        raise _refuse("legacy_bootstrap_incomplete")
     epoch = _ensure_epoch(session, budget)
-    _order_legacy(session, budget, epoch)
+    if not _legacy_sealed(session, budget):
+        raise _refuse("legacy_bootstrap_incomplete")
     with budget.unit("legacy selected report"):
         budget.admit("legacy report metadata", input_bytes=64)
         direction = "DESC" if latest else "ASC"
-        completed = " AND completed=0" if pending_only else ""
-        row = session.conn.execute(
-            "SELECT rowid FROM alert_legacy_reports WHERE watch_id=?"
-            + completed
-            + f" ORDER BY observed_ordinal {direction},report_id {direction} LIMIT 1",
-            (session.watch_id,),
-        ).fetchone()
+        if pending_only:
+            row = session.conn.execute(
+                "SELECT position,rowid FROM alert_legacy_reports "
+                "WHERE watch_id=? AND completed=0 "
+                f"ORDER BY position {direction} LIMIT 1",
+                (session.watch_id,),
+            ).fetchone()
+        else:
+            row = session.conn.execute(
+                "SELECT position,rowid FROM alert_legacy_positions WHERE watch_id=? "
+                f"ORDER BY position {direction} LIMIT 1",
+                (session.watch_id,),
+            ).fetchone()
         if row is None:
             return None
-        budget.admit("legacy report candidate", source_rows=1)
-        metadata = _read_columns(
+        budget.admit("legacy selected report candidate", source_rows=1)
+        if row[0] is None:
+            raise _refuse("legacy_unpositioned_after_seal")
+        position = int(row[0])
+        selected = _read_columns(
             session,
             budget,
-            "alert_legacy_reports",
-            int(row[0]),
-            ("report_id", "observed_ordinal", "completed", "predecessor_report_id"),
-            "legacy selected report",
-            encode=True,
+            "alert_legacy_reports" if pending_only else "alert_legacy_positions",
+            int(row[1]),
+            ("report_id",),
+            "legacy selected report identity",
         )
-        _anchor(session, budget, metadata["report_id"], metadata["observed_ordinal"])
-        key = _encode([metadata["report_id"]])
-        source = session.conn.execute(
-            "SELECT sequence FROM alert_source_heads "
-            "WHERE kind='watch_alert_reports' AND source_key=?",
-            (key,),
+        metadata, change = _positioned_report(session, budget, position, payload=True)
+        if metadata["report_id"] != selected["report_id"]:
+            raise _refuse("legacy_position_invalid", report_id=selected["report_id"])
+        budget.admit("legacy predecessor position metadata", input_bytes=32)
+        previous = session.conn.execute(
+            "SELECT position FROM alert_legacy_positions WHERE watch_id=? AND position<? "
+            "ORDER BY position DESC LIMIT 1",
+            (session.watch_id, position),
         ).fetchone()
-        if source is None:
-            raise _refuse("legacy_source_missing", report_id=metadata["report_id"])
-        change = _change(session, budget, int(source[0]))
+        predecessor = None
+        if previous is not None:
+            predecessor_metadata, _ = _positioned_report(
+                session, budget, int(previous[0]), payload=False
+            )
+            predecessor = predecessor_metadata["report_id"]
+        if predecessor != metadata["predecessor_report_id"]:
+            raise _refuse("legacy_predecessor_invalid", report_id=metadata["report_id"])
         change.data["_legacy_completed"] = bool(metadata["completed"])
-        change.data["_legacy_predecessor_report_id"] = metadata["predecessor_report_id"]
+        change.data["_legacy_predecessor_report_id"] = predecessor
         _validate_epoch(session, budget, epoch)
         return change

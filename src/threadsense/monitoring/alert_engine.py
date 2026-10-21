@@ -22,6 +22,12 @@ from threadsense.monitoring.alert_budget import (
     json_bound,
     read_json_text,
 )
+from threadsense.monitoring.alert_projection import (
+    claim_projection,
+    coverage_binding,
+    prepare_terminal,
+    require_projection,
+)
 from threadsense.monitoring.alert_records import PendingAlertReport, canonical_json, identity
 
 ENGINE_SCHEMA_STATEMENTS: tuple[str, ...] = (
@@ -91,7 +97,47 @@ def _target(session: AlertSession, target_id: str, budget: AlertBudget) -> dict[
         raise MonitoringStateError(
             "alert target binding differs", details={"reason": "target_mismatch"}
         )
+    if "inherited_coverage" not in value:
+        # Bounded adoption of a pre-R41 pending target preserves its immutable JSON.
+        inherited = _projection_coverage(session, value.get("previous_target"), budget)
+        pending = inherited.pop("pending_target")
+        inherited["pending_target"] = None
+        value["inherited_coverage"] = inherited
+        unfinished = session.conn.execute(
+            "SELECT finished FROM watch_alert2_progress WHERE target_id=?", (target_id,)
+        ).fetchone()
+        if pending is None and unfinished is not None and not unfinished[0]:
+            budget.admit("projection_adoption", input_bytes=512)
+            with session.fence():
+                claim_projection(session, value)
     return value
+
+
+def _projection_coverage(
+    session: AlertSession, previous_target: str | None, budget: AlertBudget
+) -> dict[str, Any]:
+    inherited = coverage_binding(session)
+    if inherited["target_id"] is None and previous_target is not None:
+        budget.admit("projection_adoption_metadata", input_bytes=256)
+        prior_report = session.conn.execute(
+            "SELECT rowid FROM watch_alert2_reports WHERE target_id=?", (previous_target,)
+        ).fetchone()
+        if prior_report is not None:
+            prior_payload = _load(
+                session,
+                "watch_alert2_reports",
+                "payload_json",
+                int(prior_report[0]),
+                budget,
+                "projection_adoption_count",
+            )
+            inherited["evidence_count"] = int(prior_payload["evidence_count"])
+            with session.fence():
+                session.conn.execute(
+                    "INSERT OR IGNORE INTO alert_watch_heads(watch_id,evidence_count) VALUES (?,?)",
+                    (session.watch_id, inherited["evidence_count"]),
+                )
+    return inherited
 
 
 def _progress(session: AlertSession, target_id: str, budget: AlertBudget) -> dict[str, Any]:
@@ -127,6 +173,7 @@ def _result(
     target_id: str | None = None,
     new_ids: list[str] | None = None,
 ) -> dict[str, Any]:
+    session.exiting = True
     payload = {} if report is None else report.payload
     result: dict[str, Any] = {
         "artifact_type": "watch_alert_result",
@@ -199,46 +246,121 @@ def stored_schema2(
 
 
 def complete_schema2(
-    session: AlertSession, report_id: str, json_hash: str, markdown_hash: str
+    session: AlertSession,
+    report_id: str,
+    json_hash: str,
+    markdown_hash: str,
+    budget: AlertBudget,
 ) -> bool:
-    """Bind already checked artifacts; caller performs IO before entering this fence."""
+    """Atomically bind durable publication and expected-old completed coverage."""
+    from threadsense.monitoring.alert_derivation import target_complete, target_counts
+
+    budget.admit("completion_metadata", input_bytes=512)
     row = session.conn.execute(
         "SELECT target_id FROM watch_alert2_reports WHERE report_id=? AND watch_id=?",
         (report_id, session.watch_id),
     ).fetchone()
     if row is None:
         return False
-    target_id = str(row[0])
-    with session.fence():
-        expected = session.conn.execute(
-            "SELECT pending_target FROM watch_alert2_watches WHERE watch_id=?",
-            (session.watch_id,),
-        ).fetchone()
-        existing = session.conn.execute(
-            "SELECT json_sha256,markdown_sha256 FROM watch_alert2_completions WHERE report_id=?",
-            (report_id,),
-        ).fetchone()
-        if existing is not None:
-            if tuple(existing) != (json_hash, markdown_hash):
-                raise MonitoringStateError(
-                    "completion hash differs", details={"reason": "artifact_hash_mismatch"}
-                )
-            return True
-        if expected is None or expected[0] != target_id:
+    existing = session.conn.execute(
+        "SELECT json_sha256,markdown_sha256 FROM watch_alert2_completions WHERE report_id=?",
+        (report_id,),
+    ).fetchone()
+    if existing is not None:
+        if tuple(existing) != (json_hash, markdown_hash):
             raise MonitoringStateError(
-                "pending target changed", details={"reason": "target_mismatch"}
+                "completion hash differs", details={"reason": "artifact_hash_mismatch"}
             )
+        return True
+    target_id = str(row[0])
+    target = _target(session, target_id, budget)
+    progress = _progress(session, target_id, budget)
+    budget.admit("terminal_counts", input_bytes=512)
+    counts = target_counts(session, target_id)
+    terminal_id, terminal_text = prepare_terminal(session, target, progress, counts, budget)
+    heads_text = encode_control(progress["heads"], budget, "terminal_heads", passes=2)
+    counts_text = encode_control(counts, budget, "terminal_counts", passes=2)
+    previous = target["inherited_coverage"]
+    generation = 1
+    if progress["checkpoint_id"] is not None:
+        generation = 1 + int(
+            session.conn.execute(
+                "SELECT generation FROM watch_alert2_checkpoints WHERE checkpoint_id=?",
+                (progress["checkpoint_id"],),
+            ).fetchone()[0]
+        )
+    with session.fence():
+        require_projection(session, target)
+        current = session.conn.execute(
+            "SELECT checkpoint_id,staged_id FROM watch_alert2_progress WHERE target_id=?",
+            (target_id,),
+        ).fetchone()
+        if (
+            current is None
+            or tuple(current) != (progress["checkpoint_id"], None)
+            or not target_complete(session, target_id)
+        ):
+            raise MonitoringStateError(
+                "alert presence incomplete", details={"reason": "alert_presence_incomplete"}
+            )
+        session.conn.execute(
+            "INSERT INTO watch_alert2_checkpoints VALUES (?,?,?,?,?,?,?)",
+            (
+                terminal_id,
+                target_id,
+                progress["checkpoint_id"],
+                generation,
+                heads_text,
+                counts_text,
+                "terminal",
+            ),
+        )
+        session.conn.execute(
+            "INSERT INTO alert_coverage_completions VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                target_id,
+                session.watch_id,
+                previous["target_id"],
+                previous["highwater"],
+                terminal_id,
+                target["highwater"],
+                target["cutoff"],
+                identity("aip-", target["basis"].get("issue_policy")),
+                terminal_text,
+            ),
+        )
+        changed = session.conn.execute(
+            "UPDATE alert_watch_heads SET completed_highwater=?,completed_target=?,"
+            "completed_checkpoint=?,pending_target=NULL,cutoff=?,policy_sha256=?,evidence_count=? "
+            "WHERE watch_id=? AND completed_highwater=? "
+            "AND completed_target IS ? AND pending_target=?",
+            (
+                target["highwater"],
+                target_id,
+                terminal_id,
+                target["cutoff"],
+                identity("aip-", target["basis"].get("issue_policy")),
+                counts["evidence_count"],
+                session.watch_id,
+                previous["highwater"],
+                previous["target_id"],
+                target_id,
+            ),
+        ).rowcount
+        if changed != 1:
+            raise MonitoringStateError("coverage changed", details={"reason": "coverage_conflict"})
         session.conn.execute(
             "INSERT INTO watch_alert2_completions VALUES (?,?,?)",
             (report_id, json_hash, markdown_hash),
         )
         session.conn.execute(
-            "UPDATE watch_alert2_progress SET finished=1 WHERE target_id=?", (target_id,)
+            "UPDATE watch_alert2_progress SET finished=1,checkpoint_id=? WHERE target_id=?",
+            (terminal_id, target_id),
         )
         session.conn.execute(
             "UPDATE watch_alert2_watches SET pending_target=NULL,last_target=?,last_report=? "
-            "WHERE watch_id=?",
-            (target_id, report_id, session.watch_id),
+            "WHERE watch_id=? AND pending_target=?",
+            (target_id, report_id, session.watch_id, target_id),
         )
     return True
 
@@ -405,9 +527,13 @@ def _freeze_target_impl(
         "previous_target": None if prior is None else prior[4],
         "legacy_predecessor": None if legacy_payload is None else legacy_payload["report_id"],
     }
+    target["inherited_coverage"] = _projection_coverage(
+        session, None if prior is None else prior[4], budget
+    )
     text = encode_control(target, budget, "target_freeze", passes=3)
     budget.admit("target_freeze_control", derivations=1)
     with session.fence():
+        claim_projection(session, target)
         session.conn.execute(
             "INSERT INTO watch_alert2_targets VALUES (?,?,?,?,?,?)",
             (target_id, session.watch_id, sweep_id, highwater, target["basis_sha256"], text),
@@ -425,7 +551,8 @@ def _freeze_target_impl(
         session.conn.execute(
             "INSERT INTO watch_alert2_watches VALUES (?,?,NULL,NULL,?,?,?,?) "
             "ON CONFLICT(watch_id) DO UPDATE SET pending_target=excluded.pending_target,"
-            "cohort_id=excluded.cohort_id,comparable_json=excluded.comparable_json,baseline_json=excluded.baseline_json",
+            "cohort_id=excluded.cohort_id,comparable_json=excluded.comparable_json,"
+            "baseline_json=excluded.baseline_json",
             (
                 session.watch_id,
                 target_id,
@@ -508,7 +635,11 @@ def _publish_unit_impl(
     budget: AlertBudget,
 ) -> list[str]:
     from threadsense.monitoring.alert_artifacts import publish_segment
-    from threadsense.monitoring.alert_derivation import commit_derivation, target_counts
+    from threadsense.monitoring.alert_derivation import (
+        commit_derivation,
+        prepare_derivation_commit,
+        target_counts,
+    )
 
     stage_id, generation = _stage_unit(session, target, unit, progress, budget)
     heads = dict(progress["heads"])
@@ -535,6 +666,7 @@ def _publish_unit_impl(
             publish("evidence", [unit.citation])
     if unit.events:
         publish("changes", unit.events)
+    budget.admit("checkpoint_identity", input_bytes=2 * json_bound([stage_id, heads]))
     checkpoint_id = identity("ack-", [stage_id, heads])
     preview = progress["preview"]
     for name, items, limit in (
@@ -548,7 +680,8 @@ def _publish_unit_impl(
                 preview["truncated"] = True
     checkpoint_text = encode_control(heads, budget, "checkpoint_heads", passes=2)
     preview_text = encode_control(preview, budget, "checkpoint_page", passes=2)
-    budget.admit("checkpoint_commit", derivations=1)
+    prepared_digest, prepared_event_keys = prepare_derivation_commit(session, target, unit, budget)
+    budget.admit("checkpoint_commit", derivations=1, input_bytes=2048)
     with session.fence():
         current = session.conn.execute(
             "SELECT checkpoint_id,staged_id FROM watch_alert2_progress WHERE target_id=?",
@@ -558,7 +691,14 @@ def _publish_unit_impl(
             raise MonitoringStateError(
                 "alert checkpoint changed", details={"reason": "checkpoint_conflict"}
             )
-        commit_derivation(session, target, unit, checkpoint_id, budget=budget)
+        commit_derivation(
+            session,
+            target,
+            unit,
+            checkpoint_id,
+            prepared_digest=prepared_digest,
+            prepared_event_keys=prepared_event_keys,
+        )
         counts = target_counts(session, str(target["target_id"]))
         session.conn.execute(
             "INSERT INTO watch_alert2_checkpoints VALUES (?,?,?,?,?,?,?)",

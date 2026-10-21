@@ -243,7 +243,9 @@ def _payload(spec: SourceSpec, prefix: str) -> str:
     return "json_object(" + ",".join(pairs) + ")"
 
 
-def _capture(spec: SourceSpec, prefix: str, *, missing_only: bool = False) -> str:
+def _capture(
+    spec: SourceSpec, prefix: str, *, missing_only: bool = False, legacy: bool = True
+) -> str:
     key = _key(spec, prefix)
     watch = f'{prefix}."watch_id"' if spec.watch_column else "NULL"
     order_column = ORDER_COLUMN_BY_KIND.get(spec.name)
@@ -269,7 +271,7 @@ def _capture(spec: SourceSpec, prefix: str, *, missing_only: bool = False) -> st
         "ON CONFLICT(kind,source_key) DO UPDATE SET "
         "semantic_version=excluded.semantic_version,sequence=excluded.sequence; "
     )
-    if spec.name == "watch_alert_reports":
+    if spec.name == "watch_alert_reports" and legacy:
         statement += (
             "INSERT OR IGNORE INTO alert_legacy_reports"
             "(report_id,watch_id,observed_ordinal,completed) "
@@ -358,4 +360,53 @@ SOURCE_SCHEMA_STATEMENTS: tuple[str, ...] = (
         for table in ("alert_source_latest", "alert_legacy_positions")
         for operation in ("UPDATE", "DELETE")
     ),
+)
+
+
+# Version 9 remains byte-for-byte generated as before. Version 10 adds only
+# explicit-position access paths and replaces future report INSERT capture.
+_SEALED = "(SELECT legacy_complete FROM alert_source_epoch WHERE singleton=1)=1"
+EPOCH_CORRECTION_STATEMENTS: tuple[str, ...] = (
+    "CREATE INDEX alert_legacy_watch_position ON alert_legacy_positions(watch_id,position)",
+    "CREATE INDEX alert_legacy_pending_position "
+    "ON alert_legacy_reports(watch_id,completed,position)",
+    "DROP TRIGGER alert_capture_watch_alert_reports_insert",
+    "DROP TRIGGER alert_source_latest_capture",
+    """CREATE TRIGGER alert_source_latest_capture AFTER INSERT ON alert_source_versions
+        BEGIN
+        INSERT INTO alert_source_latest(sequence,watch_id,kind,source_order)
+        SELECT NEW.sequence,NEW.watch_id,NEW.kind,NEW.source_order
+        WHERE (NEW.kind='watch_sweeps' AND
+               (SELECT complete FROM alert_source_epoch WHERE singleton=1)=1)
+           OR NEW.source_order >= COALESCE(
+            (SELECT source_order FROM alert_source_latest
+             WHERE watch_id IS NEW.watch_id AND kind=NEW.kind ORDER BY sequence DESC LIMIT 1),
+            NEW.source_order);
+        END""",
+    "CREATE TRIGGER alert_capture_watch_alert_reports_insert "
+    "AFTER INSERT ON watch_alert_reports BEGIN "
+    + _capture(SPEC_BY_KIND["watch_alert_reports"], "NEW", legacy=False)
+    # observed_ordinal is historical audit only after seal. Allocate below its
+    # indexed minimum, never from a restored file's potentially renumbered rowid.
+    + f"SELECT CASE WHEN {_SEALED} AND "
+    "(SELECT observed_ordinal FROM alert_legacy_reports "
+    "ORDER BY observed_ordinal LIMIT 1)=-9223372036854775808 "
+    "THEN RAISE(ABORT,'alert legacy audit ordinal exhausted') END; "
+    + "INSERT INTO alert_legacy_positions(report_id,watch_id,predecessor_report_id) "
+    "SELECT NEW.report_id,NEW.watch_id,"
+    "(SELECT report_id FROM alert_legacy_heads WHERE watch_id=NEW.watch_id) "
+    f"WHERE {_SEALED}; " + "INSERT INTO alert_legacy_reports"
+    "(report_id,watch_id,observed_ordinal,completed,position,predecessor_report_id) "
+    "SELECT NEW.report_id,NEW.watch_id,"
+    f"CASE WHEN {_SEALED} THEN COALESCE("
+    "(SELECT observed_ordinal FROM alert_legacy_reports ORDER BY observed_ordinal LIMIT 1),0)-1 "
+    "ELSE NEW.rowid END,"
+    "EXISTS(SELECT 1 FROM watch_alert_completions WHERE report_id=NEW.report_id),"
+    "(SELECT position FROM alert_legacy_positions WHERE report_id=NEW.report_id),"
+    "(SELECT predecessor_report_id FROM alert_legacy_positions WHERE report_id=NEW.report_id); "
+    + "INSERT INTO alert_legacy_heads(watch_id,report_id,observed_ordinal,position) "
+    "SELECT watch_id,report_id,observed_ordinal,position FROM alert_legacy_reports "
+    f"WHERE report_id=NEW.report_id AND {_SEALED} "
+    "ON CONFLICT(watch_id) DO UPDATE SET report_id=excluded.report_id,"
+    "observed_ordinal=excluded.observed_ordinal,position=excluded.position; END",
 )

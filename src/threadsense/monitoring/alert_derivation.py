@@ -14,6 +14,7 @@ from typing import Any
 
 from threadsense.errors import MonitoringStateError
 from threadsense.models.canonical import Thread, canonical_thread_from_payload
+from threadsense.monitoring import alert_projection_work as work
 from threadsense.monitoring.alert_budget import (
     AdmissionStop,
     AlertBudget,
@@ -21,8 +22,9 @@ from threadsense.monitoring.alert_budget import (
     read_json_text,
     text_size,
 )
+from threadsense.monitoring.alert_projection import require_projection
 from threadsense.monitoring.alert_records import canonical_json, identity
-from threadsense.monitoring.alert_sources import get_version, next_change
+from threadsense.monitoring.alert_sources import get_version
 
 DERIVATION_SCHEMA_STATEMENTS: tuple[str, ...] = (
     """CREATE TABLE alert_derivation_targets (
@@ -145,10 +147,22 @@ def _binding(session: AlertSession, target: dict[str, Any]) -> tuple[str, int, s
 
 def _barrier(session: AlertSession, target: dict[str, Any]) -> None:
     target_id, highwater, basis = _binding(session, target)
+    require_projection(session, target)
     row = session.conn.execute(
-        "SELECT highwater,basis_sha256 FROM alert_presence_complete WHERE target_id=?", (target_id,)
+        "SELECT watch_id,highwater,basis_sha256,expected_target,"
+        "expected_highwater,inherited_sha256 "
+        "FROM alert_presence_bindings WHERE target_id=?",
+        (target_id,),
     ).fetchone()
-    if row is None or (int(row[0]), str(row[1])) != (highwater, basis):
+    inherited = target["inherited_coverage"]
+    if row is None or tuple(row) != (
+        session.watch_id,
+        highwater,
+        basis,
+        inherited["target_id"],
+        inherited["highwater"],
+        identity("ainherited-", inherited),
+    ):
         raise _fail("alert_presence_incomplete", target_id=target_id)
 
 
@@ -248,151 +262,7 @@ def _read_snapshot(
 def _gather_one(
     session: AlertSession, target: dict[str, Any], budget: AlertBudget, after: int
 ) -> bool:
-    target_id = str(target["target_id"])
-    change = next_change(session, after, int(target["highwater"]), budget)
-    if change is None:
-        with session.fence():
-            session.conn.execute(
-                "UPDATE alert_derivation_targets SET phase='expand',source_cursor=? "
-                "WHERE target_id=? AND phase='gather'",
-                (int(target["highwater"]), target_id),
-            )
-        return False
-    data = change.data
-    eligible = change.watch_id == session.watch_id
-    entry_values: tuple[Any, ...] | None = None
-    theme_values: tuple[Any, ...] | None = None
-    if eligible and change.kind in {
-        "watch_digest_entries",
-        "watch_acquisitions",
-        "watch_issue_evidence",
-        "watch_issue_memberships",
-        "watch_alert_seen",
-    }:
-        data = _required(
-            get_version(session, change.kind, change.key, int(target["highwater"]), budget)
-        )
-        eligible = data.get("watch_id") == session.watch_id
-    if eligible and change.kind == "watch_digest_entries" and data["kind"] == "thread_update":
-        revision = _required(
-            _version(session, target, budget, "watch_thread_revisions", [data["revision_id"]])
-        )
-        analysis = _version(
-            session,
-            target,
-            budget,
-            "watch_revision_analyses",
-            [data["revision_id"]],
-            required=False,
-        )
-        acquisition = _required(
-            _version(session, target, budget, "watch_acquisitions", [revision["acquisition_id"]])
-        )
-        if analysis is not None and float(acquisition["observed_at_utc"]) <= float(
-            target["cutoff"]
-        ):
-            entry_values = (
-                target_id,
-                str(data["entry_id"]),
-                str(data["source_thread_id"]),
-                str(data["revision_id"]),
-                float(acquisition["observed_at_utc"]),
-                int(revision["sequence"]),
-            )
-    elif eligible and change.kind == "watch_issue_evidence":
-        entry = _required(
-            _version(session, target, budget, "watch_digest_entries", [data["entry_id"]])
-        )
-        theme_values = (
-            target_id,
-            str(data["report_id"]),
-            str(data["text_sha256"]),
-            float(data["recorded_at_utc"]),
-            str(data["entry_id"]),
-            entry["theme_key"],
-        )
-    with session.fence():
-        current = session.conn.execute(
-            "SELECT source_cursor,phase FROM alert_derivation_targets WHERE target_id=?",
-            (target_id,),
-        ).fetchone()
-        if current is None or int(current[0]) != after or current[1] != "gather":
-            raise _fail("alert_derivation_cursor_changed", target_id=target_id)
-        if entry_values is not None:
-            session.conn.execute(
-                "INSERT OR IGNORE INTO alert_target_entries "
-                "(target_id,entry_id,source_thread_id,revision_id,observed,revision_sequence) "
-                "VALUES (?,?,?,?,?,?)",
-                entry_values,
-            )
-        if theme_values is not None:
-            session.conn.execute(
-                "INSERT INTO alert_target_themes VALUES (?,?,?,?,?,?) "
-                "ON CONFLICT(target_id,report_id,text_sha256) DO UPDATE SET "
-                "recorded=excluded.recorded,entry_id=excluded.entry_id,"
-                "theme_key=excluded.theme_key "
-                "WHERE (excluded.recorded,excluded.entry_id)<"
-                "(alert_target_themes.recorded,alert_target_themes.entry_id)",
-                theme_values,
-            )
-        if eligible and change.kind == "watch_issue_memberships":
-            session.conn.execute(
-                "INSERT INTO alert_target_memberships VALUES (?,?,?,?) "
-                "ON CONFLICT(target_id,source_thread_id) DO UPDATE SET "
-                "event_id=excluded.event_id,issue_id=excluded.issue_id "
-                "WHERE excluded.event_id>alert_target_memberships.event_id",
-                (target_id, data["source_thread_id"], int(data["event_id"]), data["issue_id"]),
-            )
-        if (
-            eligible
-            and change.kind == "watch_acquisitions"
-            and float(data["observed_at_utc"]) <= float(target["cutoff"])
-        ):
-            session.conn.execute(
-                "INSERT INTO alert_target_observations VALUES (?,?,?) "
-                "ON CONFLICT(target_id,source_thread_id) DO UPDATE SET "
-                "first_observed=MIN(first_observed,excluded.first_observed)",
-                (target_id, data["source_thread_id"], float(data["observed_at_utc"])),
-            )
-        if (
-            eligible
-            and change.kind == "watch_acquisitions"
-            and data["run_id"] == target["sweep_id"]
-        ):
-            inserted = session.conn.execute(
-                "INSERT OR IGNORE INTO alert_target_acquisitions VALUES (?,?)",
-                (target_id, data["acquisition_id"]),
-            ).rowcount
-            if inserted:
-                session.conn.execute(
-                    "UPDATE alert_derivation_targets SET acquired_threads=acquired_threads+1,"
-                    "parsed_comments=parsed_comments+?,source_reported_comments=source_reported_comments+?,"
-                    "absent_known_comments=absent_known_comments+?,comment_coverage_truncated=comment_coverage_truncated+?,"
-                    "comment_coverage_unknown=comment_coverage_unknown+? WHERE target_id=?",
-                    (
-                        int(data["parsed_comment_count"]),
-                        int(data["reported_comment_count"]),
-                        int(data["absent_known_comment_count"]),
-                        int(data["completeness"] == "truncated"),
-                        int(data["completeness"] == "unknown"),
-                        target_id,
-                    ),
-                )
-        if eligible and change.kind == "watch_alert_seen":
-            session.conn.execute(
-                "INSERT OR IGNORE INTO alert_seen_projection VALUES (?,?,?,?)",
-                (session.watch_id, data["evidence_key"], data["source_report_id"], "legacy"),
-            )
-            if data["source_report_id"] is not None:
-                session.conn.execute(
-                    "INSERT OR IGNORE INTO alert_known_reports VALUES (?,?)",
-                    (session.watch_id, data["source_report_id"]),
-                )
-        session.conn.execute(
-            "UPDATE alert_derivation_targets SET source_cursor=? WHERE target_id=?",
-            (change.sequence, target_id),
-        )
-    return False
+    return work.gather_one(session, target, budget, after)
 
 
 def _entry_sources(
@@ -446,10 +316,10 @@ def _membership(
     return _metadata_text(
         session,
         budget,
-        "alert_target_memberships",
+        "alert_watch_memberships",
         "issue_id",
-        "target_id=? AND source_thread_id=?",
-        (target_id, thread_id),
+        "watch_id=? AND source_thread_id=?",
+        (session.watch_id, thread_id),
         "alert-membership:" + thread_id,
     )
 
@@ -508,87 +378,7 @@ def _updates(report: str, text: str, body: str, budget: AlertBudget) -> list[dic
 def _start_entry(
     session: AlertSession, target: dict[str, Any], budget: AlertBudget, entry_id: str
 ) -> None:
-    from threadsense.monitoring.observations import thread_text_sha256
-
-    budget.admit("alert-thread:" + entry_id, derivations=1)
-    entry, revision, analysis, acquisition = _entry_sources(session, target, budget, entry_id)
-    payload = _decode(str(entry["payload_json"]), budget, "alert-entry:" + entry_id)
-    snapshot = _read_snapshot(session, revision, analysis, budget)
-    thread_id = str(entry["source_thread_id"])
-    thread = _required(
-        _version(session, target, budget, "watch_threads", [session.watch_id, thread_id])
-    )
-    budget.admit("alert-first-observation:" + entry_id, source_rows=1, input_bytes=32)
-    observed = session.conn.execute(
-        "SELECT first_observed FROM alert_target_observations "
-        "WHERE target_id=? AND source_thread_id=?",
-        (target["target_id"], thread_id),
-    ).fetchone()
-    if observed is None:
-        raise _fail("alert_first_observation_missing", entry_id=entry_id)
-    budget.admit(
-        "alert-thread-report:" + entry_id, input_bytes=12 * (len(session.watch_id) + len(thread_id))
-    )
-    report = identity("atr-", [session.watch_id, thread_id])
-    budget.admit(
-        "alert-thread-text:" + entry_id,
-        input_bytes=16 * (len(snapshot.title) + len(snapshot.body or "") + 1),
-    )
-    text = thread_text_sha256(snapshot.title, snapshot.body)
-    body = snapshot.title + "\n" + (snapshot.body or "")
-    edited = bool(payload["thread_text_changed"])
-    info: dict[str, Any] = {
-        "source_thread_id": thread_id,
-        "community": snapshot.source.community,
-        "source_name": snapshot.source.source_name,
-        "entry_id": entry_id,
-        "revision_id": revision["revision_id"],
-        "snapshot_path": revision["snapshot_path"],
-        "snapshot_sha256": revision["snapshot_sha256"],
-        "analysis_path": analysis["analysis_path"],
-        "analysis_sha256": analysis["analysis_sha256"],
-        "source_thread_created_utc": thread["source_created_utc"],
-        "observed_at_utc": acquisition["observed_at_utc"],
-        "recorded_at_utc": acquisition["observed_at_utc"],
-    }
-    citation = {key: value for key, value in info.items() if key != "source_name"}
-    citation.update(
-        {
-            "source_report_id": report,
-            "source_kind": "thread_text",
-            "comment_id": None,
-            "permalink": snapshot.permalink,
-            "source_created_utc": thread["source_created_utc"],
-            "lineage": "firsthand",
-            "copy_of_report_id": None,
-            "author_sha256": _account(
-                snapshot.source.source_name, snapshot.author.username, budget
-            ),
-            "text_sha256": text,
-            "first_observed_at_utc": observed[0],
-            "observation_kind": "edited" if edited else "initial_observation",
-            "edit_observed_at_utc": acquisition["observed_at_utc"] if edited else None,
-            "source_edited_at_utc": None,
-            "excerpt": " ".join(body.split())[:280],
-            "theme_key": None,
-            "issue_id": _membership(session, str(target["target_id"]), thread_id, budget),
-            "independent_person_verified": False,
-            "updates": _updates(report, text, body, budget),
-        }
-    )
-    info_text = _encode(info, budget, "alert-entry-info:" + entry_id)
-    # Serialization/admission stays outside the fence; only bounded indexed writes are fenced.
-    citation["evidence_key"] = "evidence:" + report + ":" + text
-    citation_text, raw_digest = _candidate_text(target, citation, budget)
-    with session.fence():
-        _insert_candidate(
-            session, target, citation, int(revision["sequence"]), 0, citation_text, raw_digest
-        )
-        session.conn.execute(
-            "UPDATE alert_target_entries SET stage=1,info_json=? "
-            "WHERE target_id=? AND entry_id=? AND stage=0",
-            (info_text, target["target_id"], entry_id),
-        )
+    work.start_entry(session, target, budget, entry_id)
 
 
 def _candidate_text(
@@ -602,7 +392,7 @@ def _candidate_text(
     encoded = _encode(citation, budget, str(citation["evidence_key"]))
     budget.admit(
         "alert-candidate-projection:" + str(citation["evidence_key"]),
-        source_rows=5,
+        source_rows=4,
         input_bytes=8 * len(encoded) + 512,
     )
     return encoded, hashlib.sha256(encoded.encode("utf-8")).hexdigest()
@@ -617,72 +407,9 @@ def _insert_candidate(
     citation_text: str,
     raw_digest: str,
 ) -> None:
-    target_id = str(target["target_id"])
-    key, report, text = (
-        str(citation["evidence_key"]),
-        str(citation["source_report_id"]),
-        str(citation["text_sha256"]),
+    work.insert_candidate(
+        session, target, citation, revision_sequence, slot, citation_text, raw_digest
     )
-    community = "community:" + str(citation["community"]).casefold()
-    prior = session.conn.execute(
-        "SELECT raw_sha256 FROM alert_evidence_projection WHERE watch_id=? AND evidence_key=?",
-        (session.watch_id, key),
-    ).fetchone()
-    unchanged = (
-        prior is not None
-        and str(prior[0]) == raw_digest
-        and _known(session, key)
-        and _known(session, community)
-    )
-    inserted = session.conn.execute(
-        "INSERT OR IGNORE INTO alert_target_evidence "
-        "(target_id,evidence_key,report_id,text_sha256,observed,revision_sequence,entry_id,slot,citation_json,"
-        "raw_sha256,copy_of_report_id,community_key,done) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (
-            target_id,
-            key,
-            report,
-            text,
-            citation["observed_at_utc"],
-            revision_sequence,
-            citation["entry_id"],
-            slot,
-            citation_text,
-            raw_digest,
-            citation["copy_of_report_id"],
-            community,
-            int(unchanged),
-        ),
-    ).rowcount
-    if not inserted:
-        return
-    session.conn.execute(
-        "UPDATE alert_derivation_targets SET evidence_count=evidence_count+1 WHERE target_id=?",
-        (target_id,),
-    )
-    origin = session.conn.execute(
-        "SELECT report_id FROM alert_target_evidence WHERE target_id=? AND text_sha256=? "
-        "ORDER BY observed,revision_sequence,entry_id,slot,report_id LIMIT 1",
-        (target_id, text),
-    ).fetchone()
-    previous = session.conn.execute(
-        "SELECT report_id FROM alert_text_origin_projection WHERE watch_id=? AND text_sha256=?",
-        (session.watch_id, text),
-    ).fetchone()
-    if previous is not None and origin is not None and str(previous[0]) != str(origin[0]):
-        session.conn.execute(
-            "INSERT OR IGNORE INTO alert_target_revisits "
-            "(target_id,kind,report_id,text_sha256) VALUES (?,'text','',?)",
-            (target_id, text),
-        )
-    if prior is None:
-        # An explicit short copy may sort before this newly present origin.  Do not
-        # consult an expansion prefix: the dependency cursor runs after all inputs.
-        session.conn.execute(
-            "INSERT OR IGNORE INTO alert_target_revisits "
-            "(target_id,kind,report_id,text_sha256) VALUES (?,'copy',?,?)",
-            (target_id, report, text),
-        )
 
 
 def _index_comments(
@@ -708,19 +435,23 @@ def _index_comments(
         }
         encoded = _encode(payload, budget, "alert-comment-index:" + entry_id)
         with session.fence():
+            require_projection(session, target)
             session.conn.execute(
-                "INSERT OR IGNORE INTO alert_target_comments VALUES (?,?,?,?)",
-                (target["target_id"], entry_id, comment.comment_id, encoded),
+                "INSERT INTO alert_watch_comments VALUES (?,?,?,?) "
+                "ON CONFLICT(watch_id,entry_id,comment_id) "
+                "DO UPDATE SET payload_json=excluded.payload_json",
+                (session.watch_id, entry_id, comment.comment_id, encoded),
             )
             session.conn.execute(
-                "UPDATE alert_target_entries SET comment_cursor=? WHERE target_id=? AND entry_id=?",
-                (position + 1, target["target_id"], entry_id),
+                "UPDATE alert_watch_entries SET comment_cursor=? WHERE watch_id=? AND entry_id=?",
+                (position + 1, session.watch_id, entry_id),
             )
         admission.checkpoint()
     with session.fence():
+        require_projection(session, target)
         session.conn.execute(
-            "UPDATE alert_target_entries SET stage=2 WHERE target_id=? AND entry_id=?",
-            (target["target_id"], entry["entry_id"]),
+            "UPDATE alert_watch_entries SET stage=2 WHERE watch_id=? AND entry_id=?",
+            (session.watch_id, entry["entry_id"]),
         )
 
 
@@ -743,7 +474,7 @@ def _expand_novel(
     payload = _decode(str(entry["payload_json"]), budget, "alert-entry:" + entry_id)
     info = read_json_text(
         session.conn,
-        "alert_target_entries",
+        "alert_watch_entries",
         "info_json",
         info_rowid,
         budget,
@@ -757,15 +488,15 @@ def _expand_novel(
         budget.admit("alert-novel:" + entry_id + ":" + str(position), derivations=1, source_rows=1)
         comment_id = str(change["comment_id"])
         handle = session.conn.execute(
-            "SELECT rowid FROM alert_target_comments "
-            "WHERE target_id=? AND entry_id=? AND comment_id=?",
-            (target["target_id"], entry_id, comment_id),
+            "SELECT rowid FROM alert_watch_comments "
+            "WHERE watch_id=? AND entry_id=? AND comment_id=?",
+            (session.watch_id, entry_id, comment_id),
         ).fetchone()
         if handle is None:
             raise _fail("alert_evidence_mismatch", entry_id=entry_id, comment_id=comment_id)
         comment = read_json_text(
             session.conn,
-            "alert_target_comments",
+            "alert_watch_comments",
             "payload_json",
             int(handle[0]),
             budget,
@@ -797,13 +528,17 @@ def _expand_novel(
         theme = _metadata_text(
             session,
             budget,
-            "alert_target_themes",
+            "alert_watch_themes",
             "theme_key",
-            "target_id=? AND report_id=? AND text_sha256=?",
-            (target["target_id"], report, text),
+            "watch_id=? AND report_id=? AND text_sha256=?",
+            (session.watch_id, report, text),
             "alert-theme:" + report,
         )
-        citation = {key: value for key, value in info.items() if key != "source_name"}
+        citation = {
+            key: value
+            for key, value in info.items()
+            if not key.startswith("_") and key != "source_name"
+        }
         citation.update(
             {
                 "evidence_key": "evidence:" + report + ":" + text,
@@ -835,6 +570,7 @@ def _expand_novel(
         )
         encoded, raw_digest = _candidate_text(target, citation, budget)
         with session.fence():
+            require_projection(session, target)
             _insert_candidate(
                 session,
                 target,
@@ -845,82 +581,29 @@ def _expand_novel(
                 raw_digest,
             )
             session.conn.execute(
-                "UPDATE alert_target_entries SET novel_cursor=? WHERE target_id=? AND entry_id=?",
-                (position + 1, target["target_id"], entry_id),
+                "UPDATE alert_watch_entries SET novel_cursor=? WHERE watch_id=? AND entry_id=?",
+                (position + 1, session.watch_id, entry_id),
             )
         admission.checkpoint()
     with session.fence():
+        require_projection(session, target)
         session.conn.execute(
-            "UPDATE alert_target_entries SET stage=3 WHERE target_id=? AND entry_id=?",
-            (target["target_id"], entry_id),
+            "UPDATE alert_watch_entries SET stage=3 WHERE watch_id=? AND entry_id=?",
+            (session.watch_id, entry_id),
         )
 
 
 def _revisit_one(session: AlertSession, target: dict[str, Any], budget: AlertBudget) -> bool:
-    target_id = str(target["target_id"])
-    budget.admit("alert-affected-select:" + target_id, source_rows=1, input_bytes=512)
-    job = session.conn.execute(
-        "SELECT kind,report_id,text_sha256,cursor FROM alert_target_revisits "
-        "WHERE target_id=? AND done=0 ORDER BY kind,report_id,text_sha256 LIMIT 1",
-        (target_id,),
-    ).fetchone()
-    if job is None:
-        with session.fence():
-            session.conn.execute(
-                "INSERT INTO alert_presence_complete VALUES (?,?,?)",
-                (target_id, int(target["highwater"]), str(target["basis_sha256"])),
-            )
-            session.conn.execute(
-                "UPDATE alert_derivation_targets SET phase='ready' WHERE target_id=?", (target_id,)
-            )
-        return True
-    budget.admit("alert-affected:" + str(job[2]), source_rows=1, derivations=1, input_bytes=256)
-    if job[0] == "copy":
-        row = session.conn.execute(
-            "SELECT evidence_key FROM alert_target_evidence WHERE target_id=? "
-            "AND copy_of_report_id=? AND text_sha256=? AND evidence_key>? "
-            "ORDER BY evidence_key LIMIT 1",
-            (target_id, job[1], job[2], job[3]),
-        ).fetchone()
-    else:
-        row = session.conn.execute(
-            "SELECT evidence_key FROM alert_target_evidence WHERE target_id=? "
-            "AND text_sha256=? AND evidence_key>? ORDER BY evidence_key LIMIT 1",
-            (target_id, job[2], job[3]),
-        ).fetchone()
-    with session.fence():
-        if row is None:
-            session.conn.execute(
-                "UPDATE alert_target_revisits SET done=1 "
-                "WHERE target_id=? AND kind=? AND report_id=? AND text_sha256=?",
-                (target_id, job[0], job[1], job[2]),
-            )
-        else:
-            session.conn.execute(
-                "UPDATE alert_target_evidence SET done=0 WHERE target_id=? AND evidence_key=?",
-                (target_id, row[0]),
-            )
-            session.conn.execute(
-                "UPDATE alert_target_revisits SET cursor=? "
-                "WHERE target_id=? AND kind=? AND report_id=? AND text_sha256=?",
-                (row[0], target_id, job[0], job[1], job[2]),
-            )
-    return False
+    return work.revisit_one(session, target, budget)
 
 
 def prepare_presence(session: AlertSession, target: dict[str, Any], budget: AlertBudget) -> bool:
-    """Advance one durable phase; only True authorizes copy-sensitive derivation."""
+    """Resume the watch's bounded delta/index/revisit work before classification."""
     session.check()
     target_id, highwater, basis = _binding(session, target)
     with _AdmissionUnit(budget, "alert-presence:" + target_id) as admission:
-        budget.admit("alert-presence-control:" + target_id, source_rows=1, input_bytes=256)
-        with session.fence():
-            session.conn.execute(
-                "INSERT OR IGNORE INTO alert_derivation_targets "
-                "(target_id,watch_id,highwater,basis_sha256,phase,source_cursor) "
-                "VALUES (?,?,?,?,'gather',0)",
-                (target_id, session.watch_id, highwater, basis),
-            )
+        budget.admit("alert-presence-control:" + target_id, source_rows=4, input_bytes=1024)
+        work.initialize(session, target, budget)
         state = session.conn.execute(
             "SELECT highwater,basis_sha256,phase,source_cursor "
             "FROM alert_derivation_targets WHERE target_id=?",
@@ -935,32 +618,38 @@ def prepare_presence(session: AlertSession, target: dict[str, Any], budget: Aler
             return _gather_one(session, target, budget, int(state[3]))
         if state[2] == "revisit":
             return _revisit_one(session, target, budget)
-        budget.admit("alert-expand-select:" + target_id, source_rows=1)
-        # An index seek per stage, not a sort/filter over cumulative history.
-        work = None
-        for stage in (0, 1, 2):
-            work = session.conn.execute(
-                "SELECT entry_id,stage,comment_cursor,novel_cursor,rowid FROM alert_target_entries "
-                "WHERE target_id=? AND stage=? "
+        budget.admit("alert-expand-select:" + target_id, source_rows=4, input_bytes=256)
+        selected = None
+        for stage in (0, 1, 2, 4):
+            selected = session.conn.execute(
+                "SELECT entry_id,stage,comment_cursor,novel_cursor,rowid "
+                "FROM alert_watch_entries WHERE watch_id=? AND stage=? "
                 "ORDER BY observed,revision_sequence,entry_id LIMIT 1",
-                (target_id, stage),
+                (session.watch_id, stage),
             ).fetchone()
-            if work is not None:
+            if selected is not None:
                 break
-        if work is None:
+        if selected is None:
             with session.fence():
+                require_projection(session, target)
                 session.conn.execute(
                     "UPDATE alert_derivation_targets SET phase='revisit' WHERE target_id=?",
                     (target_id,),
                 )
             return False
-        if int(work[1]) == 0:
-            _start_entry(session, target, budget, str(work[0]))
-        elif int(work[1]) == 1:
-            _index_comments(session, target, budget, str(work[0]), int(work[2]), admission)
+        if int(selected[1]) in (0, 4):
+            _start_entry(session, target, budget, str(selected[0]))
+        elif int(selected[1]) == 1:
+            _index_comments(session, target, budget, str(selected[0]), int(selected[2]), admission)
         else:
             _expand_novel(
-                session, target, budget, str(work[0]), int(work[3]), int(work[4]), admission
+                session,
+                target,
+                budget,
+                str(selected[0]),
+                int(selected[3]),
+                int(selected[4]),
+                admission,
             )
         return False
 
@@ -986,19 +675,16 @@ def _classify(
     budget.admit(
         "alert-origin-presence:" + str(citation["evidence_key"]), source_rows=3, input_bytes=256
     )
-    origin = session.conn.execute(
-        "SELECT report_id FROM alert_target_evidence WHERE target_id=? AND text_sha256=? "
-        "ORDER BY observed,revision_sequence,entry_id,slot,report_id LIMIT 1",
-        (target_id, text),
-    ).fetchone()
+    _barrier(session, target)
+    origin = work.origin(session, text, float(target["cutoff"]))
     if origin is None:
         raise _fail("alert_text_origin_missing", evidence_key=citation["evidence_key"])
     explicit = (
         citation["lineage"] == "exact_copy"
         and session.conn.execute(
-            "SELECT 1 FROM alert_target_evidence "
-            "WHERE target_id=? AND report_id=? AND text_sha256=?",
-            (target_id, citation["copy_of_report_id"], text),
+            "SELECT 1 FROM alert_watch_evidence "
+            "WHERE watch_id=? AND report_id=? AND text_sha256=? AND eligible=1 AND observed<=?",
+            (session.watch_id, citation["copy_of_report_id"], text, float(target["cutoff"])),
         ).fetchone()
         is not None
     )
@@ -1077,22 +763,22 @@ def next_derivation(
     """
     session.check()
     with _AdmissionUnit(budget, "alert-derivation:" + str(target["target_id"])) as admission:
-        budget.admit("alert-presence-check", source_rows=1, input_bytes=256)
+        budget.admit("alert-presence-check", source_rows=2, input_bytes=1024)
         _barrier(session, target)
         while True:
             budget.admit(
                 "alert-derivation-select:" + str(target["target_id"]), source_rows=1, derivations=1
             )
             row = session.conn.execute(
-                "SELECT rowid,evidence_key FROM alert_target_evidence WHERE target_id=? AND done=0 "
+                "SELECT rowid,evidence_key FROM alert_watch_evidence WHERE watch_id=? AND done=0 "
                 "ORDER BY observed,revision_sequence,entry_id,slot,evidence_key LIMIT 1",
-                (target["target_id"],),
+                (session.watch_id,),
             ).fetchone()
             if row is None:
                 return None
             citation = read_json_text(
                 session.conn,
-                "alert_target_evidence",
+                "alert_watch_evidence",
                 "citation_json",
                 int(row[0]),
                 budget,
@@ -1100,6 +786,16 @@ def next_derivation(
             )
             if not isinstance(citation, dict):
                 raise _fail("alert_citation_unreadable", evidence_key=row[1])
+            if not work.citation_eligible(session, target, citation, budget):
+                with session.fence():
+                    _barrier(session, target)
+                    session.conn.execute(
+                        "UPDATE alert_watch_evidence SET done=1 "
+                        "WHERE watch_id=? AND evidence_key=?",
+                        (session.watch_id, row[1]),
+                    )
+                admission.checkpoint()
+                continue
             events, seen = _classify(session, target, citation, budget)
             encoded = _encode(citation, budget, "alert-decision:" + str(row[1]))
             budget.admit("alert-decision-hash:" + str(row[1]), input_bytes=len(encoded) * 8)
@@ -1116,11 +812,38 @@ def next_derivation(
             with session.fence():
                 _barrier(session, target)
                 session.conn.execute(
-                    "UPDATE alert_target_evidence SET done=1 "
-                    "WHERE target_id=? AND evidence_key=? AND done=0",
-                    (target["target_id"], row[1]),
+                    "UPDATE alert_watch_evidence SET done=1 "
+                    "WHERE watch_id=? AND evidence_key=? AND done=0",
+                    (session.watch_id, row[1]),
                 )
             admission.checkpoint()
+
+
+def prepare_derivation_commit(
+    session: AlertSession, target: dict[str, Any], unit: DerivedUnit, budget: AlertBudget
+) -> tuple[str, dict[str, str]]:
+    """Prepare the indivisible publication control unit before entering its fence."""
+    if len(unit.events) > 6 or len(unit.seen) > 6:
+        raise _fail("alert_derivation_unit_invalid", evidence_key=unit.key)
+    budget.admit(
+        "alert-commit:" + unit.key,
+        # Point reads only; INSERT/UPDATE parameters are charged as input below.
+        source_rows=8,
+        derivations=1,
+        input_bytes=_json_bound(unit.citation) * 4
+        + _json_bound(unit.events)
+        + _json_bound(unit.seen) * 3
+        + 2048,
+    )
+    session.check()
+    _barrier(session, target)
+    digest = hashlib.sha256(canonical_json(unit.citation).encode("utf-8")).hexdigest()
+    event_keys = (
+        {identity("alt-", [session.watch_id, key]): key for key, _ in unit.seen}
+        if unit.events
+        else {}
+    )
+    return digest, event_keys
 
 
 def commit_derivation(
@@ -1128,33 +851,30 @@ def commit_derivation(
     target: dict[str, Any],
     unit: DerivedUnit,
     checkpoint_id: str,
-    budget: AlertBudget | None = None,
+    *,
+    prepared_digest: str,
+    prepared_event_keys: dict[str, str],
 ) -> None:
-    """Commit inside the engine's publication fence, after durable bytes are checked."""
-    if len(unit.events) > 6 or len(unit.seen) > 6:
-        raise _fail("alert_derivation_unit_invalid", evidence_key=unit.key)
-    admission = AlertBudget() if budget is None else budget
-    admission.admit(
-        "alert-commit:" + unit.key,
-        source_rows=3 + len(unit.seen) + len(unit.events),
-        derivations=1,
-        input_bytes=_json_bound(unit.citation) * 2
-        + _json_bound(unit.events)
-        + _json_bound(unit.seen) * 3
-        + 512,
-    )
+    """Commit prepared control inside the engine's expected-old publication fence."""
     session.check()
     _barrier(session, target)
     row = session.conn.execute(
-        "SELECT done,raw_sha256 FROM alert_target_evidence WHERE target_id=? AND evidence_key=?",
-        (target["target_id"], unit.key),
+        "SELECT done,raw_sha256 FROM alert_watch_evidence WHERE watch_id=? AND evidence_key=?",
+        (session.watch_id, unit.key),
     ).fetchone()
     if row is None or int(row[0]):
         raise _fail("alert_derivation_cursor_changed", evidence_key=unit.key)
-    digest = hashlib.sha256(canonical_json(unit.citation).encode("utf-8")).hexdigest()
+    digest = prepared_digest
     session.conn.execute(
         "INSERT INTO alert_derivation_decisions VALUES (?,?,?,?,?,?)",
         (target["target_id"], unit.key, checkpoint_id, digest, int(unit.overlay), len(unit.events)),
+    )
+    first_publication = (
+        session.conn.execute(
+            "SELECT 1 FROM alert_evidence_projection WHERE watch_id=? AND evidence_key=?",
+            (session.watch_id, unit.key),
+        ).fetchone()
+        is None
     )
     session.conn.execute(
         "INSERT INTO alert_evidence_projection VALUES (?,?,?,?,?,?) "
@@ -1169,11 +889,7 @@ def commit_derivation(
             checkpoint_id,
         ),
     )
-    origin = session.conn.execute(
-        "SELECT report_id FROM alert_target_evidence WHERE target_id=? AND text_sha256=? "
-        "ORDER BY observed,revision_sequence,entry_id,slot,report_id LIMIT 1",
-        (target["target_id"], unit.citation["text_sha256"]),
-    ).fetchone()
+    origin = work.origin(session, str(unit.citation["text_sha256"]), float(target["cutoff"]))
     if origin is None:
         raise _fail("alert_text_origin_missing", evidence_key=unit.key)
     session.conn.execute(
@@ -1195,14 +911,9 @@ def commit_derivation(
             session.conn.execute(
                 "INSERT OR IGNORE INTO alert_known_reports VALUES (?,?)", (session.watch_id, report)
             )
-    event_keys = (
-        {identity("alt-", [session.watch_id, key]): key for key, _ in unit.seen}
-        if unit.events
-        else {}
-    )
     for event in unit.events:
         # All event identities use the same watch-global key as seen suppression.
-        event_key = event_keys.get(str(event["alert_id"]))
+        event_key = prepared_event_keys.get(str(event["alert_id"]))
         if event_key is None:
             raise _fail("alert_event_identity_mismatch", alert_id=event["alert_id"])
         session.conn.execute(
@@ -1210,12 +921,13 @@ def commit_derivation(
             (session.watch_id, event_key, event["alert_id"], target["target_id"], checkpoint_id),
         )
     session.conn.execute(
-        "UPDATE alert_target_evidence SET done=1 WHERE target_id=? AND evidence_key=?",
-        (target["target_id"], unit.key),
+        "UPDATE alert_watch_evidence SET done=1 WHERE watch_id=? AND evidence_key=?",
+        (session.watch_id, unit.key),
     )
     session.conn.execute(
-        "UPDATE alert_derivation_targets SET event_count=event_count+? WHERE target_id=?",
-        (len(unit.events), target["target_id"]),
+        "UPDATE alert_derivation_targets SET event_count=event_count+?,"
+        "evidence_count=evidence_count+? WHERE target_id=?",
+        (len(unit.events), int(first_publication), target["target_id"]),
     )
 
 
@@ -1241,12 +953,13 @@ def target_counts(session: AlertSession, target_id: str) -> dict[str, int]:
 
 def target_complete(session: AlertSession, target_id: str) -> bool:
     ready = session.conn.execute(
-        "SELECT 1 FROM alert_presence_complete WHERE target_id=?", (target_id,)
+        "SELECT 1 FROM alert_presence_bindings WHERE target_id=?", (target_id,)
     ).fetchone()
     return (
         ready is not None
         and session.conn.execute(
-            "SELECT 1 FROM alert_target_evidence WHERE target_id=? AND done=0 LIMIT 1", (target_id,)
+            "SELECT 1 FROM alert_watch_evidence WHERE watch_id=? AND done=0 LIMIT 1",
+            (session.watch_id,),
         ).fetchone()
         is None
     )

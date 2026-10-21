@@ -458,17 +458,6 @@ def repost_state(
     root = tmp_path / "workspace"
     shutil.copytree(repost_workspace.root, root)
     state_path = root / repost_workspace.state_relpath
-    # This isolated fixture clone retains the seed's history and continuation state,
-    # but has its own file identity. Rebind only fixture metadata; this is not a
-    # supported product recovery/import path.
-    stat = state_path.stat()
-    with closing(sqlite3.connect(state_path)) as conn:
-        schema_cookie = conn.execute("PRAGMA schema_version").fetchone()[0]
-        conn.execute(
-            "UPDATE alert_source_epoch SET device=?,inode=?,schema_cookie=? WHERE singleton=1",
-            (stat.st_dev, stat.st_ino, schema_cookie),
-        )
-        conn.commit()
     isolate_environment(monkeypatch, root)
     return state_path
 
