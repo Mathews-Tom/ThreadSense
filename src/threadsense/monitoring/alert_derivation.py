@@ -30,11 +30,13 @@ DERIVATION_SCHEMA_STATEMENTS: tuple[str, ...] = (
         basis_sha256 TEXT NOT NULL, phase TEXT NOT NULL, source_cursor INTEGER NOT NULL,
         evidence_count INTEGER NOT NULL DEFAULT 0, event_count INTEGER NOT NULL DEFAULT 0,
         acquired_threads INTEGER NOT NULL DEFAULT 0, parsed_comments INTEGER NOT NULL DEFAULT 0,
-        source_reported_comments INTEGER NOT NULL DEFAULT 0, absent_known_comments INTEGER NOT NULL DEFAULT 0,
+        source_reported_comments INTEGER NOT NULL DEFAULT 0,
+        absent_known_comments INTEGER NOT NULL DEFAULT 0,
         comment_coverage_truncated INTEGER NOT NULL DEFAULT 0,
         comment_coverage_unknown INTEGER NOT NULL DEFAULT 0)""",
     """CREATE TABLE alert_target_acquisitions (
-        target_id TEXT NOT NULL, acquisition_id TEXT NOT NULL, PRIMARY KEY(target_id,acquisition_id))""",
+        target_id TEXT NOT NULL, acquisition_id TEXT NOT NULL,
+        PRIMARY KEY(target_id,acquisition_id))""",
     """CREATE TABLE alert_presence_complete (
         target_id TEXT PRIMARY KEY, highwater INTEGER NOT NULL, basis_sha256 TEXT NOT NULL)""",
     """CREATE TRIGGER alert_presence_complete_no_update BEFORE UPDATE ON alert_presence_complete
@@ -327,7 +329,8 @@ def _gather_one(
             session.conn.execute(
                 "INSERT INTO alert_target_themes VALUES (?,?,?,?,?,?) "
                 "ON CONFLICT(target_id,report_id,text_sha256) DO UPDATE SET "
-                "recorded=excluded.recorded,entry_id=excluded.entry_id,theme_key=excluded.theme_key "
+                "recorded=excluded.recorded,entry_id=excluded.entry_id,"
+                "theme_key=excluded.theme_key "
                 "WHERE (excluded.recorded,excluded.entry_id)<"
                 "(alert_target_themes.recorded,alert_target_themes.entry_id)",
                 theme_values,
@@ -582,7 +585,8 @@ def _start_entry(
             session, target, citation, int(revision["sequence"]), 0, citation_text, raw_digest
         )
         session.conn.execute(
-            "UPDATE alert_target_entries SET stage=1,info_json=? WHERE target_id=? AND entry_id=? AND stage=0",
+            "UPDATE alert_target_entries SET stage=1,info_json=? "
+            "WHERE target_id=? AND entry_id=? AND stage=0",
             (info_text, target["target_id"], entry_id),
         )
 
@@ -753,7 +757,8 @@ def _expand_novel(
         budget.admit("alert-novel:" + entry_id + ":" + str(position), derivations=1, source_rows=1)
         comment_id = str(change["comment_id"])
         handle = session.conn.execute(
-            "SELECT rowid FROM alert_target_comments WHERE target_id=? AND entry_id=? AND comment_id=?",
+            "SELECT rowid FROM alert_target_comments "
+            "WHERE target_id=? AND entry_id=? AND comment_id=?",
             (target["target_id"], entry_id, comment_id),
         ).fetchone()
         if handle is None:
@@ -912,11 +917,13 @@ def prepare_presence(session: AlertSession, target: dict[str, Any], budget: Aler
         with session.fence():
             session.conn.execute(
                 "INSERT OR IGNORE INTO alert_derivation_targets "
-                "(target_id,watch_id,highwater,basis_sha256,phase,source_cursor) VALUES (?,?,?,?,'gather',0)",
+                "(target_id,watch_id,highwater,basis_sha256,phase,source_cursor) "
+                "VALUES (?,?,?,?,'gather',0)",
                 (target_id, session.watch_id, highwater, basis),
             )
         state = session.conn.execute(
-            "SELECT highwater,basis_sha256,phase,source_cursor FROM alert_derivation_targets WHERE target_id=?",
+            "SELECT highwater,basis_sha256,phase,source_cursor "
+            "FROM alert_derivation_targets WHERE target_id=?",
             (target_id,),
         ).fetchone()
         if state is None or (int(state[0]), str(state[1])) != (highwater, basis):
@@ -934,7 +941,8 @@ def prepare_presence(session: AlertSession, target: dict[str, Any], budget: Aler
         for stage in (0, 1, 2):
             work = session.conn.execute(
                 "SELECT entry_id,stage,comment_cursor,novel_cursor,rowid FROM alert_target_entries "
-                "WHERE target_id=? AND stage=? ORDER BY observed,revision_sequence,entry_id LIMIT 1",
+                "WHERE target_id=? AND stage=? "
+                "ORDER BY observed,revision_sequence,entry_id LIMIT 1",
                 (target_id, stage),
             ).fetchone()
             if work is not None:
@@ -988,7 +996,8 @@ def _classify(
     explicit = (
         citation["lineage"] == "exact_copy"
         and session.conn.execute(
-            "SELECT 1 FROM alert_target_evidence WHERE target_id=? AND report_id=? AND text_sha256=?",
+            "SELECT 1 FROM alert_target_evidence "
+            "WHERE target_id=? AND report_id=? AND text_sha256=?",
             (target_id, citation["copy_of_report_id"], text),
         ).fetchone()
         is not None
@@ -1097,7 +1106,8 @@ def next_derivation(
             digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
             budget.admit("alert-prior-decision:" + str(row[1]), source_rows=1, input_bytes=64)
             prior = session.conn.execute(
-                "SELECT citation_sha256 FROM alert_evidence_projection WHERE watch_id=? AND evidence_key=?",
+                "SELECT citation_sha256 FROM alert_evidence_projection "
+                "WHERE watch_id=? AND evidence_key=?",
                 (session.watch_id, row[1]),
             ).fetchone()
             if prior is None or str(prior[0]) != digest or events or seen:
@@ -1106,7 +1116,8 @@ def next_derivation(
             with session.fence():
                 _barrier(session, target)
                 session.conn.execute(
-                    "UPDATE alert_target_evidence SET done=1 WHERE target_id=? AND evidence_key=? AND done=0",
+                    "UPDATE alert_target_evidence SET done=1 "
+                    "WHERE target_id=? AND evidence_key=? AND done=0",
                     (target["target_id"], row[1]),
                 )
             admission.checkpoint()

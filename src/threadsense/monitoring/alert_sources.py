@@ -318,7 +318,8 @@ def _bootstrap_one(
             watch = data.get("watch_id") if spec.watch_column else None
             source_order = data.get(ORDER_COLUMN_BY_KIND.get(spec.name, ""), 0)
             result = session.conn.execute(
-                "INSERT INTO alert_source_versions(kind,source_key,semantic_version,watch_id,source_order,data_json) "
+                "INSERT INTO alert_source_versions"
+                "(kind,source_key,semantic_version,watch_id,source_order,data_json) "
                 "VALUES(?,?,1,?,?,?)",
                 (spec.name, key, watch, source_order, payload),
             )
@@ -341,7 +342,8 @@ def _bootstrap_one(
                 is not None
             )
             session.conn.execute(
-                "INSERT OR IGNORE INTO alert_legacy_reports(report_id,watch_id,observed_ordinal,completed) "
+                "INSERT OR IGNORE INTO alert_legacy_reports"
+                "(report_id,watch_id,observed_ordinal,completed) "
                 "VALUES(?,?,?,?)",
                 (key_data["report_id"], watch_data["watch_id"], rowid, int(completed)),
             )
@@ -419,7 +421,8 @@ def _order_legacy_one(
             if head["observed_ordinal"] >= data["observed_ordinal"]:
                 raise _refuse("legacy_order_ambiguous", report_id=data["report_id"])
         result = session.conn.execute(
-            "INSERT INTO alert_legacy_positions(report_id,watch_id,predecessor_report_id) VALUES(?,?,?)",
+            "INSERT INTO alert_legacy_positions"
+            "(report_id,watch_id,predecessor_report_id) VALUES(?,?,?)",
             (data["report_id"], data["watch_id"], predecessor),
         )
         session.conn.execute(
@@ -633,7 +636,8 @@ def legacy_report(
         _anchor(session, budget, metadata["report_id"], metadata["observed_ordinal"])
         key = _encode([metadata["report_id"]])
         source = session.conn.execute(
-            "SELECT sequence FROM alert_source_heads WHERE kind='watch_alert_reports' AND source_key=?",
+            "SELECT sequence FROM alert_source_heads "
+            "WHERE kind='watch_alert_reports' AND source_key=?",
             (key,),
         ).fetchone()
         if source is None:

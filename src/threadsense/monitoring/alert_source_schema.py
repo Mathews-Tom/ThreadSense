@@ -38,7 +38,8 @@ LEGACY_SPECS: tuple[SourceSpec, ...] = (
     _spec(
         "watch_alert_reports",
         "report_id",
-        "report_id watch_id sweep_run_id cohort_id window_id baseline_window_id status payload_json payload_sha256 json_path markdown_path run_id created_at_utc",
+        "report_id watch_id sweep_run_id cohort_id window_id baseline_window_id status "
+        "payload_json payload_sha256 json_path markdown_path run_id created_at_utc",
     ),
     _spec(
         "watch_alert_completions",
@@ -65,25 +66,35 @@ SOURCE_SPECS: tuple[SourceSpec, ...] = (
     _spec(
         "watch_runs",
         "run_id",
-        "run_id watch_id profile_revision owner_token_sha256 status claimed_at_utc lease_expires_at_utc finished_at_utc recovered_by_run_id",
-        semantic="run_id watch_id profile_revision status claimed_at_utc finished_at_utc recovered_by_run_id",
+        "run_id watch_id profile_revision owner_token_sha256 status claimed_at_utc "
+        "lease_expires_at_utc finished_at_utc recovered_by_run_id",
+        semantic="run_id watch_id profile_revision status claimed_at_utc "
+        "finished_at_utc recovered_by_run_id",
     ),
     _spec(
         "watch_threads",
         "watch_id source_thread_id",
-        "watch_id source_thread_id thread_url subreddit title source_created_utc selected rejection_reason first_discovered_at_utc first_discovered_run_id last_discovered_at_utc last_attempted_at_utc last_refreshed_at_utc last_acquisition_id current_revision_id",
-        semantic="watch_id source_thread_id thread_url subreddit title source_created_utc first_discovered_at_utc first_discovered_run_id last_acquisition_id current_revision_id",
+        "watch_id source_thread_id thread_url subreddit title source_created_utc selected "
+        "rejection_reason first_discovered_at_utc first_discovered_run_id last_discovered_at_utc "
+        "last_attempted_at_utc last_refreshed_at_utc last_acquisition_id current_revision_id",
+        semantic="watch_id source_thread_id thread_url subreddit title source_created_utc "
+        "first_discovered_at_utc first_discovered_run_id last_acquisition_id current_revision_id",
     ),
     _spec(
         "watch_acquisitions",
         "acquisition_id",
-        "acquisition_id watch_id source_thread_id run_id observed_at_utc raw_path raw_sha256 normalized_path normalized_sha256 completeness cache_status parsed_comment_count reported_comment_count absent_known_comment_count revision_id",
+        "acquisition_id watch_id source_thread_id run_id observed_at_utc raw_path raw_sha256 "
+        "normalized_path normalized_sha256 completeness cache_status parsed_comment_count "
+        "reported_comment_count absent_known_comment_count revision_id",
     ),
     _spec(
         "watch_comments",
         "watch_id source_thread_id comment_id",
-        "watch_id source_thread_id comment_id current_text_sha256 source_created_utc novelty first_observed_at_utc first_observed_run_id first_acquisition_id last_seen_at_utc last_seen_acquisition_id",
-        semantic="watch_id source_thread_id comment_id current_text_sha256 source_created_utc novelty first_observed_at_utc first_observed_run_id first_acquisition_id",
+        "watch_id source_thread_id comment_id current_text_sha256 source_created_utc novelty "
+        "first_observed_at_utc first_observed_run_id first_acquisition_id last_seen_at_utc "
+        "last_seen_acquisition_id",
+        semantic="watch_id source_thread_id comment_id current_text_sha256 source_created_utc "
+        "novelty first_observed_at_utc first_observed_run_id first_acquisition_id",
     ),
     _spec(
         "watch_comment_texts",
@@ -93,7 +104,9 @@ SOURCE_SPECS: tuple[SourceSpec, ...] = (
     _spec(
         "watch_thread_revisions",
         "revision_id",
-        "revision_id watch_id source_thread_id sequence previous_revision_id substantive_sha256 thread_text_sha256 snapshot_path snapshot_sha256 acquisition_id run_id created_at_utc changes_json",
+        "revision_id watch_id source_thread_id sequence previous_revision_id substantive_sha256 "
+        "thread_text_sha256 snapshot_path snapshot_sha256 acquisition_id run_id created_at_utc "
+        "changes_json",
     ),
     _spec(
         "watch_revision_analyses",
@@ -104,13 +117,16 @@ SOURCE_SPECS: tuple[SourceSpec, ...] = (
     _spec(
         "watch_digest_entries",
         "entry_id",
-        "entry_id watch_id source_thread_id revision_id kind theme_key payload_json created_at_utc created_run_id digest_id presented_at_utc",
-        semantic="entry_id watch_id source_thread_id revision_id kind theme_key payload_json created_at_utc created_run_id",
+        "entry_id watch_id source_thread_id revision_id kind theme_key payload_json created_at_utc "
+        "created_run_id digest_id presented_at_utc",
+        semantic="entry_id watch_id source_thread_id revision_id kind theme_key payload_json "
+        "created_at_utc created_run_id",
     ),
     _spec(
         "watch_digests",
         "digest_id",
-        "digest_id watch_id sequence run_id status entry_ids_json backlog_json json_path markdown_path json_sha256 markdown_sha256 created_at_utc written_at_utc",
+        "digest_id watch_id sequence run_id status entry_ids_json backlog_json json_path "
+        "markdown_path json_sha256 markdown_sha256 created_at_utc written_at_utc",
         semantic="digest_id watch_id sequence run_id entry_ids_json backlog_json created_at_utc",
     ),
     _spec(
@@ -122,7 +138,8 @@ SOURCE_SPECS: tuple[SourceSpec, ...] = (
     _spec(
         "watch_issues",
         "issue_id",
-        "issue_id watch_id home_thread_id created_sequence anchor_utc created_at_utc created_run_id policy_sha256",
+        "issue_id watch_id home_thread_id created_sequence anchor_utc created_at_utc "
+        "created_run_id policy_sha256",
     ),
     _spec(
         "watch_issue_entries",
@@ -132,22 +149,27 @@ SOURCE_SPECS: tuple[SourceSpec, ...] = (
     _spec(
         "watch_issue_reports",
         "report_id",
-        "report_id watch_id source_thread_id comment_id record_sequence first_text_sha256 author_sha256 community permalink source_created_utc lineage copy_of_report_id first_entry_id recorded_at_utc run_id",
+        "report_id watch_id source_thread_id comment_id record_sequence first_text_sha256 "
+        "author_sha256 community permalink source_created_utc lineage copy_of_report_id "
+        "first_entry_id recorded_at_utc run_id",
     ),
     _spec(
         "watch_issue_evidence",
         "report_id entry_id",
-        "report_id entry_id watch_id text_sha256 revision_id snapshot_sha256 links_json recorded_at_utc",
+        "report_id entry_id watch_id text_sha256 revision_id snapshot_sha256 links_json "
+        "recorded_at_utc",
     ),
     _spec(
         "watch_issue_updates",
         "update_id",
-        "update_id watch_id source_thread_id report_id entry_id text_sha256 kind cue recorded_at_utc run_id",
+        "update_id watch_id source_thread_id report_id entry_id text_sha256 kind cue "
+        "recorded_at_utc run_id",
     ),
     _spec(
         "watch_issue_memberships",
         "event_id",
-        "event_id watch_id source_thread_id issue_id previous_issue_id action basis reason report_id policy_sha256 run_id created_at_utc",
+        "event_id watch_id source_thread_id issue_id previous_issue_id action basis reason "
+        "report_id policy_sha256 run_id created_at_utc",
     ),
     _spec(
         "watch_issue_ingestions",
@@ -179,12 +201,14 @@ SOURCE_SPECS: tuple[SourceSpec, ...] = (
     _spec(
         "watch_preference_events",
         "feedback_id",
-        "feedback_id watch_id sequence value target_kind target_id source_thread_id theme_key scope_kind scope_key note recorded_at_utc",
+        "feedback_id watch_id sequence value target_kind target_id source_thread_id theme_key "
+        "scope_kind scope_key note recorded_at_utc",
     ),
     _spec(
         "watch_correction_events",
         "feedback_id",
-        "feedback_id watch_id sequence value target_kind target_id source_thread_id theme_key note recorded_at_utc",
+        "feedback_id watch_id sequence value target_kind target_id source_thread_id "
+        "theme_key note recorded_at_utc",
     ),
 )
 SPEC_BY_KIND = {spec.name: spec for spec in SOURCE_SPECS}
@@ -224,9 +248,11 @@ def _capture(spec: SourceSpec, prefix: str, *, missing_only: bool = False) -> st
         else ""
     )
     statement = (
-        "INSERT INTO alert_source_versions(kind,source_key,semantic_version,watch_id,source_order,data_json) "
+        "INSERT INTO alert_source_versions"
+        "(kind,source_key,semantic_version,watch_id,source_order,data_json) "
         f"SELECT '{spec.name}',{key},COALESCE((SELECT semantic_version FROM alert_source_heads "
-        f"WHERE kind='{spec.name}' AND source_key={key}),0)+1,{watch},{order},{_payload(spec, prefix)}"
+        f"WHERE kind='{spec.name}' AND source_key={key}),0)+1,{watch},{order},"
+        f"{_payload(spec, prefix)}"
         f"{condition}; "
         "INSERT INTO alert_source_heads(kind,source_key,semantic_version,sequence) "
         f"SELECT kind,source_key,semantic_version,sequence FROM alert_source_versions "
@@ -236,7 +262,8 @@ def _capture(spec: SourceSpec, prefix: str, *, missing_only: bool = False) -> st
     )
     if spec.name == "watch_alert_reports":
         statement += (
-            "INSERT OR IGNORE INTO alert_legacy_reports(report_id,watch_id,observed_ordinal,completed) "
+            "INSERT OR IGNORE INTO alert_legacy_reports"
+            "(report_id,watch_id,observed_ordinal,completed) "
             f"VALUES ({prefix}.report_id,{prefix}.watch_id,{prefix}.rowid,"
             f"EXISTS(SELECT 1 FROM watch_alert_completions WHERE report_id={prefix}.report_id)); "
         )
@@ -257,7 +284,8 @@ def _triggers(spec: SourceSpec) -> tuple[str, ...]:
         f"WHEN {changed} BEGIN {_capture(spec, 'OLD', missing_only=True)}"
         f"{_capture(spec, 'NEW')} END",
         f"CREATE TRIGGER alert_capture_{spec.name}_key BEFORE UPDATE ON {spec.name} "
-        f"WHEN {key_changed} BEGIN SELECT RAISE(ABORT,'alert source primary key is immutable'); END",
+        f"WHEN {key_changed} BEGIN "
+        "SELECT RAISE(ABORT,'alert source primary key is immutable'); END",
     )
 
 
@@ -268,7 +296,8 @@ SOURCE_SCHEMA_STATEMENTS: tuple[str, ...] = (
         watch_id TEXT, source_order NUMERIC NOT NULL, data_json TEXT NOT NULL,
         UNIQUE(kind,source_key,semantic_version))""",
     "CREATE INDEX alert_source_watch_sequence ON alert_source_versions(watch_id,sequence)",
-    "CREATE INDEX alert_source_watch_kind_sequence ON alert_source_versions(watch_id,kind,sequence)",
+    "CREATE INDEX alert_source_watch_kind_sequence "
+    "ON alert_source_versions(watch_id,kind,sequence)",
     "CREATE INDEX alert_source_version_at ON alert_source_versions(kind,source_key,sequence)",
     """CREATE TABLE alert_source_latest (
         sequence INTEGER PRIMARY KEY REFERENCES alert_source_versions(sequence),
@@ -299,8 +328,10 @@ SOURCE_SCHEMA_STATEMENTS: tuple[str, ...] = (
         completed INTEGER NOT NULL,position INTEGER,predecessor_report_id TEXT,
         UNIQUE(observed_ordinal))""",
     "CREATE INDEX alert_legacy_order ON alert_legacy_reports(watch_id,observed_ordinal,report_id)",
-    "CREATE INDEX alert_legacy_pending ON alert_legacy_reports(watch_id,completed,observed_ordinal,report_id)",
-    "CREATE INDEX alert_legacy_unpositioned ON alert_legacy_reports(watch_id,observed_ordinal,report_id) WHERE position IS NULL",
+    "CREATE INDEX alert_legacy_pending "
+    "ON alert_legacy_reports(watch_id,completed,observed_ordinal,report_id)",
+    "CREATE INDEX alert_legacy_unpositioned "
+    "ON alert_legacy_reports(watch_id,observed_ordinal,report_id) WHERE position IS NULL",
     """CREATE TABLE alert_legacy_heads (
         watch_id TEXT PRIMARY KEY,report_id TEXT NOT NULL,observed_ordinal INTEGER NOT NULL,
         position INTEGER NOT NULL)""",

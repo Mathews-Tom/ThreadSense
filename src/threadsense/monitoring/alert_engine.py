@@ -96,7 +96,8 @@ def _target(session: AlertSession, target_id: str, budget: AlertBudget) -> dict[
 
 def _progress(session: AlertSession, target_id: str, budget: AlertBudget) -> dict[str, Any]:
     row = session.conn.execute(
-        "SELECT rowid,checkpoint_id,staged_id,finished FROM watch_alert2_progress WHERE target_id=?",
+        "SELECT rowid,checkpoint_id,staged_id,finished "
+        "FROM watch_alert2_progress WHERE target_id=?",
         (target_id,),
     ).fetchone()
     if row is None:
@@ -173,7 +174,8 @@ def stored_schema2(
 ) -> PendingAlertReport:
     row = session.conn.execute(
         "SELECT r.rowid,r.payload_sha256,r.json_path,r.markdown_path,c.report_id "
-        "FROM watch_alert2_reports r LEFT JOIN watch_alert2_completions c ON c.report_id=r.report_id "
+        "FROM watch_alert2_reports r LEFT JOIN watch_alert2_completions c "
+        "ON c.report_id=r.report_id "
         "WHERE r.report_id=?",
         (report_id,),
     ).fetchone()
@@ -234,7 +236,8 @@ def complete_schema2(
             "UPDATE watch_alert2_progress SET finished=1 WHERE target_id=?", (target_id,)
         )
         session.conn.execute(
-            "UPDATE watch_alert2_watches SET pending_target=NULL,last_target=?,last_report=? WHERE watch_id=?",
+            "UPDATE watch_alert2_watches SET pending_target=NULL,last_target=?,last_report=? "
+            "WHERE watch_id=?",
             (target_id, report_id, session.watch_id),
         )
     return True
@@ -683,7 +686,10 @@ def _report_payload(
         "evidence_head": heads["evidence"],
         "change_head": heads["changes"],
         "provenance_head": heads["provenance"],
-        "integrity_scope": "new bytes and immediate references checked; inherited links and leaves checked on bounded access",
+        "integrity_scope": (
+            "new bytes and immediate references checked; "
+            "inherited links and leaves checked on bounded access"
+        ),
         "refusal_reasons": sorted(refusals),
         "suppression_reasons": (
             ["initial_baseline" if target["previous_target"] is None else "cohort_baseline"]
@@ -751,7 +757,8 @@ def execute(
                 )
                 budget.admit("legacy_completion_metadata", source_rows=1, input_bytes=256)
                 hashes = session.conn.execute(
-                    "SELECT json_sha256,markdown_sha256 FROM watch_alert_completions WHERE report_id=?",
+                    "SELECT json_sha256,markdown_sha256 "
+                    "FROM watch_alert_completions WHERE report_id=?",
                     (report.payload["report_id"],),
                 ).fetchone()
                 if hashes is None:
@@ -791,7 +798,8 @@ def execute(
                     from threadsense.monitoring.alert_derivation import DerivedUnit
 
                     stage_row = session.conn.execute(
-                        "SELECT rowid,expected_checkpoint FROM watch_alert2_stages WHERE stage_id=?",
+                        "SELECT rowid,expected_checkpoint "
+                        "FROM watch_alert2_stages WHERE stage_id=?",
                         (progress["staged_id"],),
                     ).fetchone()
                     if stage_row is None or stage_row[1] != progress["checkpoint_id"]:

@@ -1310,7 +1310,8 @@ class MonitoringStore:
             admitted = budget if budget is not None else AlertBudget(check=session.check)
             row = session.conn.execute(
                 "SELECT json_path,markdown_path FROM watch_alert2_reports WHERE report_id=? "
-                "UNION ALL SELECT json_path,markdown_path FROM watch_alert_reports WHERE report_id=?",
+                "UNION ALL SELECT json_path,markdown_path "
+                "FROM watch_alert_reports WHERE report_id=?",
                 (report_id, report_id),
             ).fetchone()
             if row is None:
