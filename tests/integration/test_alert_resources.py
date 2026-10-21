@@ -681,7 +681,8 @@ def test_oversized_source_snapshot_is_refused_before_open_and_recovers_same_targ
         tmp_path,
         body="I can reproduce a unique offline sync conflict. " + "detail " * 20000,
     )
-    config = config_file(tmp_path, source_rows=32, derivations=16, input_bytes=131072)
+    # Admit target control, but not the snapshot's required read/decode/hash passes.
+    config = config_file(tmp_path, source_rows=32, derivations=16, input_bytes=262144)
     install_transport(monkeypatch, phase)
     code, payload = run_cli("watch", "run", "--id", WATCH_ID, "--config", str(config))
     assert code == 0, payload
@@ -693,7 +694,7 @@ def test_oversized_source_snapshot_is_refused_before_open_and_recovers_same_targ
                 "SELECT snapshot_path FROM watch_thread_revisions WHERE watch_id=?", (WATCH_ID,)
             )
         ]
-    oversized = {path.resolve() for path in snapshots if path.stat().st_size > 131072}
+    oversized = {path.resolve() for path in snapshots if 4 * path.stat().st_size > 262144}
     assert oversized
     original_open = Path.open
 
@@ -716,8 +717,17 @@ def test_oversized_source_snapshot_is_refused_before_open_and_recovers_same_targ
             pytest.fail("oversized unit spun through unchanged backlog")
     assert result["status"] == "resource_refused", result
     assert result["resource"]["reason"] == "input_bytes"
+    assert ":alert-snapshot:" in result["resource"]["unit"]
     assert result["resource"]["required"] > result["resource"]["configured"]
     pending = result["continuation"]["target_id"]
+    assert pending is not None
+    with closing(sqlite3.connect(watch)) as connection:
+        assert (
+            connection.execute(
+                "SELECT pending_target FROM watch_alert2_watches WHERE watch_id=?", (WATCH_ID,)
+            ).fetchone()[0]
+            == pending
+        )
     code, recovered = run_cli("watch", "alerts", "--id", WATCH_ID)
     assert code == 0, recovered
     recovered = drain_alerts(recovered)
