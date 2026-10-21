@@ -23,6 +23,10 @@ from typing import Any
 from smoke_annotations import SmokeFailure, check, child_base_env, decode_payload, file_sha256
 from smoke_evaluation import activation_policy, evidence_bindings
 
+from threadsense.monitoring.alert_budget import AlertBudget
+from threadsense.monitoring.alert_reader import read_alert_page
+from threadsense.monitoring.alert_records import canonical_json
+
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests" / "fixtures" / "watch" / "issues"
 WATCH = "export-issues"
@@ -187,6 +191,9 @@ class JourneyScenario:
         self.monitoring = self.store_root / "monitoring"
         self.state_path = self.monitoring / "state.sqlite3"
         self.evidence: list[dict[str, Any]] = []
+        self.alert_journeys: list[dict[str, Any]] = []
+        self.reader_collections: list[dict[str, Any]] = []
+        self.last_receipt = Path()
         self.observations: dict[str, Any] = {
             "watch_id": WATCH,
             "storage_root": str(self.store_root),
@@ -199,6 +206,8 @@ class JourneyScenario:
             "semantic_activation_performed": False,
             "generative_comparator": {"status": "unavailable", "reason": "explicitly_disabled"},
             "required_stages": list(REQUIRED_STAGES),
+            "alert_journeys": self.alert_journeys,
+            "reader_collections": self.reader_collections,
         }
         self.base_env = {
             key: value
@@ -248,6 +257,7 @@ class JourneyScenario:
         self.calls += 1
         prefix = self.work_dir / "payloads" / f"{self.calls:03d}-{label}"
         prefix.parent.mkdir(exist_ok=True)
+        self.last_receipt = prefix.with_suffix(".json")
         if program == CHILD:
             argv = [
                 sys.executable,
@@ -309,7 +319,9 @@ class JourneyScenario:
 
     def cli(self, *args: str, label: str, phase: str = "none") -> tuple[int, dict[str, Any]]:
         completed = self.process(args, label=label, phase=phase)
-        return completed.returncode, decode_payload(completed.stdout, completed.stderr, label)
+        payload = decode_payload(completed.stdout, completed.stderr, label)
+        save(self.last_receipt.with_suffix(".payload.json"), payload)
+        return completed.returncode, payload
 
     def ok(self, *args: str, label: str, phase: str = "none") -> dict[str, Any]:
         code, payload = self.cli(*args, label=label, phase=phase)
@@ -329,11 +341,424 @@ class JourneyScenario:
         check(path.is_file(), f"artifact absent: {raw}")
         return path
 
+    def accounting(self, value: dict[str, Any], *, default: bool = False) -> None:
+        accounting = value["accounting"]
+        limits, used = accounting["limits"], accounting["used"]
+        expected = AlertBudget().accounting()["limits"]
+        check(set(limits) == set(used) == set(expected), "alert accounting dimensions differ")
+        for dimension, limit in limits.items():
+            check(
+                type(limit) is int
+                and limit > 0
+                and type(used[dimension]) is int
+                and 0 <= used[dimension] <= limit,
+                f"invalid alert accounting: {accounting}",
+            )
+        if default:
+            check(limits == expected, f"reader did not use a fresh default budget: {accounting}")
+
+    def alert_progress(self) -> dict[str, Any]:
+        """Observe durable work, excluding fresh claim/run bookkeeping on every retry."""
+        tables = (
+            "alert_source_epoch",
+            "alert_source_bootstrap",
+            "alert_legacy_heads",
+            "alert_legacy_reports",
+            "watch_alert2_targets",
+            "watch_alert2_progress",
+            "watch_alert2_checkpoints",
+            "watch_alert2_stages",
+            "watch_alert2_stage_completions",
+            "watch_alert2_completions",
+            "alert_derivation_targets",
+            "alert_presence_complete",
+            "alert_watch_heads",
+            "alert_watch_entries",
+            "alert_watch_evidence",
+            "alert_target_revisits",
+        )
+        return {table: self.rows(table) for table in tables}
+
+    def frozen_target(self, target_id: str) -> dict[str, Any]:
+        row = next(
+            row for row in self.rows("watch_alert2_targets") if row["target_id"] == target_id
+        )
+        target = json.loads(row["target_json"])
+        for field in ("target_id", "watch_id", "sweep_id", "highwater", "basis_sha256"):
+            check(target[field] == row[field], f"frozen target {field} differs")
+        check(row["watch_id"] == WATCH, "target belongs to another watch")
+        check(
+            hashlib.sha256(canonical_json(target["basis"]).encode("utf-8")).hexdigest()
+            == row["basis_sha256"],
+            "frozen target basis digest differs",
+        )
+        sweep = next(
+            row for row in self.rows("watch_sweeps") if row["run_id"] == target["sweep_id"]
+        )
+        run = next(row for row in self.rows("watch_runs") if row["run_id"] == target["sweep_id"])
+        check(
+            target["cutoff"] == sweep["finished_at_utc"]
+            and target["outcome"] == sweep["outcome"]
+            and target["basis"]["profile_revision"] == run["profile_revision"],
+            "target does not describe the frozen sweep/profile",
+        )
+        versions = [
+            row
+            for row in self.rows("alert_source_versions")
+            if row["kind"] == "watch_sweeps"
+            and json.loads(row["source_key"]) == [target["sweep_id"]]
+            and row["sequence"] <= target["highwater"]
+        ]
+        check(bool(versions), "frozen highwater excludes its own source sweep")
+        return row
+
+    def read_collection(self, report_path: Path, collection: str) -> dict[str, Any]:
+        """Accumulate verified pages separately; pass each product cursor back unchanged."""
+        report = load(report_path)
+        version = report["schema_version"]
+        check(version in (1, 2), f"unsupported journey report schema: {version}")
+        expected = (
+            report["evidence_count" if collection == "evidence" else "event_count"]
+            if version == 2
+            else len(report["evidence" if collection == "evidence" else "alerts"])
+        )
+        directory = (
+            self.work_dir
+            / "journey-readers"
+            / f"{len(self.reader_collections) + 1:03d}-{collection}"
+        )
+        aggregate: dict[str, Any] = {
+            "report_path": str(report_path),
+            "report_sha256": file_sha256(report_path),
+            "schema_version": version,
+            "report_id": report["report_id"],
+            "target_id": report.get("target_id"),
+            "collection": collection,
+            "expected_count": expected,
+            "items": [],
+            "pages": [],
+            "complete": False,
+            "integrity": "accessed_page_leaves_only",
+        }
+        self.reader_collections.append(aggregate)
+        cursor: dict[str, Any] | None = None
+        seen: set[str] = set()
+        while True:
+            original = copy.deepcopy(cursor)
+            page = read_alert_page(
+                root=self.monitoring,
+                report_path=report_path,
+                cursor=cursor,
+                collection=collection,
+                budget=None,
+            )
+            page_path = save(
+                directory / f"{len(aggregate['pages']) + 1:03d}.json",
+                {"request_cursor": original, "result": page},
+            )
+            aggregate["pages"].append({"path": str(page_path), "sha256": file_sha256(page_path)})
+            save(directory / "summary.json", aggregate)
+            check(cursor == original, "reader mutated the supplied cursor")
+            self.accounting(page, default=True)
+            check(page["integrity"] == "accessed_page_leaves_only", "reader integrity overclaim")
+            check(
+                page["status"] != "resource_refused",
+                f"reader resource_refused: {page.get('refusal')}",
+            )
+            check(
+                type(page["complete"]) is bool
+                and isinstance(page["items"], list)
+                and all(isinstance(item, dict) for item in page["items"]),
+                f"invalid reader page: {page}",
+            )
+            aggregate["items"].extend(page["items"])
+            check(len(aggregate["items"]) <= expected, "reader exceeded report count")
+            next_cursor = page["cursor"]
+            if page["complete"]:
+                check(
+                    page["status"] == "complete" and next_cursor is None,
+                    "reader terminal status/cursor differs",
+                )
+                check(
+                    len(aggregate["items"]) == expected, "reader failed to emit complete collection"
+                )
+                break
+            check(
+                page["status"] == "backlog" and isinstance(next_cursor, dict),
+                f"reader did not return resumable backlog: {page}",
+            )
+            binding = {
+                "report_path": report_path.relative_to(self.monitoring).as_posix(),
+                "report_sha256": file_sha256(report_path),
+                "report_id": report["report_id"],
+                "watch_id": report["watch_id"],
+                "target_id": report.get("target_id"),
+                "schema_version": version,
+                "collection": collection,
+                "head": report.get("evidence_head" if collection == "evidence" else "change_head"),
+            }
+            check(
+                all(next_cursor.get(key) == value for key, value in binding.items()),
+                "reader cursor lost its report/collection binding",
+            )
+            check(
+                next_cursor["emitted"] == len(aggregate["items"]),
+                "reader cursor emitted count differs",
+            )
+            position = canonical_json(
+                [
+                    next_cursor.get(key)
+                    for key in (
+                        "phase",
+                        "reference",
+                        "offset",
+                        "overlay_reference",
+                        "overlay_offset",
+                        "leaf_item",
+                        "leaf_citation",
+                        "leaf_kind",
+                        "emitted",
+                    )
+                ]
+            )
+            initial = canonical_json(["collect", binding["head"], 0, None, 0, 0, 0, 0, 0])
+            check(position not in seen and position != initial, "reader backlog made no progress")
+            seen.add(position)
+            cursor = next_cursor
+        identities = [
+            "evidence:" + item["source_report_id"] + ":" + item["text_sha256"]
+            if collection == "evidence"
+            else item["alert_id"]
+            for item in aggregate["items"]
+        ]
+        check(len(set(identities)) == len(identities), f"duplicate reader {collection} identities")
+        aggregate["complete"] = True
+        aggregate["emitted_count"] = len(identities)
+        summary = directory / "summary.json"
+        aggregate["receipt_path"] = str(summary)
+        save(summary, aggregate)
+        return aggregate
+
+    def complete_alerts(self, payload: dict[str, Any], *, label: str) -> dict[str, Any]:
+        """Explicit fixture orchestration, never a product retry or rewritten CLI result."""
+        result = (
+            payload if payload.get("artifact_type") == "watch_alert_result" else payload["alerts"]
+        )
+        requested_sweep = (
+            payload["sweep"]["run_id"]
+            if "sweep" in payload
+            else self.rows("watch_sweeps")[-1]["run_id"]
+        )
+        receipt_path = (
+            self.work_dir / "journey-alerts" / f"{len(self.alert_journeys) + 1:03d}-{label}.json"
+        )
+        receipt: dict[str, Any] = {
+            "receipt_path": str(receipt_path),
+            "requested_sweep_id": requested_sweep,
+            "invocations": [],
+            "new_alert_ids": [],
+            "new_alert_provenance": [],
+            "completed_target_ids": [],
+            "completed_reports": [],
+            "complete": False,
+        }
+        self.alert_journeys.append(receipt)
+        frozen = {row["target_id"]: row for row in self.rows("watch_alert2_targets")}
+        previous_progress: dict[str, Any] | None = None
+        expected_pending: str | None = None
+        while True:
+            progress = self.alert_progress()
+            invocation: dict[str, Any] = {
+                "cli_receipt_path": str(self.last_receipt),
+                "payload_path": str(self.last_receipt.with_suffix(".payload.json")),
+                "result": result,
+                "durable_progress": progress,
+            }
+            receipt["invocations"].append(invocation)
+            save(receipt_path, receipt)
+            raw_payload = load(self.last_receipt.with_suffix(".payload.json"))
+            raw_result = (
+                raw_payload
+                if raw_payload.get("artifact_type") == "watch_alert_result"
+                else raw_payload["alerts"]
+            )
+            check(raw_result == result, "journey result no longer matches immutable CLI payload")
+            command_receipt = load(self.last_receipt)
+            check(
+                command_receipt["fresh_interpreter"] is True, "continuation reused an interpreter"
+            )
+            check(
+                Path(command_receipt["stdout_path"]).stat().st_size
+                <= result["accounting"]["limits"]["response_bytes"],
+                "actual CLI stdout exceeded the response envelope",
+            )
+            self.accounting(result)
+            check(
+                result["status"] != "resource_refused",
+                f"alerts resource_refused: {result.get('resource')}",
+            )
+            if previous_progress is not None:
+                check(progress != previous_progress, "alerts retry made no durable progress")
+            for target_id, row in frozen.items():
+                check(self.frozen_target(target_id) == row, "frozen target changed on continuation")
+            target_id = result.get("target_id")
+            if target_id is not None:
+                row = self.frozen_target(target_id)
+                frozen[target_id] = row
+                invocation["frozen_target"] = row
+                if expected_pending is not None:
+                    check(target_id == expected_pending, "new target bypassed pending older target")
+                target_order = [
+                    item["target_id"]
+                    for item in progress["watch_alert2_targets"]
+                    if item["watch_id"] == WATCH
+                ]
+                earlier = set(target_order[: target_order.index(target_id)])
+                check(
+                    not any(
+                        item["target_id"] in earlier and not item["finished"]
+                        for item in progress["watch_alert2_progress"]
+                    ),
+                    "requested target bypassed unfinished older durable work",
+                )
+            durable_ids = self.rows("alert_v2_event_identities")
+            identities = {row["alert_id"]: row for row in durable_ids}
+            check(len(identities) == len(durable_ids), "duplicate durable schema-two alert IDs")
+            for alert_id in result["new_alert_ids"]:
+                check(alert_id not in receipt["new_alert_ids"], "CLI repeated a newly durable ID")
+                check(alert_id in identities, "CLI new ID is not durably recorded in schema two")
+                identity = identities[alert_id]
+                check(identity["target_id"] == target_id, "new ID belongs to a different target")
+                check(
+                    any(
+                        row["checkpoint_id"] == identity["checkpoint_id"]
+                        and row["target_id"] == target_id
+                        for row in progress["watch_alert2_checkpoints"]
+                    ),
+                    "new ID has no durable checkpoint",
+                )
+                receipt["new_alert_ids"].append(alert_id)
+                receipt["new_alert_provenance"].append(
+                    {
+                        **identity,
+                        "target_report_id": json.loads(frozen[target_id]["target_json"])[
+                            "report_id"
+                        ],
+                        "report_id": result["report_id"],
+                        "cli_receipt_path": str(self.last_receipt),
+                    }
+                )
+            if result["status"] == "backlog":
+                check(
+                    result["comparison_complete"] is False
+                    and result["continuation"]
+                    == {"watch_id": WATCH, "target_id": target_id, "command": "watch alerts"},
+                    "CLI backlog continuation is not the durable watch/target command",
+                )
+            else:
+                check(result["comparison_complete"] is True, f"alerts incomplete: {result}")
+                report = self.alert(result)
+                if report["schema_version"] == 2:
+                    check(target_id is not None, "schema-two report has no target")
+                    target = json.loads(frozen[target_id]["target_json"])
+                    check(
+                        report["window"]["sweep_run_id"] == target["sweep_id"]
+                        and report["source_highwater"] == target["highwater"]
+                        and report["basis_sha256"] == target["basis_sha256"]
+                        and report["basis"] == target["basis"]
+                        and report["window_id"] == target["window_id"],
+                        "completed report differs from its frozen source/basis",
+                    )
+                    check(
+                        any(
+                            row["target_id"] == target_id and row["finished"] == 1
+                            for row in progress["watch_alert2_progress"]
+                        )
+                        and any(
+                            row["report_id"] == result["report_id"]
+                            for row in progress["watch_alert2_completions"]
+                        ),
+                        "report lacks durable target/publication completion",
+                    )
+                    completion = next(
+                        row
+                        for row in progress["watch_alert2_completions"]
+                        if row["report_id"] == result["report_id"]
+                    )
+                    check(
+                        file_sha256(self.artifact(result["json_path"])) == completion["json_sha256"]
+                        and file_sha256(self.artifact(result["markdown_path"]))
+                        == completion["markdown_sha256"],
+                        "completed alert artifact bytes differ from durable publication",
+                    )
+                    receipt["completed_target_ids"].append(target_id)
+                completed_report: dict[str, Any] = {
+                    "target_id": target_id,
+                    "report_id": report["report_id"],
+                    "sweep_id": report["window"]["sweep_run_id"],
+                    "changes": self.read_collection(self.artifact(result["json_path"]), "changes"),
+                    "evidence": self.read_collection(
+                        self.artifact(result["json_path"]), "evidence"
+                    ),
+                }
+                receipt["completed_reports"].append(completed_report)
+                self.validate_events(completed_report["changes"]["items"])
+                change_ids = {item["alert_id"] for item in completed_report["changes"]["items"]}
+                check(
+                    all(
+                        item["alert_id"] in change_ids
+                        for item in receipt["new_alert_provenance"]
+                        if item["target_id"] == target_id
+                    ),
+                    "newly durable target ID is missing from the complete changes reader",
+                )
+                if report["window"]["sweep_run_id"] == requested_sweep:
+                    receipt["terminal_result"] = result
+                    receipt["report_path"] = result["json_path"]
+                    receipt["changes"] = completed_report["changes"]
+                    receipt["evidence"] = completed_report["evidence"]
+                    receipt["alert_ids"] = [
+                        item["alert_id"] for item in receipt["changes"]["items"]
+                    ]
+                    receipt["complete"] = True
+                    save(receipt_path, receipt)
+                    return receipt
+            save(receipt_path, receipt)
+            previous_progress = progress
+            watches = self.rows("watch_alert2_watches")
+            expected_pending = next(
+                (row["pending_target"] for row in watches if row["watch_id"] == WATCH), None
+            )
+            result = self.watch("alerts", label=f"{label}-continue")
+
     def alert(self, result: dict[str, Any]) -> dict[str, Any]:
         check(result["artifact_type"] == "watch_alert_result", f"missing alert result: {result}")
         path = self.artifact(result["json_path"])
         report = load(path)
         check(report["report_id"] == result["report_id"], "alert report identity differs")
+        check(
+            report["watch_id"] == result["watch_id"] == WATCH
+            and report["status"] == result["status"],
+            "alert report watch/status differs",
+        )
+        if report["schema_version"] == 2:
+            check(
+                all(
+                    report[field] == result[field]
+                    for field in (
+                        "target_id",
+                        "cohort_id",
+                        "window_id",
+                        "evidence_count",
+                        "event_count",
+                        "evidence_head",
+                        "change_head",
+                        "provenance_head",
+                        "comparison_complete",
+                    )
+                ),
+                "CLI result differs from its completed report",
+            )
         self.artifact(result["markdown_path"])
         check(
             report["coverage"]["rate_trend_eligible"] is False,
@@ -345,7 +770,11 @@ class JourneyScenario:
             and denominators["independent_people_denominator"] is None,
             "bounded candidate/comment counts became population/independence denominators",
         )
-        for event in result["alerts"]:
+        self.validate_events(result["alerts"])
+        return report
+
+    def validate_events(self, events: list[dict[str, Any]]) -> None:
+        for event in events:
             check(
                 event["claims_are_verified"] is False and event["evidence"],
                 "uncited/verified claim",
@@ -358,7 +787,6 @@ class JourneyScenario:
                     file_sha256(snapshot) == citation["snapshot_sha256"],
                     "citation snapshot mismatch",
                 )
-        return report
 
     def run(self) -> None:
         stages = (
@@ -407,16 +835,19 @@ class JourneyScenario:
 
     def baseline(self) -> None:
         payload = self.watch("run", label="initial", phase="initial")
-        result = payload["alerts"]
-        self.alert(result)
+        completed = self.complete_alerts(payload, label="initial")
+        result = completed["terminal_result"]
         check(
-            result["status"] == "baseline" and not result["new_alert_ids"],
+            result["status"] == "baseline" and not completed["new_alert_ids"],
             "initial demand invented",
         )
         check(result["refusal_reasons"], "bounded unknown coverage permitted trends")
         self.preserved.update(hashes(self.monitoring))
         self.record(
-            "baseline", sweep=payload, bounded_unknown_coverage_refused=result["refusal_reasons"]
+            "baseline",
+            sweep=payload,
+            alert_journey=completed,
+            bounded_unknown_coverage_refused=result["refusal_reasons"],
         )
 
     def freeze(self) -> None:
@@ -673,9 +1104,8 @@ class JourneyScenario:
 
     def new_community(self) -> None:
         payload = self.watch("run", label="repost", phase="repost")
-        result = payload["alerts"]
-        self.alert(result)
-        check(result["new_alert_ids"], "new community/evidence failed to alert")
+        completed = self.complete_alerts(payload, label="repost")
+        check(completed["new_alert_ids"], "new community/evidence failed to alert")
         listing = self.ok("issues", "inspect", "--watch", WATCH, label="issues-list")
         # Listing shape is public CLI, not an independent database invented for the smoke.
         homes = [item for item in listing["issues"] if item["home_thread_id"] == "ix1aaa"]
@@ -693,7 +1123,13 @@ class JourneyScenario:
             "community/copy counts differ",
         )
         self.preserved.update(hashes(self.monitoring))
-        self.record("new_community", sweep=payload, issue=issue, independent_people_verified=False)
+        self.record(
+            "new_community",
+            sweep=payload,
+            alert_journey=completed,
+            issue=issue,
+            independent_people_verified=False,
+        )
 
     def inspect_issue(self, label: str) -> dict[str, Any]:
         payload = self.ok(
@@ -833,6 +1269,7 @@ class JourneyScenario:
             recovered["resumed"] is True and recovered["digest_id"] == receipt["digest_id"],
             "fresh interpreter failed to resume same publication",
         )
+        completed_alerts = self.complete_alerts(recovered, label="publication-recovery")
         assert_preserved(artifacts)
         stale = self.process(
             (str(self.state_path), str(receipt_path)), label="stale-owner", program=FENCE_CHILD
@@ -847,12 +1284,13 @@ class JourneyScenario:
             "missing durable recovery lineage",
         )
         # Digest recovery presents alerts too; replay must preserve, not redeliver, them.
-        alerts = recovered["alerts"]
-        self.alert(alerts)
-        check(bool(alerts["new_alert_ids"]), "new update evidence missing after recovery")
+        alerts = completed_alerts["terminal_result"]
+        check(bool(completed_alerts["new_alert_ids"]), "new update evidence missing after recovery")
         replayed = self.watch("alerts", label="post-recovery-alerts")
+        replayed_alerts = self.complete_alerts(replayed, label="post-recovery-alerts")
         check(
-            replayed["alert_ids"] == alerts["alert_ids"] and not replayed["new_alert_ids"],
+            replayed_alerts["alert_ids"] == completed_alerts["alert_ids"]
+            and not replayed_alerts["new_alert_ids"],
             "post-recovery presentation changed or redelivered alerts",
         )
         self.record(
@@ -864,6 +1302,8 @@ class JourneyScenario:
             abandoned_run=old,
             stale_owner_refused=True,
             alerts=alerts,
+            alert_journey=completed_alerts,
+            replayed_alert_journey=replayed_alerts,
         )
 
     def issue_history(self) -> None:
@@ -884,12 +1324,16 @@ class JourneyScenario:
             issue["counts"]["firsthand_reports"] == 6 and issue["counts"]["exact_copies"] == 1,
             "copy corrupted report counts",
         )
-        alerts = self.watch("alerts", label="alerts-restart")
-        self.alert(alerts)
+        payload = self.watch("alerts", label="alerts-restart")
+        completed = self.complete_alerts(payload, label="alerts-restart")
+        alerts = completed["terminal_result"]
         check(
-            alerts["resumed"] is True and not alerts["new_alert_ids"], "restart redelivered alerts"
+            alerts["resumed"] is True and not completed["new_alert_ids"],
+            "restart redelivered alerts",
         )
-        citations = [citation for event in alerts["alerts"] for citation in event["evidence"]]
+        citations = [
+            citation for event in completed["changes"]["items"] for citation in event["evidence"]
+        ]
         check(bool(citations), "updates have no citations")
         check(
             any(item["source_created_utc"] != item["first_observed_at_utc"] for item in citations),
@@ -904,6 +1348,7 @@ class JourneyScenario:
             "issue_history",
             issue=issue,
             alerts=alerts,
+            alert_journey=completed,
             citations=citations,
             reproduction_verified=False,
             resolution_verified=False,
@@ -919,19 +1364,27 @@ class JourneyScenario:
             "watch_preference_events",
             "watch_correction_events",
             "watch_alert_events",
+            "alert_v2_event_identities",
         )
         return {table: self.rows(table) for table in tables}
 
     def replay(self) -> None:
         before = self.stable_history()
+        check(bool(before["alert_v2_event_identities"]), "replay has no schema-two IDs to preserve")
+        immutable_tables = (
+            "watch_alert2_targets",
+            "watch_alert2_checkpoints",
+            "watch_alert2_reports",
+            "watch_alert2_completions",
+        )
+        immutable = {table: self.rows(table) for table in immutable_tables}
         feedback_before = self.ok(
             "feedback", "list", "--watch", WATCH, label="feedback-before-replay"
         )
         issue_before = self.inspect_issue("history-before-replay")
         result = self.watch("run", label="unchanged-replay", phase="unchanged")
-        alerts = result["alerts"]
-        self.alert(alerts)
-        check(not alerts["new_alert_ids"], "unchanged replay emitted alert")
+        completed = self.complete_alerts(result, label="unchanged-replay")
+        check(not completed["new_alert_ids"], "unchanged replay emitted alert")
         check(
             self.stable_history() == before, "unchanged replay duplicated evidence/history/feedback"
         )
@@ -944,14 +1397,23 @@ class JourneyScenario:
             "unchanged replay changed feedback IDs",
         )
         restarted = self.watch("alerts", label="unchanged-alerts-restart")
+        restarted_alerts = self.complete_alerts(restarted, label="unchanged-alerts-restart")
         check(
-            restarted["alert_ids"] == alerts["alert_ids"] and not restarted["new_alert_ids"],
+            restarted_alerts["alert_ids"] == completed["alert_ids"]
+            and not restarted_alerts["new_alert_ids"],
             "fresh interpreter changed alerts",
         )
+        check(self.stable_history() == before, "fresh restart changed stable evidence/alert IDs")
+        for table, rows in immutable.items():
+            after = self.rows(table)
+            check(all(row in after for row in rows), f"replay rewrote immutable {table}")
         assert_preserved(self.preserved)
         self.record(
             "replay",
             sweep=result,
+            alert_journey=completed,
+            restarted_alert_journey=restarted_alerts,
+            immutable_rows_preserved={table: len(rows) for table, rows in immutable.items()},
             stable_ids={table: rows for table, rows in before.items()},
             repeated_alerts=False,
             old_artifacts_unchanged=True,
@@ -959,15 +1421,17 @@ class JourneyScenario:
 
     def edit_observation(self) -> None:
         payload = self.watch("run", label="evidence-edit", phase="evidence_edit")
-        result = payload["alerts"]
-        self.alert(result)
+        completed = self.complete_alerts(payload, label="evidence-edit")
+        result = completed["terminal_result"]
         citations = [
             citation
-            for event in result["alerts"]
+            for event in completed["changes"]["items"]
             for citation in event["evidence"]
             if citation["comment_id"] == "reddit:ia2"
         ]
-        check(bool(result["new_alert_ids"]) and bool(citations), "edited source evidence not cited")
+        check(
+            bool(completed["new_alert_ids"]) and bool(citations), "edited source evidence not cited"
+        )
         check(
             all(
                 item["edit_observed_at_utc"] is not None
@@ -979,6 +1443,7 @@ class JourneyScenario:
         self.record(
             "edit_observation",
             result=result,
+            alert_journey=completed,
             citations=citations,
             source_edit_time_is_observation_time=False,
         )
@@ -991,8 +1456,9 @@ class JourneyScenario:
                 code == (1 if phase == "coverage_partial" else 0),
                 f"coverage phase failed: {payload}",
             )
-            alerts = payload["alerts"]
-            report = self.alert(alerts)
+            completed = self.complete_alerts(payload, label=phase)
+            alerts = completed["terminal_result"]
+            report = load(self.artifact(alerts["json_path"]))
             check(alerts["refusal_reasons"], "unsupported coverage permitted rate/trend inference")
             expected = (
                 "partial_sweep" if phase == "coverage_partial" else "comment_coverage_truncated"
@@ -1003,6 +1469,7 @@ class JourneyScenario:
                     "phase": phase,
                     "exit_code": code,
                     "result": alerts,
+                    "alert_journey": completed,
                     "coverage": report["coverage"],
                 }
             )
@@ -1021,6 +1488,8 @@ class JourneyScenario:
 
     def cohort(self) -> None:
         previous = self.watch("alerts", label="cohort-before")
+        previous_completed = self.complete_alerts(previous, label="cohort-before")
+        previous = previous_completed["terminal_result"]
         text = self.profile_path.read_text(encoding="utf-8")
         check("presented_findings = 20" in text, "unexpected original limit")
         self.profile_path.write_text(
@@ -1030,18 +1499,24 @@ class JourneyScenario:
             "watch", "create", "--profile", str(self.profile_path), label="revise-same-profile"
         )
         result = self.watch("run", label="changed-cohort", phase="unchanged")
-        alerts = result["alerts"]
-        self.alert(alerts)
+        completed = self.complete_alerts(result, label="changed-cohort")
+        alerts = completed["terminal_result"]
         check(
             revised["revision"] == 2 and alerts["cohort_id"] != previous["cohort_id"],
             "profile change failed to reset cohort",
         )
         check(
-            alerts["status"] == "baseline" and not alerts["new_alert_ids"],
+            alerts["status"] == "baseline" and not completed["new_alert_ids"],
             "cohort change became demand",
         )
         check(len(self.rows("watches")) == 1, "cohort created a second watch")
-        self.record("cohort", revision=revised, result=alerts, change_is_demand=False)
+        self.record(
+            "cohort",
+            revision=revised,
+            result=alerts,
+            alert_journey=completed,
+            change_is_demand=False,
+        )
 
     def scheduler(self) -> None:
         before = hashes(self.store_root)
@@ -1092,6 +1567,17 @@ class JourneyScenario:
     def integrity(self) -> None:
         assert_preserved(self.frozen)
         assert_preserved(self.preserved)
+        check(
+            bool(self.alert_journeys) and all(item["complete"] for item in self.alert_journeys),
+            "journey retained unfinished alert work",
+        )
+        check(
+            len(self.reader_collections)
+            == 2 * sum(len(item["completed_reports"]) for item in self.alert_journeys)
+            and all(item["complete"] for item in self.reader_collections),
+            "journey did not complete both bounded reader collections",
+        )
+        self.observations["durable_alert_identities"] = self.rows("alert_v2_event_identities")
         self.observations["artifact_sha256"] = hashes(self.work_dir)
         self.observations["database_sha256"] = file_sha256(self.state_path)
         self.observations["completed_stages"] = [item["step"] for item in self.evidence] + [
@@ -1102,6 +1588,9 @@ class JourneyScenario:
             frozen_sha256=self.frozen,
             historical_artifact_count=len(self.preserved),
             database_sha256=self.observations["database_sha256"],
+            alert_journey_count=len(self.alert_journeys),
+            completed_reader_collection_count=len(self.reader_collections),
+            integrity_scope="accessed reader links/leaves; immutable fixture artifact hashes",
             one_watch=True,
             semantic_activation_performed=False,
             independent_quality_claim=False,

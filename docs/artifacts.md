@@ -248,7 +248,7 @@ Both `watch run` and `watch digest` include an `alerts` object in addition to th
 - `new_alert_ids`: only events newly made durable by this invocation, including an invocation that returns `backlog`; empty when reusing a completed report
 - `suppression_reasons`, `refusal_reasons`, `json_path`, `markdown_path`, `resumed`
 - `accounting`: admitted `used` and configured `limits` for source/metadata rows, derivations, input bytes, artifact bytes and response bytes
-- `continuation`: the durable pending target and command to resume when work remains; `resource` identifies an admission refusal's unit, dimension (`reason`), required cost and configured bound
+- `continuation`: `{watch_id, target_id, command: "watch alerts"}` identifies stored pending work, not a reader cursor or CLI `--cursor` argument; `resource` identifies an admission refusal's unit, dimension (`reason`), required cost and configured bound
 
 With no durable sweep the result is `unavailable`, has no report, and invents no evidence. With no new sweep, the same report ids and artifact bytes are reused, even if invocation configuration or ranking preferences changed afterwards.
 
@@ -275,19 +275,20 @@ Use the typed bounded reader to resolve cumulative citations or target changes:
 ```python
 from pathlib import Path
 
-from threadsense.monitoring.alert_budget import AlertBudget
 from threadsense.monitoring.alert_reader import read_alert_page
 
 page = read_alert_page(
     root=Path(".threadsense/monitoring"),
     report_path=Path("WATCH/alerts/REPORT.json"),  # relative to root, or an absolute path
-    budget=AlertBudget(),
+    budget=None,  # a fresh default finite AlertBudget for this call
     collection="evidence",  # "changes" reads this target's events
     cursor=None,
 )
 ```
 
-Consume `items`, then pass the returned `cursor` to a new call with a fresh finite budget until `complete` is true. The cursor binds the exact immutable report bytes and collection; do not reuse it for another report. Resolving inherited links or overlays may return a continuation with no items: this is progress through the reference chain, not an empty completed evidence set. The reader reports its own `accounting`; `resource_refused` is an explicit refusal, never empty success. Schema-1 reports retain their old meaning and exact bytes and are byte-preflighted before read/decode/hash. Unsupported future schemas, corrupt/missing accessed references and corrupt/missing accessed snapshot or analysis leaves raise an explicit monitoring-state error.
+Both schema-1 and schema-2 reports support `collection="evidence"` and `collection="changes"`. Consume `items` into a separate aggregate, retain each raw page receipt and pass its returned `cursor` **unchanged** to the next call with the same monitoring root, actual report path and collection. Each call with `budget=None` creates a fresh default finite `AlertBudget`; do not reuse a spent budget across pages. The cursor binds the exact immutable report bytes and collection, not a CLI invocation. Never edit the cursor, report or page receipt to hold accumulated results.
+
+Check every page's `status`, `complete`, `accounting.used` and `accounting.limits`, as well as report/cursor bindings. Completion must reconcile aggregate emitted items with `evidence_count` or target `event_count` in schema 2, or the corresponding inline `evidence` or `alerts` length in schema 1. Resolving inherited links or overlays may yield an empty `backlog` page only with durable cursor progress; unchanged retries are not completion. `resource_refused` exposes unit/reason/required/configured and must remain visible, not become empty success. Schema-1 reports retain their old meaning and exact bytes and are byte-preflighted before read/decode/hash. Unsupported future schemas, corrupt/missing accessed references and corrupt/missing accessed snapshot or analysis leaves raise an explicit monitoring-state error.
 
 The integrity boundary is deliberately local. Publication checks newly admitted artifact bytes and immediate inherited references outside long writer transactions, then fences the checkpoint commit against the live exclusive claim and frozen target. It does **not** rehash every historical raw leaf on every new report. Further inherited links and raw leaves are hash-verified only when accessed by the bounded reader. Counts are persisted checkpoint deltas, not totals recomputed by decoding all history.
 
@@ -317,6 +318,10 @@ response_bytes = 4194304
 For example, `watch alerts --id WATCH --config alerts.toml` applies this finite envelope to one invocation. Rows count every examined source/metadata candidate, including skipped or cross-watch bootstrap candidates; derivations include copy/origin/correction revisits and event expansion. Input counts each admitted application read/decode/hash pass, not only unique filenames. Artifact output and the CLI response have separate bounds. Retained immutable disk history may grow; these are per-invocation work/output limits, not retention or hardware/OOM promises.
 
 `backlog` means bootstrap, target input expansion, provenance, staged delivery or finalization remains. Explicitly invoke `watch alerts` again; the product does not hide a loop or silently enlarge the envelope. A unit that fits the full configured envelope but not this invocation's **remaining** allowance returns `backlog` before reading it. A unit larger than the entire configured envelope returns `resource_refused` with required-versus-configured cost; choose an adequate finite budget to resume it. Neither status means `no_changes`, a completed comparison or a semantic trend-eligibility refusal.
+
+Resume the oldest pending target first, even after a newer sweep arrives. A completed older target does not prove the requested sweep complete: inspect `watch_alert2_targets` for its frozen sweep, source high-water and basis, and its checkpoint/progress/completion state. Keep each fresh CLI invocation's raw result and stdout/stderr receipt unchanged. `new_alert_ids` can appear before terminal completion; journey accumulation belongs in a distinct receipt with invocation, target and report provenance, never in a rewritten terminal payload. Schema-2 replay checks use global durable IDs in `alert_v2_event_identities`; legitimate new target/checkpoint/report rows are not duplicate alerts. Preserved schema-1 `watch_alert_events` alone cannot prove schema-2 replay suppression. This is local durable discoverability, not external exactly-once delivery.
+
+In the integrated engineering journey, `JourneyScenario.complete_alerts` writes separate `journey-alerts/<sequence>-<label>.json` aggregates referenced by `all-evidence.json` at `observations.alert_journeys`. These retain the terminal result, per-invocation provenance and accumulated IDs, with complete changes/evidence reader aggregates. `read_collection` stores unchanged request cursors and raw page receipts under `journey-readers/<sequence>-<collection>/<page>.json`, keeping accumulated items/pages/counts in a separate `summary.json`. Raw CLI payloads remain in `payloads/` as `.payload.json` alongside command `.json` and stdout/stderr log receipts. These fixture-journey artifacts are not product alert reports and do not change their schemas or bytes.
 
 Inspect `resource.unit` before interpreting `continuation.target_id`. Bootstrap or target-control admission can refuse before a target exists, in which case the target ID is null; retry with an adequate finite envelope to create it. A source-snapshot refusal after target creation retains its durable pending target ID, and recovery must complete that same target. Snapshot admission includes every required read/decode/hash pass plus its analysis input, so a file smaller than `input_bytes` can still exceed the indivisible unit's full envelope.
 

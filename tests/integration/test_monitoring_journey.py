@@ -91,18 +91,98 @@ def test_saved_watch_snapshots_freeze_before_inference_and_refuse_missing_annota
     assert error.value.details["reason"] == "labels_digest_mismatch"
 
 
-def test_single_watch_copy_feedback_recovery_replay_and_cohort_transitions(journey: Any) -> None:
+def test_single_watch_copy_feedback_recovery_replay_and_cohort_transitions(
+    journey: Any, journey_module: ModuleType
+) -> None:
     journey.profile()
     journey.baseline()
+    # Freeze an older unchanged sweep with an explicit finite operational envelope.
+    # This is not an assumption that the first default-budget call must backlog.
+    config = journey.work_dir / "older-target-budget.toml"
+    config.write_text("[alerts]\nderivations = 1\n", encoding="utf-8")
+    older = journey.watch(
+        "run", "--config", str(config), label="older-target-start", phase="initial"
+    )["alerts"]
+    progress = journey.alert_progress()
+    while older["target_id"] is None:
+        assert older["status"] == "backlog", older
+        older = journey.watch("alerts", "--config", str(config), label="older-target-freeze")
+        after = journey.alert_progress()
+        assert after != progress, older
+        progress = after
+    assert older["status"] == "backlog", older
+    assert not older["new_alert_ids"]
+    older_target = journey.frozen_target(older["target_id"])
+    assert not next(
+        row
+        for row in journey.rows("watch_alert2_progress")
+        if row["target_id"] == older["target_id"]
+    )["finished"]
     journey.new_community()
+    community = journey.alert_journeys[-1]
+    terminal = community["terminal_result"]
+    assert community["complete"]
+    assert community["requested_sweep_id"] != older_target["sweep_id"]
+    assert community["completed_target_ids"][0] == older_target["target_id"]
+    assert community["completed_target_ids"][-1] == terminal["target_id"]
+    assert [item["target_id"] for item in community["completed_reports"]] == community[
+        "completed_target_ids"
+    ]
+    assert all(
+        item[collection]["complete"]
+        for item in community["completed_reports"]
+        for collection in ("changes", "evidence")
+    )
+    assert terminal["target_id"] != older_target["target_id"]
+    assert journey.frozen_target(older_target["target_id"]) == older_target
+    report = json.loads(Path(terminal["json_path"]).read_text(encoding="utf-8"))
+    assert report["window"]["sweep_run_id"] == community["requested_sweep_id"]
+    newest_target = journey.frozen_target(terminal["target_id"])
+    assert report["source_highwater"] == newest_target["highwater"]
+    assert report["basis_sha256"] == newest_target["basis_sha256"]
+    assert report["basis"] == json.loads(newest_target["target_json"])["basis"]
+    emitted: list[str] = []
+    for invocation in community["invocations"]:
+        raw = json.loads(Path(invocation["payload_path"]).read_text(encoding="utf-8"))
+        result = raw if raw.get("artifact_type") == "watch_alert_result" else raw["alerts"]
+        assert invocation["result"] == result
+        emitted.extend(result["new_alert_ids"])
+        command = json.loads(Path(invocation["cli_receipt_path"]).read_text(encoding="utf-8"))
+        assert command["fresh_interpreter"] is True
+        assert "--cursor" not in command["argv"]
+    assert emitted == community["new_alert_ids"]
+    assert emitted and len(set(emitted)) == len(emitted)
+    durable = {row["alert_id"]: row for row in journey.rows("alert_v2_event_identities")}
+    assert set(emitted) <= set(durable)
+    assert {row["alert_id"] for row in community["new_alert_provenance"]} == set(emitted)
+    for collection in ("changes", "evidence"):
+        reading = community[collection]
+        assert reading["complete"] and reading["items"]
+        assert reading["emitted_count"] == reading["expected_count"] == len(reading["items"])
+        cursor: dict[str, Any] | None = None
+        for entry in reading["pages"]:
+            page = json.loads(Path(entry["path"]).read_text(encoding="utf-8"))
+            assert page["request_cursor"] == cursor
+            assert page["result"]["status"] in ("backlog", "complete")
+            assert page["result"]["integrity"] == "accessed_page_leaves_only"
+            cursor = page["result"]["cursor"]
+        assert cursor is None
+    assert len(community["invocations"]) >= 2
     journey.feedback()
     original_feedback = journey.rows("watch_feedback_keys")
     journey.publication_recovery()
     journey.issue_history()
     after_updates = journey.rows("watch_issue_updates")
     assert len(after_updates) == 4
+    alert_identities = journey.rows("alert_v2_event_identities")
+    assert alert_identities
     assert len(journey.rows("watch_correction_events")) == 1
     journey.replay()
+    assert journey.rows("alert_v2_event_identities") == alert_identities
+    replay = journey.alert_journeys[-2]
+    restarted = journey.alert_journeys[-1]
+    assert not replay["new_alert_ids"] and not restarted["new_alert_ids"]
+    assert replay["alert_ids"] == restarted["alert_ids"]
     assert journey.rows("watch_feedback_keys") == original_feedback
     assert journey.rows("watch_issue_updates") == after_updates
     recovered = [row for row in journey.rows("watch_runs") if row["status"] == "abandoned"]
@@ -118,9 +198,42 @@ def test_single_watch_copy_feedback_recovery_replay_and_cohort_transitions(journ
     journey.scheduler()
     assert len(journey.rows("watches")) == 1
     assert len(journey.rows("watch_revisions")) == 2
-    assert len(journey.rows("watch_alert_cohorts")) == 2
+    targets = [json.loads(row["target_json"]) for row in journey.rows("watch_alert2_targets")]
+    assert len({target["cohort_id"] for target in targets}) == 2
+    assert {target["basis"]["profile_revision"] for target in targets} == {1, 2}
+    assert all(
+        len(
+            {
+                target["cohort_id"]
+                for target in targets
+                if target["basis"]["profile_revision"] == revision
+            }
+        )
+        == 1
+        for revision in (1, 2)
+    )
     assert journey.observations["semantic_activation_performed"] is False
     assert not any(item["step"] == "annotations" for item in journey.evidence)
+
+    # A real indivisible-unit refusal remains visible; the journey must not raise
+    # the operator's envelope or silently retry it as an empty success.
+    refused_config = journey.work_dir / "refused-alert-budget.toml"
+    refused_config.write_text("[alerts]\ninput_bytes = 1\n", encoding="utf-8")
+    history = journey.stable_history()
+    refused = journey.watch(
+        "alerts", "--config", str(refused_config), label="journey-resource-refused"
+    )
+    assert refused["status"] == "resource_refused"
+    assert refused["resource"]["required"] > refused["resource"]["configured"]
+    calls = journey.calls
+    with pytest.raises(journey_module.SmokeFailure, match="resource_refused") as failure:
+        journey.complete_alerts(refused, label="expected-resource-refusal")
+    assert journey.calls == calls
+    assert all(
+        str(refused["resource"][field]) in str(failure.value)
+        for field in ("unit", "reason", "required", "configured")
+    )
+    assert journey.stable_history() == history
 
 
 def test_actual_policy_missing_evidence_and_invalid_annotation_endpoint_are_local_refusals(

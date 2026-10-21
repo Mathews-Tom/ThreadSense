@@ -1667,6 +1667,21 @@ def evidence_document(scenario: Scenario | JourneyScenario, status: str) -> dict
     observations = getattr(scenario, "observations", None)
     if observations is not None:
         document["observations"] = observations
+    if getattr(scenario, "alert_journeys", None) is not None:
+        # Receipt files are the observed CLI/page bytes, not synthetic product reports.
+        # Retain partial receipts on failure as well as completed journey aggregates.
+        receipts: dict[str, list[dict[str, str]]] = {}
+        for name, directory, pattern in (
+            ("cli", "payloads", "*"),
+            ("alert_aggregates", "journey-alerts", "*.json"),
+            ("reader_pages_and_summaries", "journey-readers", "*.json"),
+        ):
+            receipts[name] = [
+                {"path": str(path), "sha256": file_sha256(path)}
+                for path in sorted((scenario.work_dir / directory).rglob(pattern))
+                if path.is_file()
+            ]
+        document["journey_receipts"] = receipts
     document["steps"] = scenario.evidence
     return document
 
