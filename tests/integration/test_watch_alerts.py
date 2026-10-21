@@ -23,6 +23,7 @@ from test_watch_incremental import (
 )
 
 from threadsense.monitoring import MonitoringStore
+from threadsense.monitoring.alert_reader import read_alert_page
 
 
 @pytest.fixture
@@ -35,14 +36,45 @@ def sweep(monkeypatch: pytest.MonkeyPatch, phase: str | ReplayPhase) -> dict[str
     install_transport(monkeypatch, phases_by_name()[phase] if isinstance(phase, str) else phase)
     code, payload = run_cli("watch", "run", "--id", WATCH_ID)
     assert code == (1 if phase == "partial" else 0), payload
-    result: dict[str, Any] = payload["alerts"]
-    return result
+    return drain_alerts(payload["alerts"])
+
+
+def drain_alerts(result: dict[str, Any], *extra: str) -> dict[str, Any]:
+    """Tests explicitly resume backlog; the CLI never hides multiple invocations."""
+    delivered = list(result["new_alert_ids"])
+    for _ in range(4096):
+        if result["status"] != "backlog":
+            assert result["status"] != "resource_refused", result
+            return {**result, "new_alert_ids": delivered}
+        code, result = run_cli("watch", "alerts", "--id", WATCH_ID, *extra)
+        assert code == 0, result
+        assert set(delivered).isdisjoint(result["new_alert_ids"]), result
+        delivered.extend(result["new_alert_ids"])
+    pytest.fail("alert continuation did not terminate")
+
+
+def read_collection(result: dict[str, Any], collection: str) -> list[dict[str, Any]]:
+    path = Path(result["json_path"])
+    root = next(parent for parent in path.parents if (parent / "state.sqlite3").exists())
+    items: list[dict[str, Any]] = []
+    cursor = None
+    for _ in range(4096):
+        page = read_alert_page(root=root, report_path=path, collection=collection, cursor=cursor)
+        assert page["status"] != "resource_refused", page
+        items.extend(page["items"])
+        if page["complete"]:
+            return items
+        assert page["cursor"] is not None
+        cursor = page["cursor"]
+    pytest.fail("alert reader continuation did not terminate")
 
 
 def read_report(result: dict[str, Any]) -> dict[str, Any]:
     report: dict[str, Any] = json.loads(Path(result["json_path"]).read_text(encoding="utf-8"))
     assert report["report_id"] == result["report_id"]
     assert report["artifact_type"] == "watch_alert_report"
+    report["evidence"] = read_collection(result, "evidence")
+    report["alerts"] = read_collection(result, "changes")
     return report
 
 
@@ -213,6 +245,67 @@ def test_exact_copy_does_not_become_independent_new_evidence(
     assert read_report(result)["baseline"]["window_id"] == baseline["window_id"]
 
 
+def test_copied_text_can_establish_only_a_new_observed_community(
+    watch: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    baseline = sweep(monkeypatch, "initial")
+    assert baseline["status"] == "baseline"
+    assert baseline["alerts"] == [] and baseline["new_alert_ids"] == []
+    baseline_bytes = artifact_bytes(baseline)
+    original = (
+        "The merge tool keeps both versions and renames one with a conflict suffix, "
+        "which is slow to clean up."
+    )
+    origin = next(
+        item
+        for item in read_report(baseline)["evidence"]
+        if item["comment_id"] == "reddit:ka1" and item["excerpt"] == original
+    )
+    phase = changed_phase(tmp_path, body=original, community="OtherSyncTools")
+    result = sweep(monkeypatch, phase)
+    report = read_report(result)
+    assert [event["kind"] for event in result["alerts"]] == ["new_community"]
+    event = result["alerts"][0]
+    assert result["alert_ids"] == result["new_alert_ids"] == [event["alert_id"]]
+    assert event["claims_are_verified"] is False
+    assert len(event["evidence"]) == 1
+    citation = event["evidence"][0]
+    assert citation["community"] == "OtherSyncTools"
+    assert citation["lineage"] == "exact_copy" and citation["is_exact_copy"] is True
+    assert citation["copy_of_report_id"] == origin["source_report_id"]
+    assert citation["text_sha256"] == origin["text_sha256"]
+    assert citation["independent_person_verified"] is False
+    copied = [item for item in report["evidence"] if item["comment_id"] == "reddit:ka4"]
+    assert len(copied) == 1
+    assert copied[0]["lineage"] == "exact_copy" and copied[0]["is_exact_copy"] is True
+    assert copied[0]["copy_of_report_id"] == origin["source_report_id"]
+    assert copied[0]["text_sha256"] == origin["text_sha256"]
+    assert copied[0]["independent_person_verified"] is False
+    assert report["baseline"]["report_id"] == baseline["report_id"]
+    assert report["baseline"]["window_id"] == baseline["window_id"]
+    persisted = artifact_bytes(result)
+    for command in ("alerts", "digest"):
+        code, payload = run_cli("watch", command, "--id", WATCH_ID)
+        replay = payload["alerts"] if command == "digest" else payload
+        assert code == 0 and replay["resumed"]
+        assert replay["report_id"] == result["report_id"]
+        assert replay["alert_ids"] == [event["alert_id"]]
+        assert replay["new_alert_ids"] == []
+        assert artifact_bytes(replay) == persisted
+    unchanged = sweep(monkeypatch, phase)
+    assert unchanged["report_id"] != result["report_id"]
+    assert unchanged["alerts"] == [] and unchanged["new_alert_ids"] == []
+    casefolded = sweep(
+        monkeypatch,
+        changed_phase(tmp_path, body=original, community="othersynctools"),
+    )
+    assert casefolded["alerts"] == [] and casefolded["new_alert_ids"] == []
+    assert artifact_bytes(result) == persisted
+    assert artifact_bytes(baseline) == baseline_bytes
+
+
 def test_new_community_is_observed_not_independent_people(
     watch: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -345,7 +438,8 @@ def test_interrupted_publication_recovers_frozen_report_or_refuses_tampering(
 
         patch.setattr(MonitoringStore, "complete_alert_report", interrupt)
         with pytest.raises(InterruptedAlertWrite):
-            run_cli("watch", "run", "--id", WATCH_ID, "--lease-seconds", "1")
+            first = run_cli("watch", "run", "--id", WATCH_ID, "--lease-seconds", "1")[1]
+            drain_alerts(first["alerts"], "--lease-seconds", "1")
     files = sorted(watch.parent.rglob("*alerts/*.json"))
     pending = [path for path in files if json.loads(path.read_text())["status"] != "baseline"]
     assert len(pending) == 1

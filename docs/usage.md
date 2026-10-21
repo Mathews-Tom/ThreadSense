@@ -367,6 +367,7 @@ uv run threadsense watch list [--config PATH]
 uv run threadsense watch inspect --id ID [--config PATH]
 uv run threadsense watch run --id ID [--lease-seconds N] [--config PATH]
 uv run threadsense watch digest --id ID [--lease-seconds N] [--config PATH]
+uv run threadsense watch alerts --id ID [--lease-seconds N] [--config PATH]
 uv run threadsense watch schedule --id ID --format launchd|cron [--workspace DIR] [--config PATH]
 uv run threadsense watch explain --id ID --entry ENTRY_ID [--current] [--config PATH]
 uv run threadsense watch policy --id ID [--set PATH | --select POLICY_ID] [--config PATH]
@@ -379,6 +380,29 @@ Output follows [output-modes.md](output-modes.md): human when stdout is a TTY an
 ```
 
 Invalid input you supply, such as a profile file, a watch ID or the configured monitoring directory, uses code `monitoring_input_error`. State database problems use `monitoring_state_error`, with a `reason` in `details` such as `unsupported_schema_version`, `foreign_database`, `not_a_database`, `state_locked`, `unknown_watch`, `profile_hash_mismatch` (a stored profile revision no longer matches its content hash), `profile_unreadable` (a stored profile revision is not valid JSON, is not a JSON object, or is not valid under the current profile schema; `details` carries `watch_id` and `revision`), `recovery_failed` (SQLite could not recover an interrupted transaction of a supported state) or `recovery_conflict` (the state files changed during recovery). An empty, uninitialized state file reads as no watches. Run claim refusals use `run_claim_error`.
+
+### `watch alerts`
+
+Compare saved sweep evidence without network acquisition or inference. `watch run` and `watch digest` also return an `alerts` result. A new collection/profile/issue-policy cohort establishes a baseline; changing only operational resource limits does not. Ranking and preferences are frozen provenance, not changes in collection or demand.
+
+Configure invocation admission in the normal application TOML:
+
+```toml
+[alerts]
+source_rows = 32
+derivations = 512
+input_bytes = 8388608
+artifact_bytes = 4194304
+response_bytes = 4194304
+```
+
+Each value is a strictly positive integer. Counts include examined metadata candidates, skipped bootstrap rows and correction/origin/cue revisits; bytes include admitted application read, decode and hash passes, not just distinct files. The artifact allowance and CLI-response allowance are separate. Limits do not cap retained lifetime history or extend leases.
+
+`backlog` is an incomplete comparison with durable continuation, `accounting.used`, `accounting.limits` and a reason. Repeat `watch alerts` with the same storage/watch to continue after restart. `resource_refused` records the indivisible unit, dimension and required/configured bound; explicitly select an adequate finite envelope and retry. A unit that fits the full limit but not the invocation's remainder yields `backlog` before its next read. New sweeps never bypass pending older publication. No unchanged retry is counted as progress.
+
+Completed JSON/Markdown artifacts contain bounded inline pages, cumulative evidence/event counts, baseline identity and immutable evidence/change/provenance heads. Use `threadsense.monitoring.alert_reader.read_alert_page` with a finite `AlertBudget` and returned cursor to traverse either schema 1 or 2; cursor continuation is not completion. Readers refuse future versions and corrupt/missing accessed links or leaves. New bytes and immediate references are verified before fenced publication; inherited links and raw leaves are checked on bounded access, not eagerly rehashed across all history on every command. Historical schema-1 bytes, IDs and pending reports remain unchanged.
+
+Copies can establish a newly observed case-folded community, not independent evidence or copied reproduction/contradiction cues. Source creation, first observation and edit observation remain distinct; source edit time is unknown. Unknown/partial acquisition coverage refuses rate/trend claims. A resolution cue remains an unverified source claim. No external delivery, scheduler installation or semantic activation occurs.
 
 ### Profile file
 

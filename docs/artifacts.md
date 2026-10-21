@@ -242,11 +242,13 @@ Inspection payloads emitted by the CLI:
 
 Both `watch run` and `watch digest` include an `alerts` object in addition to their existing fields. `watch alerts --id WATCH [--lease-seconds SECONDS] [--config PATH]` returns this object directly, without fetching or analyzing source discussions:
 
-- `artifact_type: watch_alert_result`, `watch_id`, `status` (`baseline`, `compared`, `no_changes` or `unavailable`)
+- `artifact_type: watch_alert_result`, `watch_id`, `status` (`baseline`, `compared`, `no_changes`, `unavailable`, `backlog` or `resource_refused`)
 - `report_id`, `cohort_id`, `window_id`, `baseline_window_id`
-- `alert_ids` and `alerts`: the report's fixed cited events, not repeated delivery notifications
-- `new_alert_ids`: only events newly committed by this invocation; empty when reusing a report
+- `alert_ids` and `alerts`: a bounded current page of fixed cited events, not the complete lifetime history or repeated delivery notifications
+- `new_alert_ids`: only events newly made durable by this invocation, including an invocation that returns `backlog`; empty when reusing a completed report
 - `suppression_reasons`, `refusal_reasons`, `json_path`, `markdown_path`, `resumed`
+- `accounting`: admitted `used` and configured `limits` for source/metadata rows, derivations, input bytes, artifact bytes and response bytes
+- `continuation`: the durable pending target and command to resume when work remains; `resource` identifies an admission refusal's unit, dimension (`reason`), required cost and configured bound
 
 With no durable sweep the result is `unavailable`, has no report, and invents no evidence. With no new sweep, the same report ids and artifact bytes are reused, even if invocation configuration or ranking preferences changed afterwards.
 
@@ -258,11 +260,55 @@ The report freezes its `basis`: full profile content, revision and hash; actual 
 
 The first window establishes a baseline, not increased demand. Changes to the comparable collection cohort establish a new baseline; old evidence cannot become new demand merely because queries, sampling limits or analysis configuration changed. `baseline` references the previous durable comparison evidence. `coverage` records search/comment completeness and sweep outcome; `bounded_denominators` describe only the observed sample, with no population denominator. Unknown, truncated or partial collection refuses rate/trend claims while allowing deterministic cited additions.
 
-Events distinguish `new_evidence`, `evidence_update`, `new_community`, `reproduction`, `contradiction`, `workaround` and `resolution_claim`. Every event cites source evidence with its comment/report/entry/revision identity, text hash, excerpt and permalink. Source creation time, first observation time and edit observation time are separate; unavailable source edit times remain null. A thread's creation time is not inferred from its earliest comment. Claims remain unverified (`claims_are_verified: false`); another observed community is not proof of independent people. Exact copies are not new independent evidence. Score-only changes, unchanged text, temporary disappearance and known-evidence reappearance do not generate new event ids; disappearance is not deletion or resolution.
+Events distinguish `new_evidence`, `evidence_update`, `new_community`, `reproduction`, `contradiction`, `workaround` and `resolution_claim`. Every event cites source evidence with its comment/report/entry/revision identity, text hash, excerpt and permalink. Source creation time, first observation time and edit observation time are separate; unavailable source edit times remain null. A thread's creation time is not inferred from its earliest comment. Claims remain unverified (`claims_are_verified: false`); another observed community is not proof of independent people. Exact copies may establish a newly observed community, deduplicated case-insensitively within the watch, but never independent corroboration, new independent evidence or copied update cues. Their citations retain exact-copy lineage, the origin report and `independent_person_verified: false`. Score-only changes, unchanged text, temporary disappearance and known-evidence reappearance do not generate new event ids; disappearance is not deletion or resolution.
 
-Publication uses the existing exclusive run claim and fencing. The frozen pending report survives interrupted file publication; a later invocation resumes its identities and bytes. Conflicting existing artifact bytes are refused rather than overwritten. Completion records hashes only after both files are published.
+### Schema-2 cumulative history and bounded continuation
 
-The model-free root smoke is `uv run python scripts/smoke_monitoring.py --scenario alerts --work-dir DIR`, where DIR is empty or absent. It drives actual CLI subprocesses with the committed synthesized Reddit replay transport, checks durable baseline/citations, unchanged and score suppression, partial-coverage refusals, fresh-process reuse, cohort baselining and unchanged historical bytes. It does not access live Reddit or a model. This root scenario is standalone; there is no `all` scenario.
+New alert reports use `schema_version: 2`. JSON and Markdown expose a bounded inline current page of `evidence` and `alerts`, cumulative `evidence_count`, target-specific `event_count`, baseline counts and immutable `evidence_head`, `change_head` and `provenance_head` references. An inline page is not the full cumulative evidence set. Evidence inherits the watch's prior immutable history; the change head contains only the current target's events, not historical alerts relabeled as new changes. Provenance overlays preserve later origin, lineage and membership corrections without rewriting old report bytes.
+
+Each referenced immutable segment/manifest has an expected SHA-256, watch/chain identity and explicit generation; predecessor generations strictly decrease. Source positions are durable explicit change sequences, not floating timestamps or mutable implicit rowids. Bounded legacy bootstrap and target input expansion finish before copy-sensitive classification, so tied timestamps, late older observations and a short explicit copy whose origin sorts later cannot be classified from an incomplete prefix.
+
+Use the typed bounded reader to resolve cumulative citations or target changes:
+
+```python
+from pathlib import Path
+
+from threadsense.monitoring.alert_budget import AlertBudget
+from threadsense.monitoring.alert_reader import read_alert_page
+
+page = read_alert_page(
+    root=Path(".threadsense/monitoring"),
+    report_path=Path("WATCH/alerts/REPORT.json"),  # relative to root, or an absolute path
+    budget=AlertBudget(),
+    collection="evidence",  # "changes" reads this target's events
+    cursor=None,
+)
+```
+
+Consume `items`, then pass the returned `cursor` to a new call with a fresh finite budget until `complete` is true. The cursor binds the exact immutable report bytes and collection; do not reuse it for another report. Resolving inherited links or overlays may return a continuation with no items: this is progress through the reference chain, not an empty completed evidence set. The reader reports its own `accounting`; `resource_refused` is an explicit refusal, never empty success. Schema-1 reports retain their old meaning and exact bytes and are byte-preflighted before read/decode/hash. Unsupported future schemas, corrupt/missing accessed references and corrupt/missing accessed snapshot or analysis leaves raise an explicit monitoring-state error.
+
+The integrity boundary is deliberately local. Publication checks newly admitted artifact bytes and immediate inherited references outside long writer transactions, then fences the checkpoint commit against the live exclusive claim and frozen target. It does **not** rehash every historical raw leaf on every new report. Further inherited links and raw leaves are hash-verified only when accessed by the bounded reader. Counts are persisted checkpoint deltas, not totals recomputed by decoding all history.
+
+Operational limits are strictly positive integers in a separate TOML `alerts` section; they do not enter collection/cohort identity. Defaults:
+
+```toml
+[alerts]
+source_rows = 32
+derivations = 512
+input_bytes = 8388608
+artifact_bytes = 4194304
+response_bytes = 4194304
+```
+
+For example, `watch alerts --id WATCH --config alerts.toml` applies this finite envelope to one invocation. Rows count every examined source/metadata candidate, including skipped or cross-watch bootstrap candidates; derivations include copy/origin/correction revisits and event expansion. Input counts each admitted application read/decode/hash pass, not only unique filenames. Artifact output and the CLI response have separate bounds. Retained immutable disk history may grow; these are per-invocation work/output limits, not retention or hardware/OOM promises.
+
+`backlog` means bootstrap, target input expansion, provenance, staged delivery or finalization remains. Explicitly invoke `watch alerts` again; the product does not hide a loop or silently enlarge the envelope. A unit that fits the full configured envelope but not this invocation's **remaining** allowance returns `backlog` before reading it. A unit larger than the entire configured envelope returns `resource_refused` with required-versus-configured cost; choose an adequate finite budget to resume it. Neither status means `no_changes`, a completed comparison or a semantic trend-eligibility refusal.
+
+An envelope too small to encode even the refusal/control response (for example `response_bytes = 1`) produces a nonzero typed `monitoring_state_error` describing the resource refusal, not a successful oversized alert response. Raise the finite response envelope before retrying; historical report bytes remain unchanged.
+
+The frozen pending target has priority over newer sweeps. Batches bind durable immutable segment bytes, pending event identities and checkpoint/source positions under short claim fences. A publication interruption resumes the same pending target and IDs before newer work; conflicting existing bytes are preserved and refused rather than overwritten. Completion follows required durable verified publication, not merely selection of a batch. A pending schema-1 report likewise retains its identity and bytes, and an oversized legacy unit is refused rather than truncated, replaced or bypassed. Persisted event pages remain discoverable through the reader even when the command response was interrupted; no external exactly-once transport is claimed.
+
+The model-free root smoke is `uv run python scripts/smoke_monitoring.py --scenario alerts --work-dir DIR`, where DIR is empty or absent. It drives actual fresh CLI subprocesses with the committed synthesized Reddit replay transport, explicitly resumes low-budget backlog, and checks baseline/citations, unchanged and score suppression, partial-coverage refusals, stable durable IDs, cohort baselining and unchanged historical bytes. It leaves subprocess payloads, finite TOML envelopes and `alerts-resource-proof.json` (accounting, oversized-unit refusal, bounded-reader refusal, restart recovery and historical hashes) in DIR. Separate `alerts-crash-before-proof.json` and `alerts-crash-after-proof.json` receipts exercise actual interpreter death before and after event-segment publication, followed by fresh-process claim recovery, nonrepeated IDs and unchanged staged bytes. It does not access live Reddit or a model. This root scenario is standalone; there is no `all` scenario.
 
 `issues inspect` (`artifact_type: issue_list` or `issue_inspection`) and `issues link` or `issues unlink` (`artifact_type: issue_membership_change`) are specified in [usage.md](usage.md).
 

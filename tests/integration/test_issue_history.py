@@ -727,6 +727,11 @@ def test_watch_digest_resume_pre_schema_five_pending_digest_renders_schema_one(
         # Tables of versions after the issue-view version did not exist in a pre-view state.
         for schema_version in range(PRE_VIEW_SCHEMA_VERSION + 2, STATE_SCHEMA_VERSION + 1):
             for statement in _SCHEMA_STATEMENTS[schema_version]:
+                created_trigger = re.match(r"\s*CREATE TRIGGER (\w+)", statement)
+                if created_trigger is not None:
+                    conn.execute(f"DROP TRIGGER IF EXISTS {created_trigger.group(1)}")
+        for schema_version in range(PRE_VIEW_SCHEMA_VERSION + 2, STATE_SCHEMA_VERSION + 1):
+            for statement in _SCHEMA_STATEMENTS[schema_version]:
                 created = re.match(r"\s*CREATE TABLE (\w+)", statement)
                 if created is not None:
                     conn.execute(f"DROP TABLE {created.group(1)}")

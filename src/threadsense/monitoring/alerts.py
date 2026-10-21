@@ -4,15 +4,14 @@ from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
 from typing import Any
 
 from threadsense.config import AppConfig
 from threadsense.errors import MonitoringStateError, RunClaimError
-from threadsense.monitoring.alert_records import PendingAlertReport
+from threadsense.monitoring.alert_budget import AdmissionStop, AlertBudget
 from threadsense.monitoring.issues import issue_policy
-from threadsense.monitoring.state import MonitoringStore, RunClaim
-from threadsense.monitoring.sweep import _error_payload, _publish_bytes, _verify_stored_artifact
+from threadsense.monitoring.state import MonitoringStore
+from threadsense.monitoring.sweep import _error_payload
 from threadsense.observability import TraceContext, emit_log
 
 
@@ -120,88 +119,6 @@ def _citation_lines(citation: dict[str, Any]) -> list[str]:
     ]
 
 
-def _artifact_path(root: Path, relative: str) -> Path:
-    path = root / relative
-    if not path.resolve().is_relative_to(root.resolve()):
-        raise MonitoringStateError(
-            "alert artifact is outside monitoring storage",
-            details={"reason": "artifact_outside_state", "path": relative},
-        )
-    return path
-
-
-def _publish_report(store: MonitoringStore, claim: RunClaim, report: PendingAlertReport) -> None:
-    root = store.monitoring_root().absolute()
-    verified: set[tuple[str, str]] = set()
-    for citation in report.payload["evidence"]:
-        for path_key, hash_key in (
-            ("snapshot_path", "snapshot_sha256"),
-            ("analysis_path", "analysis_sha256"),
-        ):
-            key = (str(citation[path_key]), str(citation[hash_key]))
-            if key not in verified:
-                _verify_stored_artifact(_artifact_path(root, key[0]), key[1])
-                verified.add(key)
-    with store.fenced_artifact_write(claim):
-        json_sha256 = _publish_bytes(
-            _artifact_path(root, report.json_path), render_alert_json(report.payload)
-        )
-    with store.fenced_artifact_write(claim):
-        markdown_sha256 = _publish_bytes(
-            _artifact_path(root, report.markdown_path), render_alert_markdown(report.payload)
-        )
-    store.complete_alert_report(
-        claim, str(report.payload["report_id"]), json_sha256, markdown_sha256
-    )
-
-
-def _result(
-    store: MonitoringStore, watch_id: str, report: PendingAlertReport | None
-) -> dict[str, Any]:
-    if report is None:
-        return {
-            "artifact_type": "watch_alert_result",
-            "watch_id": watch_id,
-            "status": "unavailable",
-            "report_id": None,
-            "cohort_id": None,
-            "window_id": None,
-            "baseline_window_id": None,
-            "alert_ids": [],
-            "alerts": [],
-            "new_alert_ids": [],
-            "suppression_reasons": [],
-            "refusal_reasons": ["no_durable_sweep"],
-            "json_path": None,
-            "markdown_path": None,
-            "resumed": False,
-        }
-    payload = report.payload
-    root = store.monitoring_root().absolute()
-    return {
-        **{
-            key: payload[key]
-            for key in (
-                "watch_id",
-                "status",
-                "report_id",
-                "cohort_id",
-                "window_id",
-                "baseline_window_id",
-                "alert_ids",
-                "alerts",
-                "suppression_reasons",
-                "refusal_reasons",
-            )
-        },
-        "artifact_type": "watch_alert_result",
-        "json_path": str(root / report.json_path),
-        "markdown_path": str(root / report.markdown_path),
-        "resumed": report.resumed,
-        "new_alert_ids": [] if report.resumed else list(payload["alert_ids"]),
-    }
-
-
 def present_watch_alerts(
     *,
     config: AppConfig,
@@ -228,19 +145,20 @@ def present_watch_alerts(
         },
     }
     try:
-        report = store.begin_alert_report(claim, basis)
-        while report is not None:
-            _publish_report(store, claim, report)
-            next_report = store.begin_alert_report(claim, basis)
-            if (
-                next_report is None
-                or next_report.payload["report_id"] == report.payload["report_id"]
-            ):
-                break
-            report = next_report
-        result = _result(store, watch_id, report)
-    except RunClaimError:
-        raise
+        budget = AlertBudget(**config.alerts.model_dump(), check=lambda: None)
+        with store.alert_session(claim) as session:
+            from threadsense.monitoring.alert_engine import execute
+
+            budget.check = session.check
+            result = execute(
+                session,
+                basis,
+                budget,
+                store.now(),
+                lambda report_id, json_hash, markdown_hash: store.complete_alert_report(
+                    claim, report_id, json_hash, markdown_hash, budget=budget
+                ),
+            )
     except Exception as error:
         claim_error: RunClaimError | None = None
         try:
@@ -256,6 +174,11 @@ def present_watch_alerts(
             error=_error_payload(error),
             claim_error=None if claim_error is None else claim_error.to_dict(),
         )
+        if isinstance(error, AdmissionStop):
+            raise MonitoringStateError(
+                "the configured CLI response envelope cannot contain the alert result",
+                details=error.details,
+            ) from error
         raise
     store.finalize_run(claim.run_id, claim.owner_token, "succeeded")
     emit_log(

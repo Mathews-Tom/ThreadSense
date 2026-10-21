@@ -7,7 +7,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from threadsense import __version__
 from threadsense.contracts import AbstractionLevel, DomainType, ObjectiveType
@@ -247,6 +247,18 @@ def _bounded(value: int, field: str, bounds: tuple[int, int]) -> int:
     return value
 
 
+class AlertsConfig(BaseModel):
+    """Operational admission only; never part of collection or cohort identity."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    source_rows: int = Field(default=32, strict=True, gt=0)
+    derivations: int = Field(default=512, strict=True, gt=0)
+    input_bytes: int = Field(default=8 * 1024 * 1024, strict=True, gt=0)
+    artifact_bytes: int = Field(default=4 * 1024 * 1024, strict=True, gt=0)
+    response_bytes: int = Field(default=4 * 1024 * 1024, strict=True, gt=0)
+
+
 class AppConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -266,6 +278,7 @@ class AppConfig(BaseModel):
     analysis: AnalysisConfig = AnalysisConfig()
     corpus: CorpusConfig = CorpusConfig()
     issues: IssuesConfig = IssuesConfig()
+    alerts: AlertsConfig = AlertsConfig()
 
 
 # Maps environment variable names to their (section, field) path in the config dict.
