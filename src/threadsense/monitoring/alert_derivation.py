@@ -1202,12 +1202,12 @@ def commit_derivation(
     )
     for event in unit.events:
         # All event identities use the same watch-global key as seen suppression.
-        key = event_keys.get(str(event["alert_id"]))
-        if key is None:
+        event_key = event_keys.get(str(event["alert_id"]))
+        if event_key is None:
             raise _fail("alert_event_identity_mismatch", alert_id=event["alert_id"])
         session.conn.execute(
             "INSERT INTO alert_v2_event_identities VALUES (?,?,?,?,?)",
-            (session.watch_id, key, event["alert_id"], target["target_id"], checkpoint_id),
+            (session.watch_id, event_key, event["alert_id"], target["target_id"], checkpoint_id),
         )
     session.conn.execute(
         "UPDATE alert_target_evidence SET done=1 WHERE target_id=? AND evidence_key=?",

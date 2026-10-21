@@ -65,7 +65,7 @@ def _drain(
                 "alert_ids": event_ids,
                 "new_alert_ids": sorted(delivered),
             }, invocations
-        check(result.get("continuation"), "backlog lacks durable continuation")
+        check(bool(result.get("continuation")), "backlog lacks durable continuation")
         code, result = scenario.watch(
             store,
             "alerts",
@@ -424,7 +424,7 @@ def _crash_proof(scenario: Any, boundary: str) -> None:
     )
     events = _collection(store, result, "changes")
     ids = [event["alert_id"] for event in events]
-    check(ids and len(ids) == len(set(ids)), "crash lost or repeated durable event IDs")
+    check(bool(ids) and len(ids) == len(set(ids)), "crash lost or repeated durable event IDs")
     check(
         any(item["comment_id"] == "reddit:ka4" for event in events for item in event["evidence"]),
         "crash lost changed source evidence",

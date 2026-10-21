@@ -23,7 +23,7 @@ class AdmissionStop(Exception):
     def __init__(
         self, status: str, unit: str, dimension: str, required: int, configured: int
     ) -> None:
-        self.details = {
+        self.details: dict[str, str | int] = {
             "status": status,
             "unit": unit,
             "reason": dimension,

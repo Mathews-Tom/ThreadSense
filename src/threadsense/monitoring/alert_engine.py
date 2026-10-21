@@ -816,9 +816,10 @@ def execute(
                     )
                     unit = DerivedUnit(**unit_data)
                 else:
-                    unit = next_derivation(session, target, budget)
-                    if unit is None:
+                    candidate = next_derivation(session, target, budget)
+                    if candidate is None:
                         break
+                    unit = candidate
                 new_ids.extend(_publish_unit(session, target, unit, progress, budget))
             progress = _progress(session, target_id, budget)
             payload = _report_payload(session, target, progress, budget)
