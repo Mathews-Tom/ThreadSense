@@ -35,11 +35,18 @@ def journey(journey_module: ModuleType, tmp_path: Path) -> Any:
     return journey_module.JourneyScenario(tmp_path, journey_module.ENDPOINT)
 
 
-def test_saved_watch_snapshots_freeze_before_inference_and_refuse_missing_annotations(
-    journey: Any,
-) -> None:
+@pytest.fixture
+def collected_journey(journey: Any) -> Any:
+    """Save snapshots without draining alerts unrelated to focused refusal checks."""
     journey.profile()
-    journey.baseline()
+    journey.watch("run", label="initial", phase="initial")
+    return journey
+
+
+def test_saved_watch_snapshots_freeze_before_inference_and_refuse_missing_annotations(
+    collected_journey: Any,
+) -> None:
+    journey = collected_journey
     journey.freeze()
     manifest = load_evaluation_manifest(journey.manifest)
     corpus = load_corpus(manifest, journey.manifest.parent)
@@ -237,10 +244,9 @@ def test_single_watch_copy_feedback_recovery_replay_and_cohort_transitions(
 
 
 def test_actual_policy_missing_evidence_and_invalid_annotation_endpoint_are_local_refusals(
-    journey: Any,
+    collected_journey: Any,
 ) -> None:
-    journey.profile()
-    journey.baseline()
+    journey = collected_journey
     revision = journey.rows("watch_thread_revisions")[0]
     snapshot = journey.monitoring / revision["snapshot_path"]
     code, annotation = journey.cli(
@@ -282,9 +288,10 @@ def test_actual_policy_missing_evidence_and_invalid_annotation_endpoint_are_loca
     assert len(journey.rows("watches")) == 1
 
 
-def test_unknown_feedback_target_refuses_without_writing_history(journey: Any) -> None:
-    journey.profile()
-    journey.baseline()
+def test_unknown_feedback_target_refuses_without_writing_history(
+    collected_journey: Any,
+) -> None:
+    journey = collected_journey
     before = journey.rows("watch_feedback_keys")
     code, payload = journey.cli(
         "feedback",
