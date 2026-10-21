@@ -555,7 +555,7 @@ def _expand_novel(
                 "text_sha256": text,
                 "first_observed_at_utc": observed["first_observed_at_utc"],
                 "observation_kind": change["kind"],
-                "edit_observed_at_utc": info["observed_at_utc"]
+                "edit_observed_at_utc": change["observed_at_utc"]
                 if change["kind"] == "edited"
                 else None,
                 "source_edited_at_utc": None,

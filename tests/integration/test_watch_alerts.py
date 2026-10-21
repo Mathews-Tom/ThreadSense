@@ -419,6 +419,127 @@ def test_edited_evidence_preserves_source_time_and_records_observation_time(
     assert all(item["source_thread_created_utc"] != item["source_created_utc"] for item in evidence)
 
 
+def test_folded_edit_preserves_observation_through_policy_refresh_and_replay(
+    watch: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    instant = [time.time()]
+    monkeypatch.setattr(
+        "threadsense.cli.MonitoringStore",
+        partial(MonitoringStore, clock=lambda: instant[0]),
+    )
+    monkeypatch.delenv("THREADSENSE_ISSUES_CANDIDATE_WINDOW_DAYS", raising=False)
+
+    def acquire(
+        phase: str | ReplayPhase, patch: pytest.MonkeyPatch = monkeypatch
+    ) -> dict[str, Any]:
+        instant[0] += 1.0
+        return sweep(patch, phase)
+
+    frozen = []
+    for phase in ("initial", "search_omits_known"):
+        result = acquire(phase)
+        frozen.append((result, artifact_bytes(result)))
+
+    def pause_analysis(ctx: Any) -> dict[str, Any]:
+        return {
+            "limit": ctx.profile.limits.analyzed_revisions,
+            "analyzed": 0,
+            "failed": 0,
+            "pending": ctx.store.pending_analysis_count(ctx.profile.watch_id),
+        }
+
+    with monkeypatch.context() as paused:
+        paused.setattr("threadsense.monitoring.sweep._analyze", pause_analysis)
+        skipped = acquire("edit", paused)
+    frozen.append((skipped, artifact_bytes(skipped)))
+
+    # Keep the edited comment unchanged; only the post changes before analysis resumes.
+    successor_phase = phases_by_name()["edit"]
+    routes = []
+    for index, route in enumerate(successor_phase.routes):
+        if "/comments/sc1bbb/" not in route.url:
+            routes.append(route)
+            continue
+        assert route.response_path is not None
+        payload = json.loads(route.response_path.read_text(encoding="utf-8"))
+        payload[0]["data"]["children"][0]["data"]["title"] += " — post-only follow-up"
+        response = tmp_path / f"post-only-{index}.json"
+        response.write_text(json.dumps(payload), encoding="utf-8")
+        routes.append(replace(route, response_path=response))
+    successor = replace(successor_phase, routes=tuple(routes))
+    derived = acquire(successor)
+    derived_report = read_report(derived)
+    frozen.append((derived, artifact_bytes(derived)))
+
+    with closing(sqlite3.connect(watch)) as connection:
+        connection.row_factory = sqlite3.Row
+        edit = connection.execute(
+            "SELECT text_sha256,observed_at_utc FROM watch_comment_texts "
+            "WHERE watch_id=? AND source_thread_id=? AND comment_id=? AND change='edited'",
+            (WATCH_ID, "sc1bbb", "reddit:kb2"),
+        ).fetchone()
+        selected = dict(
+            connection.execute(
+                "SELECT r.revision_id,r.snapshot_path,r.snapshot_sha256,"
+                "x.analysis_path,x.analysis_sha256,a.observed_at_utc "
+                "FROM watch_threads t "
+                "JOIN watch_thread_revisions r ON r.revision_id=t.current_revision_id "
+                "JOIN watch_acquisitions a ON a.acquisition_id=r.acquisition_id "
+                "JOIN watch_revision_analyses x ON x.revision_id=r.revision_id "
+                "WHERE t.watch_id=? AND t.source_thread_id=?",
+                (WATCH_ID, "sc1bbb"),
+            ).fetchone()
+        )
+    assert edit["observed_at_utc"] < selected["observed_at_utc"]
+    assert any(
+        item["text_sha256"] == edit["text_sha256"] for item in cited(derived_report, "reddit:kb2")
+    )
+
+    monkeypatch.setenv("THREADSENSE_ISSUES_CANDIDATE_WINDOW_DAYS", "14")
+    refreshed = acquire(successor)
+    refreshed_report = read_report(refreshed)
+    assert refreshed_report["basis"]["issue_policy"] != derived_report["basis"]["issue_policy"]
+    frozen.append((refreshed, artifact_bytes(refreshed)))
+
+    def refuse_source(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("alert replay must not acquire sources")
+
+    monkeypatch.setattr("threadsense.cli.build_reddit_connector", refuse_source)
+    code, replayed = run_cli("watch", "alerts", "--id", WATCH_ID)
+    assert code == 0, replayed
+    replayed = drain_alerts(replayed)
+    assert replayed["report_id"] == refreshed["report_id"]
+    assert replayed["alert_ids"] == refreshed["alert_ids"]
+    assert replayed["new_alert_ids"] == []
+    replayed_report = read_report(replayed)
+    assert replayed_report == refreshed_report
+
+    policies = []
+    for report in (derived_report, refreshed_report, replayed_report):
+        evidence = [
+            item
+            for item in report["evidence"]
+            if item["comment_id"] == "reddit:kb2" and item["text_sha256"] == edit["text_sha256"]
+        ]
+        assert evidence
+        policies.append({item["issue_policy_sha256"] for item in evidence})
+        citations = evidence + [
+            item
+            for item in cited(report, "reddit:kb2")
+            if item["text_sha256"] == edit["text_sha256"]
+        ]
+        for citation in citations:
+            assert citation["edit_observed_at_utc"] == edit["observed_at_utc"]
+            assert citation["observation_kind"] == "edited"
+            assert citation["recorded_at_utc"] == selected["observed_at_utc"]
+            assert citation["source_edited_at_utc"] is None
+            for field, value in selected.items():
+                assert citation[field] == value
+    assert policies[0].isdisjoint(policies[1])
+    for prior, prior_bytes in frozen:
+        assert artifact_bytes(prior) == prior_bytes
+
+
 class InterruptedAlertWrite(BaseException):
     pass
 

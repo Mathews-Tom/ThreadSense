@@ -814,8 +814,6 @@ def _refresh_occurrence(
                 "analysis_sha256": analysis["analysis_sha256"],
             }
         )
-    if citation["observation_kind"] == "edited":
-        citation["edit_observed_at_utc"] = acquisition["observed_at_utc"]
     _refresh_metadata(session, target, citation, budget)
     encoded, digest = d._candidate_text(target, citation, budget)
     slot = session.conn.execute(
