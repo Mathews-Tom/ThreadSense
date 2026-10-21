@@ -228,7 +228,16 @@ def _key(spec: SourceSpec, prefix: str) -> str:
 
 
 def _payload(spec: SourceSpec, prefix: str) -> str:
-    pairs = [f"'{c}',{prefix}.\"{c}\"" for c in spec.columns]
+    # json_object's default REAL rendering loses binary64 precision.  JSON's
+    # subtype survives this direct CASE expression, so the precise numeric lexeme
+    # is embedded as a number, while INTEGER/TEXT/NULL retain their original types.
+    pairs = []
+    for column in spec.columns:
+        value = f'{prefix}."{column}"'
+        pairs.append(
+            f"'{column}',CASE typeof({value}) WHEN 'real' "
+            f"THEN json(printf('%!.26g',{value})) ELSE {value} END"
+        )
     if spec.name == "watch_alert_reports":
         pairs.append(f"'_legacy_ordinal',{prefix}.rowid")
     return "json_object(" + ",".join(pairs) + ")"

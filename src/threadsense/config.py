@@ -359,6 +359,7 @@ _TOML_SECTION_MAP: dict[str, str] = {
     "analysis": "analysis",
     "corpus": "corpus",
     "issues": "issues",
+    "alerts": "alerts",
 }
 
 _TOML_APP_FIELDS = ("inference_backend", "privacy_mode")

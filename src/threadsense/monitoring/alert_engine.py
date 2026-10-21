@@ -319,7 +319,7 @@ def _freeze_target_impl(
                 "limit",
             )
         },
-        "ranking_provenance": {
+        "ranking_policy": {
             "source_highwater": highwater,
             "mode": "presentation_only",
             "selection_sequence": None if ranking_selection is None else ranking_selection.sequence,

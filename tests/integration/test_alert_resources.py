@@ -318,7 +318,8 @@ def test_profile_a_b_a_resets_each_chronological_cohort_without_rewriting_histor
     third = sweep(monkeypatch, "edit")
     assert third["status"] == "baseline" and not third["new_alert_ids"]
     assert first["cohort_id"] != second["cohort_id"]
-    assert third["cohort_id"] == first["cohort_id"]
+    assert third["cohort_id"] not in (first["cohort_id"], second["cohort_id"])
+    assert third["baseline_window_id"] == third["window_id"]
     assert third["window_id"] != first["window_id"]
     assert artifact_bytes(first) == frozen
 
@@ -646,9 +647,24 @@ def test_reader_cursor_binds_immutable_report_path_hash_and_collection(
     relocated.write_bytes(original)
     with pytest.raises(MonitoringStateError):
         read_alert_page(root=watch.parent, report_path=relocated, cursor=cursor)
-    resumed = read_alert_page(root=watch.parent, report_path=path, cursor=cursor)
-    assert resumed["complete"] and resumed["items"]
-    assert_accounting(resumed)
+    items = list(page["items"])
+    seen_cursors = {json.dumps(cursor, sort_keys=True)}
+    for _ in range(4096):
+        resumed = read_alert_page(root=watch.parent, report_path=path, cursor=cursor)
+        assert_accounting(resumed)
+        items.extend(resumed["items"])
+        if resumed["complete"]:
+            assert resumed["status"] == "complete" and resumed["cursor"] is None
+            break
+        assert resumed["status"] == "backlog"
+        cursor = resumed["cursor"]
+        assert cursor is not None
+        position = json.dumps(cursor, sort_keys=True)
+        assert position not in seen_cursors, "alert reader repeated a continuation"
+        seen_cursors.add(position)
+    else:
+        pytest.fail("alert reader continuation did not terminate")
+    assert items and len(items) == json.loads(original)["evidence_count"]
     path.write_bytes(original + b" ")
     with pytest.raises(MonitoringStateError):
         read_alert_page(root=watch.parent, report_path=path, cursor=cursor)

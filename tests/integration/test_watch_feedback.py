@@ -297,7 +297,7 @@ def artifact_hashes(monitoring_root: Path) -> dict[str, str]:
 
 
 def evidence_tables(state_path: Path) -> dict[str, list[tuple[Any, ...]]]:
-    """Every non-feedback table, rows sorted so the dump is order independent."""
+    """Non-feedback state, including captured source versions of evidence."""
     names = [
         str(name)
         for (name,) in query_rows(
@@ -308,9 +308,16 @@ def evidence_tables(state_path: Path) -> dict[str, list[tuple[Any, ...]]]:
     tracked = sorted(name for name in names if name not in FEEDBACK_TABLES)
     lineage = {name for name in names if name.startswith(("watch_issue", "watch_digest"))}
     assert EVIDENCE_TABLES | lineage <= set(tracked)
-    return {
-        name: sorted(query_rows(state_path, f"SELECT * FROM {name}"), key=repr) for name in tracked
-    }
+    result = {}
+    for name in tracked:
+        sql = f"SELECT * FROM {name}"
+        params: tuple[Any, ...] = ()
+        if name in {"alert_source_versions", "alert_source_heads", "alert_source_latest"}:
+            # Capture records feedback for frozen presentation provenance only.
+            sql += " WHERE kind NOT IN (?,?,?)"
+            params = FEEDBACK_TABLES
+        result[name] = sorted(query_rows(state_path, sql, params), key=repr)
+    return result
 
 
 def issues_view(watch_id: str) -> dict[str, Any]:

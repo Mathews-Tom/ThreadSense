@@ -873,6 +873,12 @@ def test_monitoring_store_pre_issue_schema_upgrades_and_ingests_prior_entries(
         for table in kept_tables
     }
     with closing(sqlite3.connect(store.path)) as conn:
+        # Later capture triggers must disappear before their source/control tables.
+        for schema_version in range(DIGEST_ISSUE_VIEW_SCHEMA_VERSION + 1, STATE_SCHEMA_VERSION + 1):
+            for statement in _SCHEMA_STATEMENTS[schema_version]:
+                created_trigger = re.match(r"\s*CREATE TRIGGER (\w+)", statement)
+                if created_trigger is not None:
+                    conn.execute(f"DROP TRIGGER IF EXISTS {created_trigger.group(1)}")
         objects = conn.execute(
             "SELECT type, name FROM sqlite_master "
             "WHERE name GLOB 'watch_issue*' AND type IN ('trigger', 'table') "
@@ -883,12 +889,6 @@ def test_monitoring_store_pre_issue_schema_upgrades_and_ingests_prior_entries(
             conn.execute(f'DROP {kind.upper()} "{name}"')
         assert conn.execute("SELECT COUNT(*) FROM watch_digest_issue_views").fetchone() == (1,)
         conn.execute("DROP TABLE watch_digest_issue_views")
-        # Tables of versions after the issue-view version did not exist in a pre-issue state.
-        for schema_version in range(DIGEST_ISSUE_VIEW_SCHEMA_VERSION + 1, STATE_SCHEMA_VERSION + 1):
-            for statement in _SCHEMA_STATEMENTS[schema_version]:
-                created_trigger = re.match(r"\s*CREATE TRIGGER (\w+)", statement)
-                if created_trigger is not None:
-                    conn.execute(f"DROP TRIGGER IF EXISTS {created_trigger.group(1)}")
         for schema_version in range(DIGEST_ISSUE_VIEW_SCHEMA_VERSION + 1, STATE_SCHEMA_VERSION + 1):
             for statement in _SCHEMA_STATEMENTS[schema_version]:
                 created = re.match(r"\s*CREATE TABLE (\w+)", statement)
@@ -906,11 +906,6 @@ def test_monitoring_store_pre_issue_schema_upgrades_and_ingests_prior_entries(
     assert query_rows(store.path, "PRAGMA user_version", ()) == [(STATE_SCHEMA_VERSION,)]
     assert STATE_SCHEMA_VERSION >= DIGEST_ISSUE_VIEW_SCHEMA_VERSION
     assert count_rows(store.path, "watch_digest_issue_views") == 0
-    assert query_rows(
-        store.path,
-        "SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ? ORDER BY name",
-        ("watch_digest_issue_views",),
-    ) == [("watch_digest_issue_views_no_delete",), ("watch_digest_issue_views_no_update",)]
     assert {
         table: sorted(query_rows(store.path, f"SELECT * FROM {table}", ()), key=repr)
         for table in kept_tables

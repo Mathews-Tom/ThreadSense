@@ -457,8 +457,20 @@ def repost_state(
 ) -> Path:
     root = tmp_path / "workspace"
     shutil.copytree(repost_workspace.root, root)
+    state_path = root / repost_workspace.state_relpath
+    # This isolated fixture clone retains the seed's history and continuation state,
+    # but has its own file identity. Rebind only fixture metadata; this is not a
+    # supported product recovery/import path.
+    stat = state_path.stat()
+    with closing(sqlite3.connect(state_path)) as conn:
+        schema_cookie = conn.execute("PRAGMA schema_version").fetchone()[0]
+        conn.execute(
+            "UPDATE alert_source_epoch SET device=?,inode=?,schema_cookie=? WHERE singleton=1",
+            (stat.st_dev, stat.st_ino, schema_cookie),
+        )
+        conn.commit()
     isolate_environment(monkeypatch, root)
-    return root / repost_workspace.state_relpath
+    return state_path
 
 
 def test_issues_inspect_leaves_state_bytes_unchanged(repost_state: Path) -> None:
@@ -723,14 +735,13 @@ def test_watch_digest_resume_pre_schema_five_pending_digest_renders_schema_one(
     crashed.json_path.unlink()
     crashed.markdown_path.unlink()
     with closing(sqlite3.connect(crashed.state_path)) as conn:
-        conn.execute("DROP TABLE watch_digest_issue_views")
-        # Tables of versions after the issue-view version did not exist in a pre-view state.
-        for schema_version in range(PRE_VIEW_SCHEMA_VERSION + 2, STATE_SCHEMA_VERSION + 1):
+        # Remove later capture triggers before dropping their source/control tables.
+        for schema_version in range(PRE_VIEW_SCHEMA_VERSION + 1, STATE_SCHEMA_VERSION + 1):
             for statement in _SCHEMA_STATEMENTS[schema_version]:
                 created_trigger = re.match(r"\s*CREATE TRIGGER (\w+)", statement)
                 if created_trigger is not None:
                     conn.execute(f"DROP TRIGGER IF EXISTS {created_trigger.group(1)}")
-        for schema_version in range(PRE_VIEW_SCHEMA_VERSION + 2, STATE_SCHEMA_VERSION + 1):
+        for schema_version in range(PRE_VIEW_SCHEMA_VERSION + 1, STATE_SCHEMA_VERSION + 1):
             for statement in _SCHEMA_STATEMENTS[schema_version]:
                 created = re.match(r"\s*CREATE TABLE (\w+)", statement)
                 if created is not None:
