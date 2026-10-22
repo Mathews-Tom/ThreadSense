@@ -10,6 +10,8 @@ The deterministic pipeline does not require the runtime. The runtime is used for
 - corpus synthesis
 - readiness probing
 
+This document covers the generative chat runtime only. Optional typed annotations use a separate, operator-provisioned Laya service through `decisions annotate`, not this chat endpoint or its enablement settings. The typed path remains shadow-only and does not change deterministic findings or ranking; a policy check does not activate a consumer. See the [pinned Laya runtime procedure](laya-runtime.md) and [typed decision command reference](usage.md#decisions-annotate).
+
 ## Default Endpoint
 
 - base URL: `http://127.0.0.1:8080`

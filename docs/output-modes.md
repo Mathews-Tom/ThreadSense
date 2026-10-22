@@ -22,7 +22,7 @@ uv run threadsense --output-format json run reddit <url>
 
 ### `human`
 
-Rich terminal output with tables and summaries.
+Rich terminal output with command-specific panels or formatted JSON payloads.
 
 Use when:
 
@@ -47,7 +47,7 @@ Status-only output.
 
 Use when:
 
-- you only need `ready` or `error`
+- you only need the command's top-level status or an error message
 - integrating with simple shell scripts
 
 Example:
@@ -95,6 +95,14 @@ uv run threadsense --output-format human ...
 - recommended actions
 - confidence note
 - top matched threads
+
+### Watches, issues, feedback, and typed decisions
+
+These command families use the shared payload renderer, not bespoke monitoring panels. `json` emits the full JSON payload; `human` displays it as Rich-formatted JSON. For example, `watch inspect` reports `ok` in quiet mode. Quiet mode prints the actual top-level `status`, not a universal `ready`: issue membership changes report `linked` or `unlinked`, a watch run reports its sweep outcome, and schedule rendering reports `rendered`. Errors print `error: <message>`.
+
+Use JSON when inspecting nested digest or alert refusals, coverage, backlog, or recovery information: a quiet top-level status does not reproduce those details. Schedule JSON includes the rendered definition in `content` and explicitly reports `installed: false` and `enabled: false`; changing output mode does not install or enable a schedule. Alerts remain local artifacts with no notifications. Typed semantic decisions remain in shadow mode, with supported qualification `not_eligible`; output formatting does not activate a consumer.
+
+See the [command and operator reference](usage.md) for command-specific fields and operational boundaries. Source: [shared output dispatch and quiet rendering](../src/threadsense/cli_display.py) and [command payloads](../src/threadsense/cli.py).
 
 ## Recommendation
 

@@ -49,7 +49,7 @@ Start the API with:
 uv run threadsense serve
 ```
 
-Current routes:
+Selected pipeline routes:
 
 - `GET /v1/healthz`
 - `GET /v1/metrics`
@@ -64,6 +64,7 @@ Important:
 - the API is a trusted local surface
 - it is not authenticated
 - it does not yet expose the full `research reddit` workflow
+- saved-watch sweeps, digests, alerts, issue history and operator feedback are CLI/library workflows, not monitoring HTTP endpoints; see the [continuous operator journey](usage.md#continuous-operator-journey) and [monitoring design](system-design.md#monitoring-design)
 
 ## Runtime Interaction
 
