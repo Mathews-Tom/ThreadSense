@@ -357,6 +357,64 @@ Unsupported query syntax:
 
 See [research-reddit.md](research-reddit.md) for the full workflow and ranking behavior.
 
+## Continuous operator journey
+
+Use one saved watch and one storage root throughout; changing storage roots between commands is not continuity. Start with the profile example below, then run `watch create --profile PATH`, `watch list`, `watch inspect --id agent-memory` and `watch run --id agent-memory`. Inspect the resulting digest, baseline alert report, snapshots and analysis hashes before drawing conclusions.
+
+For shadow decisions, pass the actual monitoring revision snapshot to `decisions annotate --input PATH --endpoint URL --requirement required`. Keep annotation output outside monitoring/baseline storage. Freeze the evaluation manifest, its input hashes, labels and expected scope before inference; use the saved annotations in `decisions evaluate --manifest PATH --annotation PATH`, then `decisions policy check --evaluation PATH`. Engineering-authored expectations do not become independent labels by being frozen. `not_eligible` is a supported outcome; shadow annotations are not activated, and policy checking never installs a policy. Disable the generative runtime when no optional comparator is intended; unavailable or not-observed comparison is not zero error.
+
+Repeat `watch run` against new source observations on that same watch. Use `issues inspect --watch agent-memory` and `--issue ISSUE_ID` to follow stable membership history, citations, exact-copy lineage and unverified update claims. Record a subjective preference and a separate correction assertion using distinct idempotency keys, then compare historical and current ranking:
+
+```bash
+uv run threadsense feedback record --watch agent-memory --target "${ENTRY_ID:?}" \
+  --kind preference --value useful --key journey-preference-1
+uv run threadsense feedback record --watch agent-memory --target "${ENTRY_ID:?}" \
+  --kind correction --value unsupported --key journey-correction-1 --note "Operator assertion"
+uv run threadsense feedback list --watch agent-memory
+uv run threadsense watch explain --id agent-memory --entry "${ENTRY_ID:?}" --current
+uv run threadsense watch digest --id agent-memory
+uv run threadsense watch alerts --id agent-memory
+```
+
+Use an actual returned entry id for `ENTRY_ID`. Preferences affect presentation rank only; corrections remain `assertion_only`, not truth labels or edits to evidence. Historical explanations replay the recorded policy/profile/preference basis, while `--current` derives a separate comparison without rewriting the old digest. Inspect both digest and alert JSON/Markdown, not merely command exit codes. Restarting the interpreter and replaying unchanged observations must retain issue/feedback/history identities and emit no new evidence or alerts.
+
+After `watch run` or `watch digest`, inspect the nested alert result separately from the sweep/digest status. For `backlog`, explicitly run fresh `watch alerts --id agent-memory` invocations against the same storage. The stored `continuation` has `watch_id`, `target_id` and `command: "watch alerts"`; the CLI accepts no reader cursor. Finish older pending targets before newer sweeps and check the frozen target's sweep, source high-water, basis and durable checkpoints before declaring the requested sweep complete. Preserve every raw invocation result: IDs may become durable during backlog, not just in the terminal response.
+
+### Integrated acceptance with an actual local model
+
+Set `THREADSENSE_SMOKE_DIR` to a fresh isolated work directory and `THREADSENSE_DECISION_ENDPOINT` to the operator-owned checkpoint endpoint `http://127.0.0.1:62635`. This command is actual model acceptance, not the model-free CI substitute:
+
+```bash
+uv run python scripts/smoke_monitoring.py --scenario all --work-dir "${THREADSENSE_SMOKE_DIR:?}" --endpoint "${THREADSENSE_DECISION_ENDPOINT:?}"
+```
+
+The single-watch journey uses recorded Reddit source transport in-process, not live Reddit; CLI stages run in fresh subprocesses against the same database. It freezes evaluation inputs before required checkpoint-backed annotations of actual monitoring snapshots, runs evaluation with the optional generative runtime disabled, checks `not_eligible` with no activation, and inspects issue citations, separate feedback, ranking, digest/alerts, restart, interrupted publication/recovery, unchanged replay, coverage refusals, cohort reset and render-only scheduler output. Standalone smoke scenarios remain separate tools, not concatenated proof of this journey.
+
+Inspect `all-evidence.json` (`status`, `steps`, `observations`), numbered command payloads and stdout/stderr receipts under `payloads/`, and the artifact inventory hashes. The frozen evaluation inputs are `evaluation/manifest.json`, `evaluation/labels.json` and `evaluation/scope.json` in that work directory; `publication-crash.json` records the interrupted claim/publication boundary. These are engineering acceptance receipts, not benchmark, independent-quality or semantic-promotion evidence. A failed or skipped required stage is not acceptance.
+
+Bounded CLI completion and page traversal are journey-local orchestration, not a hidden product loop. They retain raw invocation/page receipts separately from accumulated IDs/items and their target/report provenance; they do not rewrite product payloads, reports or cursors. Both target changes and cumulative evidence must reach complete count reconciliation under fresh default finite reader budgets. A refusal records unit/reason/required/configured and fails visibly; an unchanged durable retry is not progress and no budget is silently increased.
+
+`JourneyScenario.complete_alerts` writes the separate aggregate to `journey-alerts/<sequence>-<label>.json`, listed by `observations.alert_journeys` in `all-evidence.json`. It records `terminal_result`, invocation/target/report/new-ID provenance and accumulated `new_alert_ids`, plus complete evidence/change reader aggregates. `read_collection` keeps each unchanged request cursor and raw page in `journey-readers/<sequence>-<collection>/<page>.json`; its separate `summary.json` holds accumulated items, pages and counts. Under `payloads/`, invocation `.json`, `.stdout.log` and `.stderr.log` receipts remain separate from the unmodified decoded CLI `.payload.json`. None of these journey aggregates substitutes for a product report or external delivery receipt.
+
+### Operator failures and recovery
+
+| Observation | Operator response and boundary |
+| --- | --- |
+| `run_claim_error` / `claim_held` | Another invocation owns a live claim. Do not delete claim rows or overlap runs; inspect the watch/run history and wait for completion or expiry. |
+| `lease_expired` or `stale_owner` | The old writer is fenced and cannot continue publishing. Start a fresh invocation after the lease boundary; the next claimant records abandonment/recovery. Leases are finite and not renewed. |
+| Interrupted digest or alert publication | Keep the database and existing files together. Rerun the presentation command after the claim can be acquired; it resumes the frozen pending id and bytes before committing presentation. This is local recovery, not exactly-once notification delivery. |
+| Alert `backlog` | Explicitly invoke `watch alerts` again, without a cursor. Resume the stored older target before newer work; verify durable checkpoint movement and the requested sweep's completion rather than treating any terminal older report as sufficient. Retain IDs already made durable in earlier invocations separately from raw results. |
+| Alert or reader `resource_refused` | Preserve unit, reason, required and configured bounds. Stop the journey and inspect the refusal; an operator may explicitly choose an adequate finite envelope for a later retry. Never auto-increase budgets or turn a refusal into empty success. |
+| `artifact_conflict`, missing or hash-mismatched evidence | Stop and preserve the conflicting files and database for inspection. Never overwrite historical artifacts, delete state or accept substituted bytes to force success. Restore the exact trusted bytes from a verified backup before retrying; absent such a copy, the integrity refusal remains unresolved. |
+| Missing/stale evaluation evidence or mismatched identity | Read policy-check reasons and input bindings. Rebuild fresh evaluation evidence from correctly bound inputs and recheck; do not rename hashes, relabel outputs or loosen tolerances. A missing check is `not_run`, not passed. |
+| Unknown/truncated coverage or `partial`/`failed` sweep | Inspect per-stage failures, limits and pending work, then retry source work as appropriate. Bounded observations are not exhaustive; do not turn absence into deletion, or counts into rates/trends. |
+| Changed profile, source, sampling/limits or collection policy | Inspect the new cohort and baseline references. Keep old reports; do not compare the reset as increased demand. |
+| Required typed model failure | `decisions annotate --requirement required` exits nonzero on refused/unavailable comments or unhealthy runtime, retaining artifacts for inspection. Repair the owned runtime/input cause and rerun; an optional annotation exit of zero does not prove complete coverage. |
+| Optional comparator unavailable/not observed | Keep that status and reason. It is neither a measured loss nor zero error; deterministic watch/alert operation remains supported without it. |
+| Semantic `not_eligible` | Continue supported deterministic monitoring and shadow inspection. No command in this journey activates grouping or semantic reranking. |
+
+See [monitoring state and digest artifacts](artifacts.md#monitoring-state), [alert artifacts](artifacts.md#comparable-evidence-alerts), [typed annotations](artifacts.md#typed-decision-annotations), [evaluation](artifacts.md#typed-decision-evaluation) and [policy checks](artifacts.md#policy-check) for exact durable formats and refusals.
+
 ## `watch`
 
 Manage saved research profiles ("watches") and their persistent monitoring state. A watch stores what to look for: queries, subreddits, analysis contract, refresh cadence and per-stage limits. The command group saves and reads profiles, runs bounded sweeps, presents digests of new evidence and renders scheduler definitions. It does not call a model, send remote notifications or install a scheduler.
@@ -385,6 +443,20 @@ Invalid input you supply, such as a profile file, a watch ID or the configured m
 
 Compare saved sweep evidence without network acquisition or inference. `watch run` and `watch digest` also return an `alerts` result. A new collection/profile/issue-policy cohort establishes a baseline; changing only operational resource limits does not. Ranking and preferences are frozen provenance, not changes in collection or demand.
 
+```bash
+uv run threadsense watch alerts --id agent-memory [--lease-seconds SECONDS] [--config PATH]
+```
+
+Present the latest durable sweep's comparable evidence report without source acquisition or model inference. `watch run` and `watch digest` include the same `alerts` result after digest presentation. Status is `baseline`, `compared`, `no_changes` or `unavailable`; before any durable sweep, `unavailable` reports `no_durable_sweep` and no report paths. The result carries `report_id`, `cohort_id`, `window_id`, `baseline_window_id`, citations, `suppression_reasons`, `refusal_reasons`, paths and `resumed`.
+
+The first window establishes a baseline, not increased demand. A changed collection cohort starts a new baseline: profile revisions/content, source/query, limits, sampling and relevant policy/configuration cannot masquerade as demand growth. Reports freeze actual sweep collection settings and the ranking/feedback basis; changing invocation settings cannot retroactively describe an old sweep. With no new sweep, the existing report and bytes are reused. `alert_ids` are its fixed historical events, while `new_alert_ids` is empty on reuse; neither is an external delivery receipt.
+
+Events cite comment/report/entry/revision identities, excerpt, permalink, text hash and verified snapshot/analysis artifacts. `source_created_utc` is source comment creation, `source_thread_created_utc` is the source thread date when known, `first_observed_at_utc` is acquisition observation and `edit_observed_at_utc` is when changed text was observed. Source edit time remains unknown; an earliest-comment corpus proxy is never thread creation or event time.
+
+`new_evidence`, `evidence_update` and `new_community` describe observed changes. Lexical `reproduction`, `contradiction`, `workaround` and `resolution_claim` remain unverified claims, never a resolved issue or independently verified reproduction. Copies do not corroborate, and observed accounts/communities are not independent people. Coverage and `bounded_denominators` describe bounded observations only, not a population denominator. Unknown search/comment completeness, truncated acquisition and partial/failed collection cannot justify rates or trends; cited deterministic additions can still be reported with refusals disclosed. Unchanged/score-only changes, temporary absence and known-text reappearance do not emit new evidence; absence is not deletion.
+
+Exact storage layout and report fields: [Comparable Evidence Alerts](artifacts.md#comparable-evidence-alerts). Recovery uses the same exclusive finite claim and durable pending publication described below.
+
 Configure invocation admission in the normal application TOML:
 
 ```toml
@@ -398,9 +470,9 @@ response_bytes = 4194304
 
 Each value is a strictly positive integer. Counts include examined metadata candidates, skipped bootstrap rows and correction/origin/cue revisits; bytes include admitted application read, decode and hash passes, not just distinct files. The artifact allowance and CLI-response allowance are separate. Limits do not cap retained lifetime history or extend leases.
 
-`backlog` is an incomplete comparison with durable continuation, `accounting.used`, `accounting.limits` and a reason. Repeat `watch alerts` with the same storage/watch to continue after restart. `resource_refused` records the indivisible unit, dimension and required/configured bound; explicitly select an adequate finite envelope and retry. A unit that fits the full limit but not the invocation's remainder yields `backlog` before its next read. New sweeps never bypass pending older publication. No unchanged retry is counted as progress.
+`backlog` is an incomplete comparison with durable continuation, `accounting.used`, `accounting.limits` and a reason. Repeat `watch alerts` with the same storage/watch in a fresh process to continue after restart; there is no CLI `--cursor`. `resource_refused` records the indivisible unit, dimension and required/configured bound; explicitly select an adequate finite envelope and retry. A unit that fits the full limit but not the invocation's remainder yields `backlog` before its next read. New sweeps never bypass pending older targets. Completing one older target does not establish completion of the requested sweep; check its frozen sweep/high-water/basis and durable checkpoint/completion state. No unchanged retry is counted as progress.
 
-Completed JSON/Markdown artifacts contain bounded inline pages, cumulative evidence/event counts, baseline identity and immutable evidence/change/provenance heads. Use `threadsense.monitoring.alert_reader.read_alert_page` with a finite `AlertBudget` and returned cursor to traverse either schema 1 or 2; cursor continuation is not completion. Readers refuse future versions and corrupt/missing accessed links or leaves. New bytes and immediate references are verified before fenced publication; inherited links and raw leaves are checked on bounded access, not eagerly rehashed across all history on every command. Historical schema-1 bytes, IDs and pending reports remain unchanged.
+Completed JSON/Markdown artifacts contain bounded inline pages, cumulative evidence/event counts, baseline identity and immutable evidence/change/provenance heads. For **both schema 1 and schema 2**, call `threadsense.monitoring.alert_reader.read_alert_page(root=monitoring_root, report_path=actual_report, cursor=returned_cursor_unchanged, collection="changes" or "evidence", budget=None)` separately for each collection, beginning with `cursor=None`. Each call creates a fresh default finite budget. Preserve the exact cursor and raw page receipts; accumulate items separately, validate report/collection binding and accounting limits/used, and reconcile complete counts against the report. An empty backlog page requires durable cursor progress; a refusal or unchanged retry is not completion. Readers refuse future versions and corrupt/missing accessed links or leaves. New bytes and immediate references are verified before fenced publication; inherited links and raw leaves are checked on bounded access, not eagerly rehashed across all history on every command. Historical schema-1 bytes, IDs and pending reports remain unchanged.
 
 Copies can establish a newly observed case-folded community, not independent evidence or copied reproduction/contradiction cues. Source creation, first observation and edit observation remain distinct; source edit time is unknown. Unknown/partial acquisition coverage refuses rate/trend claims. A resolution cue remains an unverified source claim. No external delivery, scheduler installation or semantic activation occurs.
 
@@ -639,9 +711,13 @@ Excerpts are untrusted source text. The Markdown digest escapes HTML and link, i
 Render a scheduler definition for recurring `watch run` invocations.
 
 ```bash
-uv run threadsense watch schedule --id agent-memory --format launchd
-uv run threadsense watch schedule --id agent-memory --format cron --workspace /path/to/workspace
+uv run threadsense watch schedule --id agent-memory --format launchd \
+  --workspace "${THREADSENSE_WORKSPACE:?}" --config "${THREADSENSE_CONFIG:?}"
+uv run threadsense watch schedule --id agent-memory --format cron \
+  --workspace "${THREADSENSE_WORKSPACE:?}" --config "${THREADSENSE_CONFIG:?}"
 ```
+
+Set these variables to your existing workspace and config file, quoting them as shown; these commands print JSON payloads, not raw job files. Inspect `content`, `argv`, `executable`, `workspace`, `storage_root`, `config_path`, log paths, `overlap_policy`, `installed: false` and `enabled: false` before considering any manual scheduling. The rendered argv and paths are absolute (the interpreter deliberately preserves its virtual-environment path); cron shell arguments are quoted by the renderer, including cron-sensitive percent characters. The launchd payload uses argument-array serialization rather than shell interpolation. Neither example installs a job, enables a service or executes the rendered content.
 
 The command only renders. It never writes a file, never runs `launchctl` or `crontab`, and installs and enables nothing; `installed` and `enabled` in the payload are always `false`. The watch must exist. You decide whether to install the output and do so manually, following `install_instructions`.
 

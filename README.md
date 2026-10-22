@@ -89,7 +89,19 @@ uv run threadsense watch schedule --id agent-memory --format launchd
 
 `watch alerts` compares durable evidence without fetching sources or calling a model. It returns `backlog` while bounded source import, target preparation or artifact publication remains, and `resource_refused` when one indivisible unit exceeds the configured finite envelope. Repeat the command to resume the pending older target; do not treat either status as `no_changes`. Completed schema-2 reports expose cumulative counts and bounded evidence/change references, not an inline lifetime history. Operational `[alerts]` limits do not change collection cohorts. Source coverage stays unknown or partial; changes are not population-demand trends, independent people or verified resolution claims.
 
+Continuation is stored in the monitoring database: `continuation` identifies `watch_id`, `target_id` and `command: "watch alerts"`, not a CLI cursor. Explicit fresh invocations finish older pending targets before newer sweeps; an older target's completion does not establish completion of the requested sweep. Inspect the frozen sweep/basis and durable checkpoint progress, and stop on an unchanged retry or a refusal rather than silently increasing budgets.
+
 Field bounds and output shapes: [docs/usage.md](docs/usage.md).
+
+### Comparable evidence-change alerts
+
+`watch run` and `watch digest` also produce local, cited alert reports; `watch alerts` presents the latest durable sweep without fetching or analyzing sources. The first window establishes a baseline. Changes to the collection cohort (including profile/query, source, limits or sampling settings) establish another baseline, not increased demand. Reports retain their baseline/window/cohort identities, bounded observed denominators, coverage, suppression and refusal reasons. Unknown, partial or truncated coverage cannot support rate or trend claims.
+
+Alerts distinguish new evidence, edits, another observed community and lexical reproduction, contradiction, workaround or resolution claims. Claims are unverified; another account or community is not an independent person, and exact copies do not corroborate. Citations separate source creation from first observation and edit observation; an earliest-comment date is not thread creation. Unchanged text, score-only changes and disappearance/reappearance do not emit new evidence. Re-querying a report retains its `alert_ids`; only `new_alert_ids` describes events newly committed by that invocation, not remote delivery.
+
+For both schema-1 and schema-2 reports, the bounded `read_alert_page` API reads either watch evidence or target changes with the exact returned cursor unchanged. Each call defaults to a fresh finite budget; accumulate items separately from raw page receipts and reconcile complete counts. Integrity checks cover accessed links and leaves, not an eager rehash of all history. See [the reader contract](docs/artifacts.md#schema-2-cumulative-history-and-bounded-continuation).
+
+Deterministic alerts work while semantic decisions remain shadow-only and `not_eligible`. There are no notifications, automatic scheduler jobs or semantic activation. See the [complete operator journey and recovery guide](docs/usage.md#continuous-operator-journey) and [exact alert artifacts](docs/artifacts.md#comparable-evidence-alerts).
 
 ### Cross-thread issue history
 
@@ -339,6 +351,16 @@ uv run python scripts/smoke_monitoring.py --scenario evaluation --work-dir DIR -
 ```
 
 It runs real `decisions annotate`, `decisions evaluate` and `decisions policy check` calls over the shipped evaluation fixtures, confirms the real result is `not_eligible`, and exercises the checker with a disclosed constructed test-only fixture that never permits activation. It is not quality evidence. Details: [docs/usage.md](docs/usage.md#decisions-evaluate).
+
+For the complete single-watch acceptance journey with actual checkpoint inference, set a fresh isolated `THREADSENSE_SMOKE_DIR` and `THREADSENSE_DECISION_ENDPOINT` to the operator-owned endpoint `http://127.0.0.1:62635`:
+
+```bash
+uv run python scripts/smoke_monitoring.py --scenario all --work-dir "${THREADSENSE_SMOKE_DIR:?}" --endpoint "${THREADSENSE_DECISION_ENDPOINT:?}"
+```
+
+This is one saved profile/watch/database across repeated recorded sweeps, real shadow annotations of its monitoring snapshots, policy `not_eligible`, cited issue history, separate ranking preferences and correction assertions, digest/alerts and restart/recovery. Source transport is recorded in-process, not live Reddit; the optional generative comparator is disabled, not scored as zero quality. Inspect `all-evidence.json`, command receipts and durable artifact hashes. Model-free CI and standalone scenarios do not substitute for this actual-model acceptance. See [the operator guide](docs/usage.md#continuous-operator-journey) for coverage/cohort refusals, pending-artifact recovery, claim fencing and supported modes.
+
+The journey retains every invocation's raw result, including `new_alert_ids` emitted during `backlog`, separately from its accumulated IDs and target/report/invocation provenance. It explicitly resumes bounded CLI work and reads complete evidence and change collections through separate page receipts; it never rewrites a terminal payload or product report to represent the aggregate. These receipts establish local durable discoverability, not external exactly-once delivery.
 
 ## Current Limits
 
