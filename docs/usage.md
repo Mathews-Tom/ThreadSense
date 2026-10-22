@@ -1231,7 +1231,7 @@ Requirement modes:
 - `optional` (default) is a shadow run. A refused comment, an unavailable service or an unhealthy runtime stays visible in the written artifact and in the printed coverage, and the command exits `0`.
 - `required` exits `1` on any refused or unavailable comment or on an unhealthy runtime. Artifacts are still written so the gap can be inspected.
 
-Output locations are refused when the output root lies inside the baseline or monitoring storage, or when it or any output path aliases the input artifact. See [artifacts.md](artifacts.md#typed-decision-annotations) for the layout and the full document, status and reason definitions.
+Output locations are refused when the output root lies inside or contains baseline or monitoring storage, or when it or any output path aliases the input artifact. See [artifacts.md](artifacts.md#typed-decision-annotations) for the layout and the full document, status and reason definitions.
 
 Printed JSON payload (`artifact_type: decision_annotations`, `mode: shadow`):
 

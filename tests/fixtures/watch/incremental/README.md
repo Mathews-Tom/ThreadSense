@@ -2,7 +2,7 @@
 
 ## Provenance
 
-Every payload in `responses/` is a synthesized, representative Reddit JSON listing shape (search listing, `[post listing, comment listing]` thread payload) written by hand for this test suite. Ids (`sc1aaa`, `ka1`, ...), authors and text are invented. Nothing here was captured from live Reddit, and tests replaying it must not describe it as a live acquisition.
+Every payload in `responses/` is an engineering-authored, synthesized Reddit JSON listing shape (search listing, `[post listing, comment listing]` thread payload) saved for this test suite. Ids (`sc1aaa`, `ka1`, ...), authors and text are invented. These are recorded fixture inputs, not captures from live Reddit or independent quality evidence; tests replaying them must not describe them as a live acquisition.
 
 ## Files
 

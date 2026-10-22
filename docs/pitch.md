@@ -24,13 +24,18 @@ ThreadSense is a local-first discussion intelligence pipeline.
 
 It already supports:
 
-- source connectors for Reddit, Hacker News, and GitHub Discussions
+- source connectors for Reddit, Hacker News, GitHub Discussions, and GitHub Gists
 - canonical normalization of thread data
 - deterministic signal extraction
 - optional local-model synthesis
 - single-thread reports
 - corpus analysis and reporting
 - Reddit topic research across selected subreddits
+- persisted watches with bounded Reddit sweeps, known-thread refresh, and incremental digests
+- stable issues, exact-copy lineage, and reversible operator membership changes
+- separate preference and correction feedback with explicit ranking policies and replayable ordering
+- optional local typed shadow annotations, frozen evaluation, and fail-closed eligibility checks
+- persisted comparable-window alerts with bounded cumulative evidence references and coverage and refusal information
 
 The product is not “a scraper.” The product is a repeatable path from public thread to defensible insight.
 
@@ -94,7 +99,11 @@ Anyone can summarize a thread. Fewer systems can do it repeatably, across runs, 
 ThreadSense now sits at the point where it can credibly be described as:
 
 ```text
-single-thread analysis + corpus synthesis + subreddit topic research
+single-thread analysis + corpus synthesis + subreddit topic research + saved discussion monitoring
 ```
 
 That is a stronger and more useful position than a source-specific ingestion MVP.
+
+Monitoring is local persisted state, not a notification service. Schedules render launchd or cron definitions without installing or enabling them. Typed semantic decisions remain in shadow mode; the supported qualification is `not_eligible`, not active semantic ranking or grouping or a demonstrated quality improvement. Evaluation and policy checks never activate consumers.
+
+The [command and operator reference](usage.md) covers watches, issues, feedback, ranking, alerts, and typed decisions alongside the existing one-shot workflows. Source contracts: [CLI handlers](../src/threadsense/cli.py), [issue lineage and memberships](../src/threadsense/monitoring/issue_records.py), [ranking history and replay basis](../src/threadsense/monitoring/ranking_records.py), and [shadow eligibility checks](../src/threadsense/decisions/policy.py).

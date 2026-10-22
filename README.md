@@ -367,8 +367,8 @@ The journey retains every invocation's raw result, including `new_alert_ids` emi
 - Topic research is implemented for Reddit; other source discovery workflows are planned
 - Reddit research queries support `OR`/`|` clause unions only (intentionally narrow for deterministic alignment)
 - Corpus reports are Markdown only
-- GitHub Gist comments are flat (no threading); analysis uses temporal/semantic clustering
-- GitHub Gist connector does not retry on transient API errors (502/503)
+- GitHub Gist comments are flat (no threading); analysis uses deterministic keyword, theme and text-similarity rules, not activated typed semantic grouping
+- GitHub Gist retries are bounded by `[github_gist].max_retries`; exhausted network or retryable HTTP failures remain explicit errors
 - Watches sweep and digest on demand through `watch run` and `watch digest`; nothing runs on a timer unless you install the rendered `watch schedule` output yourself, and digests are local files with no remote notification or delivery guarantee
 - Typed decision annotations are shadow-only and uncalibrated, use an English checkpoint and need a separately provisioned loopback Laya service; fixtures are not independent labels
 - Semantic activation of typed decisions is not available: `decisions policy check` reports `not_eligible` under the real runtime because no independently adjudicated held-out labels or domain tolerances exist

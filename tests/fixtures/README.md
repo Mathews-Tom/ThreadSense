@@ -7,5 +7,7 @@
 - `inference/` stores request and response payloads for the local runtime contract.
 - `watch/profile_v1.toml` is a complete version 1 watch profile document; keep it loadable by the current profile parser and add a new versioned file rather than editing it when the profile format changes.
 - `watch/incremental/` is a recorded-source sequence for incremental watch sweeps: `profile.toml`, `phases.json` (one entry per sweep listing every Reddit request it may make) and `responses/*.json`. The payloads are synthesized Reddit listing shapes with invented ids, not live captures. `watch/incremental/README.md` documents the replay rules (exact URL plus `params_match` subset, unmatched request fails, `status` routes raise `RedditRequestError`, `created_utc` rebased to serve time only for listed fresh ids) and the expected outcome of each phase.
+- `watch/issues/` stores constructed recorded-source cases for exact-copy lineage, distinct firsthand reports, bounded suggestions and reversible issue membership; see [the issue fixture guide](watch/issues/README.md).
+- `decisions/evaluation/` stores engineering-authored semantic boundary cases and frozen evaluation manifests; see [the decision fixture guide](decisions/evaluation/README.md). These labels are not independent human adjudication or representative accuracy evidence.
 
 Keep fixtures deterministic, redact secrets, and prefer the smallest payload that still covers the target behavior.

@@ -2,6 +2,10 @@
 
 `research reddit` discovers relevant Reddit threads inside explicit subreddits, analyzes the selected thread set, and generates a corpus-level report.
 
+This is the one-shot research workflow, not a saved monitoring run. For repeat monitoring, use the saved-watch commands in the [command and operator reference](usage.md): a versioned profile drives bounded sweeps, known-thread refresh, incremental digests, issues, and persisted alerts. The commands are not interchangeable; rerunning `research reddit` does not maintain a watch's history or checkpoints.
+
+Watch alerts are local artifacts, not notifications, and schedule commands only render launchd or cron definitions without installing or enabling them. Optional typed semantic work remains shadow-only, with supported qualification `not_eligible`; it does not activate semantic ranking or grouping. See the [research and watch handlers](../src/threadsense/cli.py) and [shadow policy contract](../src/threadsense/decisions/policy.py) for the implementation boundaries.
+
 ## Example
 
 ```bash
