@@ -811,7 +811,15 @@ class JourneyScenario:
         try:
             for stage in stages:
                 stage()
-        except (OSError, ValueError, KeyError, TypeError, sqlite3.Error) as error:
+        except (
+            OSError,
+            ValueError,
+            KeyError,
+            IndexError,
+            StopIteration,
+            TypeError,
+            sqlite3.Error,
+        ) as error:
             raise SmokeFailure(
                 f"journey artifact/contract failure: {type(error).__name__}: {error}"
             ) from error

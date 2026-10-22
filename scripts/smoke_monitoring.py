@@ -1713,7 +1713,11 @@ def main() -> int:
     )
     parser.add_argument("--work-dir", type=Path, required=True)
     parser.add_argument(
-        "--endpoint", help="Local laya.serve URL; required for annotations, evaluation and all."
+        "--endpoint",
+        help=(
+            "Local laya.serve URL; required for annotations, evaluation and all. "
+            "For all, use the operator-owned http://127.0.0.1:62635 endpoint."
+        ),
     )
     args = parser.parse_args()
     endpoint_scenarios = ("annotations", "evaluation", "all")

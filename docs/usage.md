@@ -382,7 +382,7 @@ After `watch run` or `watch digest`, inspect the nested alert result separately 
 
 ### Integrated acceptance with an actual local model
 
-Set `THREADSENSE_SMOKE_DIR` to a fresh isolated work directory and `THREADSENSE_DECISION_ENDPOINT` to the operator-owned literal-loopback checkpoint endpoint. This command is actual model acceptance, not the model-free CI substitute:
+Set `THREADSENSE_SMOKE_DIR` to a fresh isolated work directory and `THREADSENSE_DECISION_ENDPOINT` to the operator-owned checkpoint endpoint `http://127.0.0.1:62635`. This command is actual model acceptance, not the model-free CI substitute:
 
 ```bash
 uv run python scripts/smoke_monitoring.py --scenario all --work-dir "${THREADSENSE_SMOKE_DIR:?}" --endpoint "${THREADSENSE_DECISION_ENDPOINT:?}"
@@ -442,6 +442,20 @@ Invalid input you supply, such as a profile file, a watch ID or the configured m
 ### `watch alerts`
 
 Compare saved sweep evidence without network acquisition or inference. `watch run` and `watch digest` also return an `alerts` result. A new collection/profile/issue-policy cohort establishes a baseline; changing only operational resource limits does not. Ranking and preferences are frozen provenance, not changes in collection or demand.
+
+```bash
+uv run threadsense watch alerts --id agent-memory [--lease-seconds SECONDS] [--config PATH]
+```
+
+Present the latest durable sweep's comparable evidence report without source acquisition or model inference. `watch run` and `watch digest` include the same `alerts` result after digest presentation. Status is `baseline`, `compared`, `no_changes` or `unavailable`; before any durable sweep, `unavailable` reports `no_durable_sweep` and no report paths. The result carries `report_id`, `cohort_id`, `window_id`, `baseline_window_id`, citations, `suppression_reasons`, `refusal_reasons`, paths and `resumed`.
+
+The first window establishes a baseline, not increased demand. A changed collection cohort starts a new baseline: profile revisions/content, source/query, limits, sampling and relevant policy/configuration cannot masquerade as demand growth. Reports freeze actual sweep collection settings and the ranking/feedback basis; changing invocation settings cannot retroactively describe an old sweep. With no new sweep, the existing report and bytes are reused. `alert_ids` are its fixed historical events, while `new_alert_ids` is empty on reuse; neither is an external delivery receipt.
+
+Events cite comment/report/entry/revision identities, excerpt, permalink, text hash and verified snapshot/analysis artifacts. `source_created_utc` is source comment creation, `source_thread_created_utc` is the source thread date when known, `first_observed_at_utc` is acquisition observation and `edit_observed_at_utc` is when changed text was observed. Source edit time remains unknown; an earliest-comment corpus proxy is never thread creation or event time.
+
+`new_evidence`, `evidence_update` and `new_community` describe observed changes. Lexical `reproduction`, `contradiction`, `workaround` and `resolution_claim` remain unverified claims, never a resolved issue or independently verified reproduction. Copies do not corroborate, and observed accounts/communities are not independent people. Coverage and `bounded_denominators` describe bounded observations only, not a population denominator. Unknown search/comment completeness, truncated acquisition and partial/failed collection cannot justify rates or trends; cited deterministic additions can still be reported with refusals disclosed. Unchanged/score-only changes, temporary absence and known-text reappearance do not emit new evidence; absence is not deletion.
+
+Exact storage layout and report fields: [Comparable Evidence Alerts](artifacts.md#comparable-evidence-alerts). Recovery uses the same exclusive finite claim and durable pending publication described below.
 
 Configure invocation admission in the normal application TOML:
 
@@ -691,22 +705,6 @@ Each novel comment carries a novelty label:
 Not every change creates an entry. Score changes, reordering, and comments that are absent from a truncated fetch create no entries, and a comment that disappears and later reappears with the same text is not new. A `partial` or `failed` sweep is never reported as `no_changes`, and a failed source fetch creates no evidence for the missing thread.
 
 Excerpts are untrusted source text. The Markdown digest escapes HTML and link, image, code, heading and table delimiters, then renders excerpts as block quotes. Display-only formatting such as strike-through, list markers and automatic URL linking can remain inside the quote.
-
-### `watch alerts`
-
-```bash
-uv run threadsense watch alerts --id agent-memory [--lease-seconds SECONDS] [--config PATH]
-```
-
-Present the latest durable sweep's comparable evidence report without source acquisition or model inference. `watch run` and `watch digest` include the same `alerts` result after digest presentation. Status is `baseline`, `compared`, `no_changes` or `unavailable`; before any durable sweep, `unavailable` reports `no_durable_sweep` and no report paths. The result carries `report_id`, `cohort_id`, `window_id`, `baseline_window_id`, citations, `suppression_reasons`, `refusal_reasons`, paths and `resumed`.
-
-The first window establishes a baseline, not increased demand. A changed collection cohort starts a new baseline: profile revisions/content, source/query, limits, sampling and relevant policy/configuration cannot masquerade as demand growth. Reports freeze actual sweep collection settings and the ranking/feedback basis; changing invocation settings cannot retroactively describe an old sweep. With no new sweep, the existing report and bytes are reused. `alert_ids` are its fixed historical events, while `new_alert_ids` is empty on reuse; neither is an external delivery receipt.
-
-Events cite comment/report/entry/revision identities, excerpt, permalink, text hash and verified snapshot/analysis artifacts. `source_created_utc` is source comment creation, `source_thread_created_utc` is the source thread date when known, `first_observed_at_utc` is acquisition observation and `edit_observed_at_utc` is when changed text was observed. Source edit time remains unknown; an earliest-comment corpus proxy is never thread creation or event time.
-
-`new_evidence`, `evidence_update` and `new_community` describe observed changes. Lexical `reproduction`, `contradiction`, `workaround` and `resolution_claim` remain unverified claims, never a resolved issue or independently verified reproduction. Copies do not corroborate, and observed accounts/communities are not independent people. Coverage and `bounded_denominators` describe bounded observations only, not a population denominator. Unknown search/comment completeness, truncated acquisition and partial/failed collection cannot justify rates or trends; cited deterministic additions can still be reported with refusals disclosed. Unchanged/score-only changes, temporary absence and known-text reappearance do not emit new evidence; absence is not deletion.
-
-Exact storage layout and report fields: [Comparable Evidence Alerts](artifacts.md#comparable-evidence-alerts). Recovery uses the same exclusive finite claim and durable pending publication described below.
 
 ### `watch schedule`
 

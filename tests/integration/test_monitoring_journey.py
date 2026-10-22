@@ -43,6 +43,44 @@ def collected_journey(journey: Any) -> Any:
     return journey
 
 
+@pytest.mark.parametrize("error_name", ["IndexError", "StopIteration"])
+def test_missing_stage_rows_preserve_failed_journey_evidence(
+    journey_module: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error_name: str,
+) -> None:
+    def missing_row(scenario: Any) -> None:
+        scenario.evidence.append({"step": "profile"})
+        rows: list[object] = []
+        if error_name == "IndexError":
+            _ = rows[0]
+        else:
+            _ = next(iter(rows))
+
+    monkeypatch.setattr(journey_module.JourneyScenario, "profile", missing_row)
+    monitoring = importlib.import_module("smoke_monitoring")
+    monkeypatch.setattr(
+        monitoring.sys,
+        "argv",
+        [
+            "smoke_monitoring.py",
+            "--scenario",
+            "all",
+            "--work-dir",
+            str(tmp_path),
+            "--endpoint",
+            journey_module.ENDPOINT,
+        ],
+    )
+
+    assert monitoring.main() == 1
+    evidence = json.loads((tmp_path / "all-evidence.json").read_text(encoding="utf-8"))
+    assert evidence["status"] == "failed"
+    assert error_name in evidence["error"]
+    assert evidence["steps"] == [{"step": "profile"}]
+
+
 def test_saved_watch_snapshots_freeze_before_inference_and_refuse_missing_annotations(
     collected_journey: Any,
 ) -> None:

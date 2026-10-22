@@ -352,7 +352,7 @@ uv run python scripts/smoke_monitoring.py --scenario evaluation --work-dir DIR -
 
 It runs real `decisions annotate`, `decisions evaluate` and `decisions policy check` calls over the shipped evaluation fixtures, confirms the real result is `not_eligible`, and exercises the checker with a disclosed constructed test-only fixture that never permits activation. It is not quality evidence. Details: [docs/usage.md](docs/usage.md#decisions-evaluate).
 
-For the complete single-watch acceptance journey with actual checkpoint inference, set a fresh isolated `THREADSENSE_SMOKE_DIR` and the operator-owned literal-loopback `THREADSENSE_DECISION_ENDPOINT`:
+For the complete single-watch acceptance journey with actual checkpoint inference, set a fresh isolated `THREADSENSE_SMOKE_DIR` and `THREADSENSE_DECISION_ENDPOINT` to the operator-owned endpoint `http://127.0.0.1:62635`:
 
 ```bash
 uv run python scripts/smoke_monitoring.py --scenario all --work-dir "${THREADSENSE_SMOKE_DIR:?}" --endpoint "${THREADSENSE_DECISION_ENDPOINT:?}"
