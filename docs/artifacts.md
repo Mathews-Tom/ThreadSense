@@ -121,7 +121,7 @@ Saved watches live in a single SQLite database, separate from the JSON artifacts
 
 The directory name comes from `monitoring_dirname` under `[storage]` (environment override `THREADSENSE_STORAGE_MONITORING_DIR`, default `monitoring`). It must be a relative path that stays inside the storage root. The database is created by the first `watch create`; `watch list` and `watch inspect` open it read-only and never create it. A zero-byte or otherwise uninitialized file reads as an empty store.
 
-The database carries a ThreadSense application id and a schema version, currently `7`. A version `1` to `6` database is upgraded in place by the first command that writes to it: the upgrade only creates the missing tables and index, in one transaction, and keeps every existing profile, revision, run and sweep record. Read-only commands read an older database without modifying it; `watch inspect` reports an empty `digest` summary for a database older than version `3`, `issues inspect` reports no issues for a database older than version `4`, and `watch policy` reports the built-in default policy with no selections for a database older than version `7`. A database written by a newer schema version, a SQLite file that is not a ThreadSense monitoring database, and a file that is not SQLite are all refused with `monitoring_state_error` and left unmodified. There is no downgrade path. An existing completely empty SQLite file (no tables, no application id) is treated as uninitialized and receives the schema on the first write.
+The database carries a ThreadSense application id and a schema version, currently `10`. A version `1` to `9` database is upgraded in place by the first command that writes to it: the upgrade creates missing tables, indexes and history-protection triggers in one transaction and keeps existing profile, revision, run and sweep records. Read-only commands read an older database without modifying it; `watch inspect` reports an empty `digest` summary for a database older than version `3`, `issues inspect` reports no issues for a database older than version `4`, and `watch policy` reports the built-in default policy with no selections for a database older than version `7`. A database written by a newer schema version, a SQLite file that is not a ThreadSense monitoring database, and a file that is not SQLite are all refused with `monitoring_state_error` and left unmodified. There is no downgrade path. An existing completely empty SQLite file (no tables, no application id) is treated as uninitialized and receives the schema on the first write.
 
 If a crash left `state.sqlite3-journal` next to the database, any watch command, including `watch list` and `watch inspect`, lets SQLite roll back the interrupted transaction, but only after verifying that a private recovered copy is a supported ThreadSense state. Otherwise the database and journal are left untouched.
 
@@ -176,6 +176,14 @@ Ranking tables (schema version `7`), all append-only: triggers abort every `UPDA
 - `watch_ranking_selections`: one row per policy selection with its watch, per-watch `sequence`, `policy_id` and selection time; the latest selection is the watch's active policy, and a watch without rows uses the built-in default
 - `watch_digest_rankings`: one row per digest created at schema version `7` with the ranking basis recorded in the same transaction as the digest: `profile_revision`, `policy_id` and `preference_sequence`; a digest created before version `7` has no row and keeps its selection order
 
+Alert history tables (schema version `8`), append-only:
+
+- `watch_alert_cohorts`: the exact comparison basis for a watch's comparable collection cohort
+- `watch_alert_reports`: the frozen report payload, source sweep/window, baseline reference and artifact paths
+- `watch_alert_events`: stable cited event identities attached to their original report
+- `watch_alert_seen`: evidence identities already observed, including baseline evidence, so restarts and reappearances do not become new demand
+- `watch_alert_completions`: artifact hashes and the fenced run that completed publication
+
 Sweep files live under the monitoring directory and are never overwritten. Paths in the database are relative to the monitoring directory:
 
 ```text
@@ -228,9 +236,95 @@ Inspection payloads emitted by the CLI:
 
 `watch inspect` (`artifact_type: watch_inspection`): `status`, `state_path`, `watch_id`, `current_revision`, `created_at_utc`, `updated_at_utc`, `profile`, `revisions` (each with `revision`, `content_sha256`, `created_at_utc`), `active_run`, `run_count`, `recent_runs` (newest 20, each with `run_id`, `profile_revision`, `status`, `claimed_at_utc`, `lease_expires_at_utc`, `finished_at_utc`, `recovered_by_run_id`), and `digest` (`entry_count`, `unpresented_entries`, `pending_digest_id`, `digest_count`, `latest_digest` with `digest_id`, `sequence`, absolute `json_path` and `markdown_path`, `entry_count` and `written_at_utc`, or `null`), and `sweep` with `tracked_threads`, `refresh_due_never_refreshed`, `pending_analyses`, `revision_count`, `comment_count` and `latest_sweep` (`run_id`, `outcome`, `finished_at_utc`, `summary`, or `null`).
 
-`watch run` (`artifact_type: watch_run`): `status` (the sweep outcome), `state_path`, `sweep` and `digest`.
+`watch run` (`artifact_type: watch_run`): `status` (the sweep outcome), `state_path`, `sweep`, `digest` and `alerts`. The alert comparison runs after the digest against durable evidence from the latest sweep.
 
 `watch digest` (`artifact_type: watch_digest_result`): `status` (`presented` or `no_entries`), `state_path`, `run_id`, `watch_id`, `digest_id`, `sequence`, `resumed`, `json_path`, `markdown_path`, `entry_ids` (selection order), `materialized_entries`, `backlog`, `issues` (the issue ingestion counts of the run) and `ranking` (the digest's ranking `basis` fields plus `ranked_entry_ids` in ranked order, or `null` when no digest was presented or the digest is unranked).
+
+Both `watch run` and `watch digest` include an `alerts` object in addition to their existing fields. `watch alerts --id WATCH [--lease-seconds SECONDS] [--config PATH]` returns this object directly, without fetching or analyzing source discussions:
+
+- `artifact_type: watch_alert_result`, `watch_id`, `status` (`baseline`, `compared`, `no_changes`, `unavailable`, `backlog` or `resource_refused`)
+- `report_id`, `cohort_id`, `window_id`, `baseline_window_id`
+- `alert_ids` and `alerts`: a bounded current page of fixed cited events, not the complete lifetime history or repeated delivery notifications
+- `new_alert_ids`: only events newly made durable by this invocation, including an invocation that returns `backlog`; empty when reusing a completed report
+- `suppression_reasons`, `refusal_reasons`, `json_path`, `markdown_path`, `resumed`
+- `accounting`: admitted `used` and configured `limits` for source/metadata rows, derivations, input bytes, artifact bytes and response bytes
+- `continuation`: the durable pending target and command to resume when work remains; `resource` identifies an admission refusal's unit, dimension (`reason`), required cost and configured bound
+
+With no durable sweep the result is `unavailable`, has no report, and invents no evidence. With no new sweep, the same report ids and artifact bytes are reused, even if invocation configuration or ranking preferences changed afterwards.
+
+### Comparable Evidence Alerts
+
+Alert JSON (`artifact_type: watch_alert_report`) and Markdown are stored under the monitoring directory at `<watch_id>/alerts/<report_id>.json` and `<watch_id>/alerts/<report_id>.md`. They are separate from, and never rewrite, historical digest, issue or evidence artifacts.
+
+The report freezes its `basis`: full profile content, revision and hash; actual sweep `collection_basis` (source, source policy, Reddit limits/configuration and analysis settings); discovery sampling bounds; issue policy; ranking policy and recorded ranking/feedback basis. Ranking policy and preferences are presentation provenance, not collection-cohort keys; a ranking-only change must not suppress newly observed evidence. Invocation collection configuration is labeled separately and cannot retroactively describe an earlier sweep. A legacy sweep without recorded collection configuration has an explicitly unknown basis.
+
+The first window establishes a baseline, not increased demand. Changes to the comparable collection cohort establish a new baseline; old evidence cannot become new demand merely because queries, sampling limits or analysis configuration changed. `baseline` references the previous durable comparison evidence. `coverage` records search/comment completeness and sweep outcome; `bounded_denominators` describe only the observed sample, with no population denominator. Unknown, truncated or partial collection refuses rate/trend claims while allowing deterministic cited additions.
+
+Events distinguish `new_evidence`, `evidence_update`, `new_community`, `reproduction`, `contradiction`, `workaround` and `resolution_claim`. Every event cites source evidence with its comment/report/entry/revision identity, text hash, excerpt and permalink. Source creation time, first observation time and edit observation time are separate; unavailable source edit times remain null. A thread's creation time is not inferred from its earliest comment. Claims remain unverified (`claims_are_verified: false`); another observed community is not proof of independent people. Exact copies may establish a newly observed community, deduplicated case-insensitively within the watch, but never independent corroboration, new independent evidence or copied update cues. Their citations retain exact-copy lineage, the origin report and `independent_person_verified: false`. Score-only changes, unchanged text, temporary disappearance and known-evidence reappearance do not generate new event ids; disappearance is not deletion or resolution.
+
+`edit_observed_at_utc` records the original acquisition that first observed the edited comment body, including when its analysis is deferred to a later revision. Later analysis or metadata/policy refresh preserves that edit observation; it does not replace it with the selected analysis acquisition's `observed_at_utc` or `recorded_at_utc`. Snapshot and analysis provenance still identify the selected analyzed revision.
+
+### Schema-2 cumulative history and bounded continuation
+
+New alert reports use `schema_version: 2`. JSON and Markdown expose a bounded inline current page of `evidence` and `alerts`, cumulative `evidence_count`, target-specific `event_count`, baseline counts and immutable `evidence_head`, `change_head` and `provenance_head` references. An inline page is not the full cumulative evidence set. Evidence inherits the watch's prior immutable history; the change head contains only the current target's events, not historical alerts relabeled as new changes. Provenance overlays preserve later origin, lineage and membership corrections without rewriting old report bytes.
+
+Each referenced immutable segment/manifest has an expected SHA-256, watch/chain identity and explicit generation; predecessor generations strictly decrease. Source positions are durable explicit change sequences, not floating timestamps or mutable implicit rowids. Bounded legacy bootstrap and target input expansion finish before copy-sensitive classification, so tied timestamps, late older observations and a short explicit copy whose origin sorts later cannot be classified from an incomplete prefix.
+
+Use the typed bounded reader to resolve cumulative citations or target changes:
+
+```python
+from pathlib import Path
+
+from threadsense.monitoring.alert_budget import AlertBudget
+from threadsense.monitoring.alert_reader import read_alert_page
+
+page = read_alert_page(
+    root=Path(".threadsense/monitoring"),
+    report_path=Path("WATCH/alerts/REPORT.json"),  # relative to root, or an absolute path
+    budget=AlertBudget(),
+    collection="evidence",  # "changes" reads this target's events
+    cursor=None,
+)
+```
+
+Consume `items`, then pass the returned `cursor` to a new call with a fresh finite budget until `complete` is true. The cursor binds the exact immutable report bytes and collection; do not reuse it for another report. Resolving inherited links or overlays may return a continuation with no items: this is progress through the reference chain, not an empty completed evidence set. The reader reports its own `accounting`; `resource_refused` is an explicit refusal, never empty success. Schema-1 reports retain their old meaning and exact bytes and are byte-preflighted before read/decode/hash. Unsupported future schemas, corrupt/missing accessed references and corrupt/missing accessed snapshot or analysis leaves raise an explicit monitoring-state error.
+
+The integrity boundary is deliberately local. Publication checks newly admitted artifact bytes and immediate inherited references outside long writer transactions, then fences the checkpoint commit against the live exclusive claim and frozen target. It does **not** rehash every historical raw leaf on every new report. Further inherited links and raw leaves are hash-verified only when accessed by the bounded reader. Counts are persisted checkpoint deltas, not totals recomputed by decoding all history.
+
+#### Incremental working facts and completed coverage
+
+Each watch retains an indexed working projection of admitted source entries, expanded comments, intrinsic lineage, canonical report/text occurrences and metadata dependencies. A later target gathers only its own watch's new source positions through its frozen high-water, then expands new or invalidated entries and revisits affected keys. Unchanged targets do not reopen old snapshots to rebuild lifetime history. Cutoff changes revisit their indexed affected/deferred range; becoming ineligible does not erase published evidence, and a later eligible occurrence can replace an ineligible first citation. Effective exact-copy classification remains separate from intrinsic source lineage.
+
+Input presence and publication coverage are distinct. The target's immutable presence binding must cover its frozen high-water and inherited coverage before copy-sensitive classification. Every completed target, including a zero-derivation or feedback-only target, receives an immutable terminal checkpoint. One expected-old, claim-fenced transition binds completion, artifact heads, cumulative counts and the completed coverage head before clearing pending ownership. Cumulative unique report/text evidence, current-target events and versioned acquisition contributions for the selected sweep have separate counters; corrections apply old-to-new contribution deltas instead of recounting history.
+
+Initial schema-1 primary-key capture and explicit chronology assignment share a persisted database device/inode/schema-cookie tuple until both families are fully captured and an indexed unpositioned-work probe seals chronology inside the writer fence. After sealing, readers use indexed explicit positions and validate the selected report identity, watch, predecessor and accessed source content; historical observed ordinals are audit data, not continuation cursors. Later schema-1 inserts allocate their explicit position and predecessor atomically with source capture. A separate later operation can bind a copied complete storage root without changing the historical audit tuple. Mutation during one operation, including publication or completion, refuses against that operation's original tuple. Incomplete chronology cannot rebind.
+
+#### Model-free resource proof
+
+The standalone alerts smoke additionally resumes low-budget backlog through fresh CLI processes and leaves finite TOML envelopes and `alerts-resource-proof.json` with accounting, oversized-unit and bounded-reader refusal, restart recovery and historical hashes. `alerts-crash-before-proof.json` and `alerts-crash-after-proof.json` record actual interpreter death before and after event-segment publication, followed by fresh-process claim recovery, nonrepeated IDs and unchanged staged bytes. These receipts prove the root producer path, not the child-owned integrated real-model `all` journey.
+
+Operational limits are strictly positive integers in a separate TOML `alerts` section; they do not enter collection/cohort identity. Defaults:
+
+```toml
+[alerts]
+source_rows = 32
+derivations = 512
+input_bytes = 8388608
+artifact_bytes = 4194304
+response_bytes = 4194304
+```
+
+For example, `watch alerts --id WATCH --config alerts.toml` applies this finite envelope to one invocation. Rows count every examined source/metadata candidate, including skipped or cross-watch bootstrap candidates; derivations include copy/origin/correction revisits and event expansion. Input counts each admitted application read/decode/hash pass, not only unique filenames. Artifact output and the CLI response have separate bounds. Retained immutable disk history may grow; these are per-invocation work/output limits, not retention or hardware/OOM promises.
+
+`backlog` means bootstrap, target input expansion, provenance, staged delivery or finalization remains. Explicitly invoke `watch alerts` again; the product does not hide a loop or silently enlarge the envelope. A unit that fits the full configured envelope but not this invocation's **remaining** allowance returns `backlog` before reading it. A unit larger than the entire configured envelope returns `resource_refused` with required-versus-configured cost; choose an adequate finite budget to resume it. Neither status means `no_changes`, a completed comparison or a semantic trend-eligibility refusal.
+
+Inspect `resource.unit` before interpreting `continuation.target_id`. Bootstrap or target-control admission can refuse before a target exists, in which case the target ID is null; retry with an adequate finite envelope to create it. A source-snapshot refusal after target creation retains its durable pending target ID, and recovery must complete that same target. Snapshot admission includes every required read/decode/hash pass plus its analysis input, so a file smaller than `input_bytes` can still exceed the indivisible unit's full envelope.
+
+An envelope too small to encode even the refusal/control response (for example `response_bytes = 1`) produces a nonzero typed `monitoring_state_error` describing the resource refusal, not a successful oversized alert response. Raise the finite response envelope before retrying; historical report bytes remain unchanged.
+
+The frozen pending target has priority over newer sweeps. Batches bind durable immutable segment bytes, pending event identities and checkpoint/source positions under short claim fences. A publication interruption resumes the same pending target and IDs before newer work; conflicting existing bytes are preserved and refused rather than overwritten. Completion follows required durable verified publication, not merely selection of a batch. A pending schema-1 report likewise retains its identity and bytes, and an oversized legacy unit is refused rather than truncated, replaced or bypassed. Persisted event pages remain discoverable through the reader even when the command response was interrupted; no external exactly-once transport is claimed.
+
+The model-free root smoke is `uv run python scripts/smoke_monitoring.py --scenario alerts --work-dir DIR`, where DIR is empty or absent. It drives actual CLI subprocesses with the committed synthesized Reddit replay transport, checks durable baseline/citations, unchanged and score suppression, partial-coverage refusals, fresh-process reuse, cohort baselining and unchanged historical bytes. It does not access live Reddit or a model. This root scenario is standalone; there is no `all` scenario.
 
 `issues inspect` (`artifact_type: issue_list` or `issue_inspection`) and `issues link` or `issues unlink` (`artifact_type: issue_membership_change`) are specified in [usage.md](usage.md).
 

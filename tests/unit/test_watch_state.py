@@ -778,6 +778,8 @@ def drop_schema_after(conn: sqlite3.Connection, version: int) -> None:
         for statement in _SCHEMA_STATEMENTS[schema_version]
         for object_type, name in SCHEMA_OBJECT_PATTERN.findall(statement)
     ]
+    # Later migrations can recreate a trigger under the same physical name.
+    later_objects = list(dict.fromkeys(later_objects))
     # Triggers and indexes first: dropping a table already drops its own.
     for object_type, name in reversed(later_objects):
         if object_type != "TABLE":

@@ -221,6 +221,12 @@ def _execute_sweep(ctx: _SweepContext) -> SweepResult:
     summary: dict[str, Any] = {
         "profile_revision": ctx.claim.profile_revision,
         "profile_content_sha256": profile.content_sha256(),
+        "collection_basis": {
+            "source": "reddit",
+            "source_policy": ctx.config.source_policy.model_dump(mode="json"),
+            "reddit": ctx.config.reddit.model_dump(mode="json"),
+            "analysis": ctx.config.analysis.model_dump(mode="json"),
+        },
         "discovery": discovery,
         "refresh": refresh,
         "analysis": analysis,

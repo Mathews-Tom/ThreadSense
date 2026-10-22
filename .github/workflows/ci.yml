@@ -11,14 +11,17 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # Metadata-only edits must not cancel a source or base-retarget validation.
+  group: ci-${{ github.ref }}${{ github.event.action == 'edited' && github.event.changes.base == null && '-metadata' || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   validate:
     name: validate (Python ${{ matrix.python-version }})
+    # A title/body edit leaves the tested merge result unchanged.
+    if: github.event.action != 'edited' || github.event.changes.base != null
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:

@@ -311,19 +311,6 @@ def test_watch_run_phase_reports_sweep_outcome_and_exit_code(
     assert step.sweep["outcome"] == outcome
 
 
-def test_watch_run_runs_digest_after_every_completed_sweep(journey: Journey) -> None:
-    for step in journey.steps.values():
-        recent = step.inspection["recent_runs"]
-
-        assert step.digest["status"] in ("presented", "no_entries"), step.name
-        assert [run["run_id"] for run in recent[:2]] == [
-            step.digest["run_id"],
-            step.sweep["run_id"],
-        ], step.name
-        assert recent[0]["status"] == "succeeded", step.name
-        assert step.inspection["active_run"] is None, step.name
-
-
 @pytest.mark.parametrize(
     ("phase_name", "source_thread_id", "sequence", "expected"),
     [

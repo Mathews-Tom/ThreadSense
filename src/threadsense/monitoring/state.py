@@ -16,6 +16,15 @@ from typing import Any, Literal
 
 from threadsense.config import StorageConfig
 from threadsense.errors import MonitoringInputError, MonitoringStateError, RunClaimError
+from threadsense.monitoring.alert_budget import AlertBudget, AlertSession
+from threadsense.monitoring.alert_derivation import DERIVATION_SCHEMA_STATEMENTS
+from threadsense.monitoring.alert_engine import ENGINE_SCHEMA_STATEMENTS
+from threadsense.monitoring.alert_projection import PROJECTION_SCHEMA_STATEMENTS
+from threadsense.monitoring.alert_records import ALERT_SCHEMA_STATEMENTS
+from threadsense.monitoring.alert_sources import (
+    EPOCH_CORRECTION_STATEMENTS,
+    SOURCE_SCHEMA_STATEMENTS,
+)
 from threadsense.monitoring.digest_records import (
     _DIGEST_SCHEMA_VERSION,
     _UNMATERIALIZED_REVISIONS,
@@ -132,7 +141,7 @@ from threadsense.monitoring.sweep_records import (
     _validate_observed_at,
 )
 
-STATE_SCHEMA_VERSION = 7
+STATE_SCHEMA_VERSION = 10
 STATE_APPLICATION_ID = 0x54534D4E
 STATE_FILENAME = "state.sqlite3"
 BUSY_TIMEOUT_SECONDS = 5.0
@@ -329,6 +338,9 @@ _SCHEMA_STATEMENTS: dict[int, tuple[str, ...]] = {
     5: DIGEST_ISSUE_VIEW_STATEMENTS,
     6: FEEDBACK_SCHEMA_STATEMENTS,
     7: RANKING_SCHEMA_STATEMENTS,
+    8: ALERT_SCHEMA_STATEMENTS,
+    9: (*SOURCE_SCHEMA_STATEMENTS, *DERIVATION_SCHEMA_STATEMENTS, *ENGINE_SCHEMA_STATEMENTS),
+    10: (*PROJECTION_SCHEMA_STATEMENTS, *EPOCH_CORRECTION_STATEMENTS),
 }
 
 
@@ -1264,6 +1276,71 @@ class MonitoringStore:
                 )
             return _entry_presentation(
                 conn, version, watch_id, entry_id, self.monitoring_root().absolute()
+            )
+
+    @contextmanager
+    def alert_session(self, claim: RunClaim) -> Iterator[AlertSession]:
+        """Expose one autocommit handle and a short semantic writer fence."""
+        with self._connect_writable(create=False) as conn:
+
+            def check() -> None:
+                self._fence_claim(conn, claim)
+
+            @contextmanager
+            def fence() -> Iterator[None]:
+                with _immediate(conn):
+                    check()
+                    yield
+                    check()
+
+            check()
+            yield AlertSession(
+                conn, self.monitoring_root().absolute(), claim.watch_id, fence, check
+            )
+
+    def complete_alert_report(
+        self,
+        claim: RunClaim,
+        report_id: str,
+        json_sha256: str,
+        markdown_sha256: str,
+        *,
+        session: AlertSession,
+        budget: AlertBudget | None = None,
+    ) -> None:
+        """Commit a checked publication receipt without rereading lifetime evidence."""
+        from threadsense.monitoring.alert_budget import verify_file
+        from threadsense.monitoring.alert_engine import complete_schema2
+
+        admitted = budget if budget is not None else AlertBudget(check=session.check)
+        session.check()
+        row = session.conn.execute(
+            "SELECT json_path,markdown_path FROM watch_alert2_reports WHERE report_id=? "
+            "UNION ALL SELECT json_path,markdown_path "
+            "FROM watch_alert_reports WHERE report_id=?",
+            (report_id, report_id),
+        ).fetchone()
+        if row is None:
+            raise MonitoringStateError(
+                "alert report is missing", details={"reason": "alert_report_missing"}
+            )
+        verify_file(session, admitted, str(row[0]), json_sha256)
+        verify_file(session, admitted, str(row[1]), markdown_sha256)
+        if complete_schema2(session, report_id, json_sha256, markdown_sha256, admitted):
+            return
+        # Completion uses the original operation epoch, never a nested-session rebind.
+        with session.fence():
+            row = session.conn.execute(
+                "SELECT watch_id FROM watch_alert_reports WHERE report_id=?",
+                (report_id,),
+            ).fetchone()
+            if row is None or row[0] != claim.watch_id:
+                raise MonitoringStateError(
+                    "alert report is missing", details={"reason": "alert_report_missing"}
+                )
+            session.conn.execute(
+                "INSERT OR IGNORE INTO watch_alert_completions VALUES (?,?,?,?,?)",
+                (report_id, json_sha256, markdown_sha256, self.now(), claim.run_id),
             )
 
     @staticmethod

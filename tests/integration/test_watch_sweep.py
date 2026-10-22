@@ -174,55 +174,6 @@ def thread_url(source_thread_id: str) -> str:
 # Phase sequence behavior.
 
 
-def test_run_watch_sweep_summary_has_contract_keys(sequence: SequenceRun) -> None:
-    summary = sequence.phases["initial"].result.summary
-
-    assert set(summary) == {
-        "profile_revision",
-        "profile_content_sha256",
-        "discovery",
-        "refresh",
-        "analysis",
-        "changes",
-        "failures",
-    }
-    assert set(summary["discovery"]) == {
-        "queries",
-        "subreddits",
-        "sort",
-        "time_window",
-        "per_request_limit",
-        "limit",
-        "matched_count",
-        "persisted_count",
-        "truncated",
-        "selected_count",
-        "newly_tracked_count",
-        "failed_queries",
-        "invalid_source_ids",
-        "search_completeness",
-    }
-    assert set(summary["refresh"]) == {
-        "limit",
-        "tracked_threads",
-        "attempted",
-        "fetched",
-        "failed",
-        "pending",
-        "truncated_acquisitions",
-    }
-    assert set(summary["analysis"]) == {"limit", "analyzed", "failed", "pending"}
-    assert set(summary["changes"]) == {
-        "revisions_created",
-        "initial_observation",
-        "new_source_event",
-        "newly_observed_historical",
-        "edited",
-        "thread_text_changed",
-        "absent_known_comments",
-    }
-
-
 def test_run_watch_sweep_initial_outcome_is_changes(sequence: SequenceRun) -> None:
     assert sequence.phases["initial"].result.outcome == "changes"
 

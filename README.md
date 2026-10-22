@@ -81,10 +81,13 @@ uv run threadsense watch list
 uv run threadsense watch inspect --id agent-memory
 uv run threadsense watch run --id agent-memory
 uv run threadsense watch digest --id agent-memory
+uv run threadsense watch alerts --id agent-memory
 uv run threadsense watch schedule --id agent-memory --format launchd
 ```
 
 `watch run` performs one bounded sweep of the watch and then presents a digest of the new evidence; `watch digest` presents only. A digest is a JSON and Markdown artifact pair under the monitoring directory listing new evidence-linked thread updates and findings, at most `presented_findings` per digest, with the remaining backlog reported. `watch schedule` renders a launchd property list or a cron line and nothing else: it installs and enables nothing, and you install the output yourself if you want recurring runs.
+
+`watch alerts` compares durable evidence without fetching sources or calling a model. It returns `backlog` while bounded source import, target preparation or artifact publication remains, and `resource_refused` when one indivisible unit exceeds the configured finite envelope. Repeat the command to resume the pending older target; do not treat either status as `no_changes`. Completed schema-2 reports expose cumulative counts and bounded evidence/change references, not an inline lifetime history. Operational `[alerts]` limits do not change collection cohorts. Source coverage stays unknown or partial; changes are not population-demand trends, independent people or verified resolution claims.
 
 Field bounds and output shapes: [docs/usage.md](docs/usage.md).
 
@@ -294,6 +297,8 @@ bash scripts/validate.sh
 ```
 
 `uv sync --locked` fails when `uv.lock` is stale instead of rewriting it. `scripts/validate.sh` runs, in order, `ruff check`, `ruff format --check`, `mypy --strict src tests scripts`, the complete `pytest` suite and a scan for absolute local paths in Markdown. GitHub Actions runs the same two commands on every pull request and on pushes to `main`, on Python 3.11 and 3.13, with `UV_LOCKED=1` so no step can modify the lock file.
+
+Pull-request opens, source updates, reopens and base-branch retargets run the full matrix. Title/body-only edits, including automated review summaries, skip validation and use a separate concurrency group so they cannot cancel an in-progress source validation.
 
 The full `pytest` suite is deterministic recorded/loopback integration coverage, with no skips. It does not establish that a real source or local model is available, nor does it claim a successful live source fetch or model inference.
 
